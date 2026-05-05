@@ -1,0 +1,284 @@
+'use client';
+
+import { useEffect, useRef } from 'react';
+import mapboxgl, { type Map as MapboxMap, type GeoJSONSource } from 'mapbox-gl';
+import 'mapbox-gl/dist/mapbox-gl.css';
+import { useQuery } from '@tanstack/react-query';
+import { DATA_SOURCES } from '@subterra/shared';
+import { useMapStore } from '@/stores/map-store';
+import { api } from '@/lib/api';
+
+const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? '';
+const MAPBOX_STYLE = process.env.NEXT_PUBLIC_MAPBOX_STYLE ?? DATA_SOURCES.mapbox.darkStyle;
+
+export function MapView() {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<MapboxMap | null>(null);
+
+  const view = useMapStore((s) => s.view);
+  const setView = useMapStore((s) => s.setView);
+  const layerVisibility = useMapStore((s) => s.layerVisibility);
+  const filters = useMapStore((s) => s.filters);
+  const selectFeature = useMapStore((s) => s.selectFeature);
+
+  // Data
+  const wellsQuery = useQuery({
+    queryKey: ['layers', 'wells', filters],
+    queryFn: () => api.layers.wells({ state: filters.state, county: filters.county, status: filters.status }),
+  });
+  const claimsQuery = useQuery({
+    queryKey: ['layers', 'claims', filters],
+    queryFn: () => api.layers.claims({ state: filters.state, county: filters.county, status: filters.status, commodity: filters.commodity }),
+  });
+  const occQuery = useQuery({
+    queryKey: ['layers', 'mineral-occurrences', filters],
+    queryFn: () => api.layers.mineralOccurrences({ state: filters.state, commodity: filters.commodity }),
+  });
+
+  // Init map
+  useEffect(() => {
+    if (!containerRef.current || mapRef.current) return;
+
+    if (!MAPBOX_TOKEN) {
+      // Render a placeholder if no token; the rest of the dashboard still works.
+      console.warn('[map] NEXT_PUBLIC_MAPBOX_TOKEN not set — map will not render.');
+      return;
+    }
+
+    mapboxgl.accessToken = MAPBOX_TOKEN;
+
+    const map = new mapboxgl.Map({
+      container: containerRef.current,
+      style: MAPBOX_STYLE,
+      center: [view.longitude, view.latitude],
+      zoom: view.zoom,
+      bearing: view.bearing,
+      pitch: view.pitch,
+      attributionControl: false,
+    });
+
+    map.addControl(new mapboxgl.NavigationControl({ visualizePitch: true }), 'top-right');
+    map.addControl(new mapboxgl.ScaleControl({ unit: 'imperial' }), 'bottom-left');
+    map.addControl(new mapboxgl.AttributionControl({ compact: true }), 'bottom-right');
+
+    map.on('load', () => {
+      // BLM SMA — surface management areas via ArcGIS REST tile export
+      map.addSource('blm-sma', {
+        type: 'raster',
+        tiles: [
+          `${DATA_SOURCES.blm.surfaceManagement}/export?bbox={bbox-epsg-3857}&bboxSR=3857&imageSR=3857&size=512,512&dpi=96&format=png32&transparent=true&f=image`,
+        ],
+        tileSize: 512,
+      });
+      map.addLayer({
+        id: 'blm-surface-mgmt',
+        type: 'raster',
+        source: 'blm-sma',
+        paint: { 'raster-opacity': 0.55 },
+        layout: { visibility: 'visible' },
+      });
+
+      // PLSS grid
+      map.addSource('plss', {
+        type: 'raster',
+        tiles: [
+          `${DATA_SOURCES.blm.plssCadnsdi}/export?bbox={bbox-epsg-3857}&bboxSR=3857&imageSR=3857&size=512,512&dpi=96&format=png32&transparent=true&f=image`,
+        ],
+        tileSize: 512,
+      });
+      map.addLayer({
+        id: 'plss-grid',
+        type: 'raster',
+        source: 'plss',
+        minzoom: 8,
+        paint: { 'raster-opacity': 0.6 },
+        layout: { visibility: 'visible' },
+      });
+
+      // USGS topo overlay
+      map.addSource('usgs-topo', {
+        type: 'raster',
+        tiles: [
+          `${DATA_SOURCES.usgs.topo}/export?bbox={bbox-epsg-3857}&bboxSR=3857&imageSR=3857&size=512,512&dpi=96&format=png32&transparent=true&f=image`,
+        ],
+        tileSize: 512,
+      });
+      map.addLayer({
+        id: 'topo',
+        type: 'raster',
+        source: 'usgs-topo',
+        paint: { 'raster-opacity': 0.5 },
+        layout: { visibility: 'none' },
+      });
+
+      // empty geojson sources for app data — populated by the effect below
+      map.addSource('wells', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      map.addSource('claims', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      map.addSource('mineral-occurrences', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+
+      // wells — split into active/plugged/permitted by data-driven styling
+      map.addLayer({
+        id: 'wells-active',
+        type: 'circle',
+        source: 'wells',
+        filter: ['==', ['get', 'status'], 'active'],
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 5, 2, 12, 6],
+          'circle-color': '#10b981',
+          'circle-stroke-color': '#0a0c10',
+          'circle-stroke-width': 1,
+        },
+      });
+      map.addLayer({
+        id: 'wells-plugged',
+        type: 'circle',
+        source: 'wells',
+        filter: ['==', ['get', 'status'], 'plugged'],
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 5, 2, 12, 5],
+          'circle-color': '#64748b',
+          'circle-stroke-color': '#0a0c10',
+          'circle-stroke-width': 1,
+        },
+      });
+      map.addLayer({
+        id: 'wells-permitted',
+        type: 'circle',
+        source: 'wells',
+        filter: ['==', ['get', 'status'], 'permitted'],
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 5, 2, 12, 6],
+          'circle-color': '#f59e0b',
+          'circle-stroke-color': '#0a0c10',
+          'circle-stroke-width': 1,
+        },
+      });
+
+      // mining claims — fill polygons split by status
+      map.addLayer({
+        id: 'claims-active',
+        type: 'fill',
+        source: 'claims',
+        filter: ['==', ['get', 'status'], 'active'],
+        paint: {
+          'fill-color': '#f59e0b',
+          'fill-opacity': 0.18,
+          'fill-outline-color': '#f59e0b',
+        },
+      });
+      map.addLayer({
+        id: 'claims-active-outline',
+        type: 'line',
+        source: 'claims',
+        filter: ['==', ['get', 'status'], 'active'],
+        paint: { 'line-color': '#f59e0b', 'line-width': 1.2 },
+      });
+      map.addLayer({
+        id: 'claims-closed',
+        type: 'fill',
+        source: 'claims',
+        filter: ['==', ['get', 'status'], 'closed'],
+        paint: { 'fill-color': '#64748b', 'fill-opacity': 0.12, 'fill-outline-color': '#64748b' },
+      });
+
+      // USGS MRDS occurrences
+      map.addLayer({
+        id: 'mineral-occurrences',
+        type: 'circle',
+        source: 'mineral-occurrences',
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 3, 10, 7],
+          'circle-color': '#3b82f6',
+          'circle-stroke-color': '#0a0c10',
+          'circle-stroke-width': 1,
+          'circle-opacity': 0.85,
+        },
+      });
+
+      // hover cursor
+      const interactiveLayers = ['wells-active', 'wells-plugged', 'wells-permitted', 'claims-active', 'claims-closed', 'mineral-occurrences'];
+      for (const id of interactiveLayers) {
+        map.on('mouseenter', id, () => (map.getCanvas().style.cursor = 'pointer'));
+        map.on('mouseleave', id, () => (map.getCanvas().style.cursor = ''));
+      }
+
+      // click handlers
+      map.on('click', (e) => {
+        const features = map.queryRenderedFeatures(e.point, { layers: interactiveLayers });
+        const feature = features[0];
+        if (!feature) {
+          selectFeature(null);
+          return;
+        }
+        const id = String(feature.id ?? feature.properties?.id ?? '');
+        if (!id) return;
+        if (feature.layer.id.startsWith('wells')) selectFeature({ kind: 'well', id });
+        else if (feature.layer.id.startsWith('claims')) selectFeature({ kind: 'claim', id });
+        else if (feature.layer.id === 'mineral-occurrences') selectFeature({ kind: 'occurrence', id });
+      });
+    });
+
+    map.on('moveend', () => {
+      const c = map.getCenter();
+      setView({ longitude: c.lng, latitude: c.lat, zoom: map.getZoom(), bearing: map.getBearing(), pitch: map.getPitch() });
+    });
+
+    mapRef.current = map;
+    return () => {
+      map.remove();
+      mapRef.current = null;
+    };
+    // we intentionally only run once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // sync layer visibility
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) return;
+    const apply = () => {
+      for (const [id, visible] of Object.entries(layerVisibility)) {
+        if (map.getLayer(id)) {
+          map.setLayoutProperty(id, 'visibility', visible ? 'visible' : 'none');
+        }
+        if (id === 'claims-active' && map.getLayer('claims-active-outline')) {
+          map.setLayoutProperty('claims-active-outline', 'visibility', visible ? 'visible' : 'none');
+        }
+      }
+    };
+    apply();
+  }, [layerVisibility]);
+
+  // sync data sources
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const update = () => {
+      const wellsSrc = map.getSource('wells') as GeoJSONSource | undefined;
+      if (wellsSrc && wellsQuery.data) wellsSrc.setData(wellsQuery.data as GeoJSON.FeatureCollection);
+      const claimsSrc = map.getSource('claims') as GeoJSONSource | undefined;
+      if (claimsSrc && claimsQuery.data) claimsSrc.setData(claimsQuery.data as GeoJSON.FeatureCollection);
+      const occSrc = map.getSource('mineral-occurrences') as GeoJSONSource | undefined;
+      if (occSrc && occQuery.data) occSrc.setData(occQuery.data as GeoJSON.FeatureCollection);
+    };
+    if (map.isStyleLoaded()) update();
+    else map.once('load', update);
+  }, [wellsQuery.data, claimsQuery.data, occQuery.data]);
+
+  if (!MAPBOX_TOKEN) {
+    return <MapPlaceholder />;
+  }
+
+  return <div ref={containerRef} className="absolute inset-0 h-full w-full" />;
+}
+
+function MapPlaceholder() {
+  return (
+    <div className="absolute inset-0 flex items-center justify-center bg-bg-surface">
+      <div className="max-w-md rounded-lg border border-border bg-bg-panel p-6 text-center font-mono text-xs text-text-subtle">
+        <div className="mb-2 font-display text-base text-text">Mapbox token missing</div>
+        Set <code className="text-accent">NEXT_PUBLIC_MAPBOX_TOKEN</code> in <code>.env.local</code> and reload.
+      </div>
+    </div>
+  );
+}
