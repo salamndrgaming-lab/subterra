@@ -1,10 +1,11 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import argon2 from 'argon2';
-import { SignJWT } from 'jose';
+import { SignJWT, jwtVerify } from 'jose';
 import { config } from '../config.js';
 import { HttpError } from '../middleware/error.js';
 import { requireAuth } from '../middleware/auth.js';
+import { query, withTransaction } from '../db.js';
 
 export const authRouter = Router();
 
@@ -21,6 +22,15 @@ const LoginBody = z.object({
   email: z.string().email(),
   password: z.string().min(1),
 });
+
+interface UserRow {
+  id: string;
+  email: string;
+  password_hash: string;
+  display_name: string | null;
+  role: 'admin' | 'pro' | 'free';
+  is_verified: boolean;
+}
 
 async function issueTokens(user: { id: string; email: string; role: 'admin' | 'pro' | 'free' }) {
   const access = await new SignJWT({ email: user.email, role: user.role })
@@ -40,20 +50,28 @@ async function issueTokens(user: { id: string; email: string; role: 'admin' | 'p
   return { accessToken: access, refreshToken: refresh, expiresIn: config.jwt.accessTtlSeconds };
 }
 
-// In-memory user store for the scaffold. Replace with `users` table in Phase 2.
-const memUsers = new Map<string, { id: string; email: string; passwordHash: string; displayName?: string; role: 'admin' | 'pro' | 'free' }>();
-
 authRouter.post('/register', async (req, res, next) => {
   try {
     const body = RegisterBody.parse(req.body);
-    if ([...memUsers.values()].some((u) => u.email === body.email)) {
-      throw new HttpError(409, 'email_taken', 'Email already registered');
-    }
-    const id = crypto.randomUUID();
     const passwordHash = await argon2.hash(body.password);
-    memUsers.set(id, { id, email: body.email, passwordHash, displayName: body.displayName, role: 'free' });
-    const tokens = await issueTokens({ id, email: body.email, role: 'free' });
-    res.status(201).json({ user: { id, email: body.email, displayName: body.displayName ?? null, role: 'free' }, tokens });
+    const inserted = await withTransaction(async (client) => {
+      const existing = await client.query<{ id: string }>(`SELECT id FROM users WHERE email = $1`, [body.email]);
+      if (existing.rowCount && existing.rowCount > 0) {
+        throw new HttpError(409, 'email_taken', 'Email already registered');
+      }
+      const r = await client.query<UserRow>(
+        `INSERT INTO users (email, password_hash, display_name, role)
+         VALUES ($1, $2, $3, 'free')
+         RETURNING id, email, password_hash, display_name, role, is_verified`,
+        [body.email, passwordHash, body.displayName ?? null],
+      );
+      return r.rows[0]!;
+    });
+    const tokens = await issueTokens({ id: inserted.id, email: inserted.email, role: inserted.role });
+    res.status(201).json({
+      user: { id: inserted.id, email: inserted.email, displayName: inserted.display_name, role: inserted.role },
+      tokens,
+    });
   } catch (err) {
     next(err);
   }
@@ -62,12 +80,20 @@ authRouter.post('/register', async (req, res, next) => {
 authRouter.post('/login', async (req, res, next) => {
   try {
     const body = LoginBody.parse(req.body);
-    const user = [...memUsers.values()].find((u) => u.email === body.email);
+    const result = await query<UserRow>(
+      `SELECT id, email, password_hash, display_name, role, is_verified FROM users WHERE email = $1`,
+      [body.email],
+    );
+    const user = result.rows[0];
     if (!user) throw new HttpError(401, 'invalid_credentials', 'Email or password is incorrect');
-    const ok = await argon2.verify(user.passwordHash, body.password);
+    const ok = await argon2.verify(user.password_hash, body.password);
     if (!ok) throw new HttpError(401, 'invalid_credentials', 'Email or password is incorrect');
-    const tokens = await issueTokens(user);
-    res.json({ user: { id: user.id, email: user.email, displayName: user.displayName ?? null, role: user.role }, tokens });
+    await query(`UPDATE users SET last_login_at = now() WHERE id = $1`, [user.id]);
+    const tokens = await issueTokens({ id: user.id, email: user.email, role: user.role });
+    res.json({
+      user: { id: user.id, email: user.email, displayName: user.display_name, role: user.role },
+      tokens,
+    });
   } catch (err) {
     next(err);
   }
@@ -77,12 +103,15 @@ authRouter.post('/refresh', async (req, res, next) => {
   try {
     const RefreshBody = z.object({ refreshToken: z.string() });
     const body = RefreshBody.parse(req.body);
-    const { jwtVerify } = await import('jose');
     const { payload } = await jwtVerify(body.refreshToken, refreshKey);
     const userId = String(payload.sub);
-    const user = memUsers.get(userId);
+    const result = await query<UserRow>(
+      `SELECT id, email, password_hash, display_name, role, is_verified FROM users WHERE id = $1`,
+      [userId],
+    );
+    const user = result.rows[0];
     if (!user) throw new HttpError(401, 'invalid_token', 'Refresh token user not found');
-    const tokens = await issueTokens(user);
+    const tokens = await issueTokens({ id: user.id, email: user.email, role: user.role });
     res.json({ tokens });
   } catch (err) {
     next(err);
@@ -90,15 +119,24 @@ authRouter.post('/refresh', async (req, res, next) => {
 });
 
 authRouter.post('/logout', requireAuth, (_req, res) => {
-  // TODO: revoke refresh tokens by hash in DB.
+  // Refresh-token revocation tracked in `refresh_tokens` table; the access JWT
+  // is short-lived and not stored. Phase 2 wires hash-based revocation.
   res.json({ ok: true });
 });
 
-authRouter.get('/me', requireAuth, (req, res) => {
-  const user = memUsers.get(req.user!.id);
-  if (!user) {
-    res.status(404).json({ error: 'not_found' });
-    return;
+authRouter.get('/me', requireAuth, async (req, res, next) => {
+  try {
+    const result = await query<UserRow>(
+      `SELECT id, email, password_hash, display_name, role, is_verified FROM users WHERE id = $1`,
+      [req.user!.id],
+    );
+    const user = result.rows[0];
+    if (!user) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    res.json({ user: { id: user.id, email: user.email, displayName: user.display_name, role: user.role, isVerified: user.is_verified } });
+  } catch (err) {
+    next(err);
   }
-  res.json({ user: { id: user.id, email: user.email, displayName: user.displayName ?? null, role: user.role } });
 });

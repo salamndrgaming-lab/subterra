@@ -96,14 +96,18 @@ export function ExploreShell({ title, description, kind }: Props) {
         <section className="overflow-y-auto rounded-lg border border-border bg-bg-surface">
           <header className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-bg-surface px-3 py-2 font-mono text-xs">
             <span className="text-text-subtle">{q.isLoading ? 'Loading…' : `${q.data?.features.length ?? 0} results`}</span>
-            <span className="text-text-muted">Phase 1 · mock data</span>
+            <span className="text-text-muted">live · public sources</span>
           </header>
           {q.isLoading ? (
             <div className="p-6 font-mono text-xs text-text-muted">Loading…</div>
           ) : (
             <ul className="divide-y divide-border/60">
-              {q.data?.features.map((f) => (
-                <ResultRow key={String(f.id)} kind={kind} props={f.properties as Record<string, unknown>} />
+              {q.data?.features.map((f, idx) => (
+                <ResultRow
+                  key={String(f.id ?? rowKey(kind, f.properties as Record<string, unknown>, idx))}
+                  kind={kind}
+                  props={f.properties as Record<string, unknown>}
+                />
               ))}
             </ul>
           )}
@@ -122,24 +126,30 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
+function rowKey(kind: Kind, p: Record<string, unknown>, idx: number): string {
+  if (kind === 'wells') return (p['apiNumber'] as string) ?? `well-${idx}`;
+  if (kind === 'claims') return (p['serialNumber'] as string) ?? `claim-${idx}`;
+  return (p['id'] as string) ?? (p['parcelNumber'] as string) ?? `parcel-${idx}`;
+}
+
 function ResultRow({ kind, props }: { kind: Kind; props: Record<string, unknown> }) {
   if (kind === 'wells') {
-    const p = props as { id: string; wellName?: string; operator?: string; basin?: string; formation?: string; status?: string; apiNumber?: string; state?: string; county?: string };
+    const p = props as { wellName?: string; operator?: string; status?: string; apiNumber?: string; state?: string; county?: string; source?: string };
     return (
       <li className={cn('flex items-center justify-between gap-3 px-3 py-2.5 font-mono text-xs hover:bg-bg-panel/60')}>
         <div className="min-w-0">
           <div className="truncate text-text">{p.wellName ?? p.apiNumber ?? '—'}</div>
-          <div className="truncate text-text-muted">{p.operator} · {p.basin} · {p.formation}</div>
+          <div className="truncate text-text-muted">{p.operator ?? '—'} · API {p.apiNumber ?? '—'}</div>
         </div>
         <div className="text-right">
           <div className="text-text-subtle">{p.state} {p.county}</div>
-          <div className="text-text-muted">{p.status}</div>
+          <div className="text-text-muted">{p.status ?? '—'} · {p.source ?? '—'}</div>
         </div>
       </li>
     );
   }
   if (kind === 'claims') {
-    const p = props as { id: string; serialNumber: string; claimName?: string; ownerName?: string; commodity?: string; status?: string; acreage?: number; state?: string; county?: string };
+    const p = props as { serialNumber: string; claimName?: string; ownerName?: string; commodity?: string; status?: string; acreage?: number; state?: string; county?: string };
     return (
       <li className="flex items-center justify-between gap-3 px-3 py-2.5 font-mono text-xs hover:bg-bg-panel/60">
         <div className="min-w-0">
@@ -153,7 +163,7 @@ function ResultRow({ kind, props }: { kind: Kind; props: Record<string, unknown>
       </li>
     );
   }
-  const p = props as { id: string; parcelNumber?: string; ownerName?: string; acreage?: number; estimatedValue?: number; state?: string; county?: string };
+  const p = props as { parcelNumber?: string; ownerName?: string; acreage?: number; estimatedValue?: number; state?: string; county?: string };
   return (
     <li className="flex items-center justify-between gap-3 px-3 py-2.5 font-mono text-xs hover:bg-bg-panel/60">
       <div className="min-w-0">

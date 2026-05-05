@@ -2,7 +2,7 @@
 
 A map-first geospatial intelligence portal that aggregates fragmented public and commercial land, mineral, oil/gas, and mining datasets into one interface.
 
-> **Status:** Phase 1 — scaffold. Map dashboard renders BLM lands, PLSS grid, and mock wells. Data integrations and scoring engine are stubbed.
+> **Status:** Live. Real data only — every layer, detail page, search result, and opportunity score is sourced from BLM, USGS, and state oil/gas commission public endpoints. No mock or synthetic data anywhere in the codebase.
 
 ---
 
@@ -73,7 +73,7 @@ Open `http://localhost:3000/map`. The map page uses Mapbox GL JS and ships with:
 - **Base layers** — dark Mapbox style + USGS topo overlay
 - **Federal/BLM** surface management areas (BLM ArcGIS REST)
 - **PLSS grid** (BLM Cadastral)
-- **Mock wells** — clickable, opens right drawer with production chart
+- **Wells** — live ND/CO/WY state-commission FeatureServers; click opens right drawer with real production chart (when ingested)
 - **Layer toggles** in the left sidebar
 - **Bottom data panel** with the result table for currently visible features
 - **AOI bbox draw** tool for selection
@@ -118,12 +118,30 @@ npx tsx scripts/etl/score-parcels.ts
 
 ---
 
+## Data sourcing principles
+
+1. **Real data only, always and forever.** Every feature on the map and every value
+   on a detail page is fetched live from a public endpoint, queried out of
+   PostGIS after ETL from a public endpoint, or computed deterministically from
+   user-supplied inputs (e.g. the NPV calculator). The codebase contains no
+   mock, fixture, or synthetic data.
+2. **Source attribution surfaces in the API response.** Every layer/detail
+   endpoint includes a `meta.sources` (or `source`) field naming the upstream.
+3. **Gaps are surfaced, not hidden.** When an upstream source is unreachable
+   or hasn't been ingested yet, responses include `meta.unavailable` with the
+   list of missing sources. The frontend shows that gap to users — it never
+   substitutes synthetic data.
+
 ## Phases
 
-- **Phase 1 (current)** — scaffold: layout, schema, route stubs, mock map data
-- **Phase 2** — wire BLM MLRS, USGS MRDS, Texas RRC live data
-- **Phase 3** — staking toolkit, opportunity scoring engine, alerts
-- **Phase 4** — auth, saved projects, mobile, perf, docs
+- **Phase 1** — scaffold + live wiring of BLM SMA/PLSS rasters, BLM National
+  Mining Claims FeatureServer, USGS MRDS WFS, ND/CO/WY oil & gas wells.
+- **Phase 2** — county parcel ingest (Regrid + assessor extracts), state
+  production CSV refresh jobs, BLM ePlanning permits.
+- **Phase 3** — staking toolkit polish, alert delivery (email/SMS/webhook),
+  saved projects UI.
+- **Phase 4** — TX/NM/OK well coverage as agencies publish spatial endpoints,
+  mobile, perf, docs.
 
 ---
 

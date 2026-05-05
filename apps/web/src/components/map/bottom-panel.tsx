@@ -71,34 +71,43 @@ function WellsTable({
   });
 
   if (q.isLoading) return <Empty>Loading wells…</Empty>;
-  if (!q.data?.features.length) return <Empty>No wells match the current filters.</Empty>;
+  const meta = (q.data as unknown as { meta?: { unavailableStates?: string[]; sources?: string[] } })?.meta;
+  if (!q.data?.features.length) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center font-mono text-xs text-text-muted">
+        <span>No wells match the current filters.</span>
+        {meta?.unavailableStates?.length ? (
+          <span>States without a public spatial endpoint: {meta.unavailableStates.join(', ')}</span>
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <Table
-      headers={['Well', 'Operator', 'API #', 'Basin', 'Formation', 'Status', 'Spud', 'Lat. ft']}
-      rows={q.data.features.map((f) => {
+      headers={['Well', 'Operator', 'API #', 'State', 'County', 'Status', 'Spud', 'Total depth (ft)']}
+      rows={q.data.features.map((f, idx) => {
         const p = f.properties as {
-          id: string;
           wellName: string | null;
           operator: string | null;
           apiNumber: string | null;
-          basin: string | null;
-          formation: string | null;
+          state: string | null;
+          county: string | null;
           status: string | null;
           spudDate: string | null;
-          lateralLengthFt: number | null;
+          totalDepthFt: number | null;
         };
         return {
-          id: p.id,
+          id: p.apiNumber ?? `well-${idx}`,
           cells: [
             p.wellName ?? '—',
             p.operator ?? '—',
             p.apiNumber ?? '—',
-            p.basin ?? '—',
-            p.formation ?? '—',
+            p.state ?? '—',
+            p.county ?? '—',
             <StatusPill key="s" status={p.status} />,
             p.spudDate ?? '—',
-            p.lateralLengthFt ? p.lateralLengthFt.toLocaleString() : '—',
+            p.totalDepthFt ? p.totalDepthFt.toLocaleString() : '—',
           ],
         };
       })}
@@ -124,9 +133,8 @@ function ClaimsTable({
   return (
     <Table
       headers={['Serial', 'Claim', 'Owner', 'Commodity', 'Status', 'Acres', 'Located', 'Last assess.']}
-      rows={q.data.features.map((f) => {
+      rows={q.data.features.map((f, idx) => {
         const p = f.properties as {
-          id: string;
           serialNumber: string;
           claimName: string | null;
           ownerName: string | null;
@@ -137,7 +145,7 @@ function ClaimsTable({
           lastAssessmentYear: number | null;
         };
         return {
-          id: p.id,
+          id: p.serialNumber ?? `claim-${idx}`,
           cells: [
             p.serialNumber,
             p.claimName ?? '—',
@@ -171,10 +179,10 @@ function OccurrencesTable({
 
   return (
     <Table
-      headers={['Site', 'State', 'County', 'Commodity', 'Type', 'Status', 'Discovered', 'Last prod.']}
-      rows={q.data.features.map((f) => {
+      headers={['Site', 'MRDS', 'State', 'County', 'Commodity', 'Type', 'Status', 'Discovered']}
+      rows={q.data.features.map((f, idx) => {
         const p = f.properties as {
-          id: string;
+          mrdsId: string;
           siteName: string | null;
           state: string | null;
           county: string | null;
@@ -182,19 +190,18 @@ function OccurrencesTable({
           depositType: string | null;
           developmentStatus: string | null;
           discoveryYear: number | null;
-          lastProductionYear: number | null;
         };
         return {
-          id: p.id,
+          id: p.mrdsId ?? `mrds-${idx}`,
           cells: [
             p.siteName ?? '—',
+            p.mrdsId ?? '—',
             p.state ?? '—',
             p.county ?? '—',
             p.primaryCommodity ?? '—',
             p.depositType ?? '—',
             <StatusPill key="s" status={p.developmentStatus} />,
             p.discoveryYear ?? '—',
-            p.lastProductionYear ?? '—',
           ],
         };
       })}

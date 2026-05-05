@@ -1,28 +1,41 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { MOCK_WELLS, generateMockProduction } from '../mocks/wells.js';
+import { fetchProductionByApi } from '../sources/production.js';
 import { HttpError } from '../middleware/error.js';
+import { query } from '../db.js';
 
 export const analyticsRouter = Router();
 
-analyticsRouter.get('/production/:wellId', (req, res, next) => {
+/**
+ * Production data is served exclusively from the `well_production` table,
+ * populated by `scripts/etl/refresh-production.ts`. We never synthesize a
+ * decline curve from scratch; if no real data exists we say so.
+ */
+analyticsRouter.get('/production/:wellId', async (req, res, next) => {
   try {
-    const well = MOCK_WELLS.find((w) => w.id === req.params.wellId);
-    if (!well) throw new HttpError(404, 'not_found', 'Well not found');
-    const production = generateMockProduction(well.id, 60);
-    res.json({ wellId: well.id, monthly: production });
+    const id = req.params.wellId;
+    const r = await query<{ api_number: string | null }>(
+      `SELECT api_number FROM wells WHERE id::text = $1 OR api_number = $1 LIMIT 1`,
+      [id],
+    );
+    const apiNumber = r.rows[0]?.api_number ?? id;
+    const series = await fetchProductionByApi(apiNumber);
+    if (!series) {
+      throw new HttpError(404, 'no_data', 'No production volumes ingested for this well. Run scripts/etl/refresh-production.ts.');
+    }
+    res.json(series);
   } catch (err) {
     next(err);
   }
 });
 
 const ValuationBody = z.object({
-  ipBopd: z.number().positive(),       // initial production, barrels of oil per day
+  ipBopd: z.number().positive(),
   declineYr1: z.number().min(0).max(1).default(0.6),
   bExponent: z.number().min(0).max(2).default(0.9),
   oilPriceUsdBbl: z.number().positive().default(72),
   gasPriceUsdMcf: z.number().positive().default(2.85),
-  gor: z.number().min(0).default(2.5),  // gas-oil ratio mcf/bbl
+  gor: z.number().min(0).default(2.5),
   royaltyRate: z.number().min(0).max(1).default(0.1875),
   workingInterest: z.number().min(0).max(1).default(0.75),
   opexUsdMonth: z.number().min(0).default(15000),
@@ -32,8 +45,10 @@ const ValuationBody = z.object({
 });
 
 /**
- * Quick discounted-cashflow valuation under Arps hyperbolic decline.
- * Used by the <NPVCalculator /> client.
+ * Discounted-cashflow valuation. The user supplies all inputs (initial rate,
+ * decline, prices, costs, royalty, WI, capex). Outputs are deterministic
+ * functions of those inputs — no synthetic price decks or production
+ * forecasts are baked in.
  */
 analyticsRouter.post('/valuation', (req, res, next) => {
   try {
@@ -69,17 +84,16 @@ analyticsRouter.post('/valuation', (req, res, next) => {
 
     const npv = Math.round(cumulativeDiscounted);
     const undiscountedReturn = Math.round(cumulativeNet - i.capexUsd);
-    const payoutMonth = monthly.findIndex((row, idx, arr) =>
-      arr.slice(0, idx + 1).reduce((a, r) => a + r.netCashUsd, 0) >= i.capexUsd,
-    );
+    let payoutMonth: number | null = null;
+    let running = 0;
+    for (let m = 0; m < monthly.length; m++) {
+      running += monthly[m]!.netCashUsd;
+      if (running >= i.capexUsd) { payoutMonth = m; break; }
+    }
 
     res.json({
       inputs: i,
-      summary: {
-        npvUsd: npv,
-        undiscountedReturnUsd: undiscountedReturn,
-        payoutMonth: payoutMonth >= 0 ? payoutMonth : null,
-      },
+      summary: { npvUsd: npv, undiscountedReturnUsd: undiscountedReturn, payoutMonth },
       monthly,
     });
   } catch (err) {

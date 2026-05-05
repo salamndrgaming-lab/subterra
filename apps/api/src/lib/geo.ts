@@ -1,7 +1,7 @@
 /**
- * Lightweight geo helpers used across routes.
- * For real workloads we delegate to PostGIS via SQL, but the scaffold
- * filters mock arrays in JS.
+ * Lightweight geo helpers used across routes. Heavy spatial work is delegated
+ * to PostGIS via SQL; these are point-in-bbox / haversine helpers used when
+ * filtering FeatureCollections returned by upstream public ArcGIS endpoints.
  */
 import type { BBoxArray, GeoJSONFeature, GeoJSONFeatureCollection, GeoJSONPoint } from '@subterra/shared';
 

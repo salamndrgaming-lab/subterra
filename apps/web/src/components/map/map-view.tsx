@@ -202,7 +202,8 @@ export function MapView() {
         map.on('mouseleave', id, () => (map.getCanvas().style.cursor = ''));
       }
 
-      // click handlers
+      // click handlers — extract the natural identifier per layer (API number,
+      // BLM serial, MRDS dep_id) so detail routes can query upstream sources.
       map.on('click', (e) => {
         const features = map.queryRenderedFeatures(e.point, { layers: interactiveLayers });
         const feature = features[0];
@@ -210,11 +211,17 @@ export function MapView() {
           selectFeature(null);
           return;
         }
-        const id = String(feature.id ?? feature.properties?.id ?? '');
-        if (!id) return;
-        if (feature.layer.id.startsWith('wells')) selectFeature({ kind: 'well', id });
-        else if (feature.layer.id.startsWith('claims')) selectFeature({ kind: 'claim', id });
-        else if (feature.layer.id === 'mineral-occurrences') selectFeature({ kind: 'occurrence', id });
+        const props = feature.properties ?? {};
+        if (feature.layer.id.startsWith('wells')) {
+          const id = String(props['apiNumber'] ?? props['api_number'] ?? '');
+          if (id) selectFeature({ kind: 'well', id });
+        } else if (feature.layer.id.startsWith('claims')) {
+          const id = String(props['serialNumber'] ?? props['serial_number'] ?? '');
+          if (id) selectFeature({ kind: 'claim', id });
+        } else if (feature.layer.id === 'mineral-occurrences') {
+          const id = String(props['mrdsId'] ?? props['mrds_id'] ?? '');
+          if (id) selectFeature({ kind: 'occurrence', id });
+        }
       });
     });
 

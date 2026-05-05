@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { MOCK_WELLS } from '../mocks/wells.js';
-import { MOCK_MINING_CLAIMS, MOCK_MINERAL_OCCURRENCES } from '../mocks/claims.js';
-import { MOCK_PARCELS } from '../mocks/parcels.js';
-import { asFeatureCollection, parseBBox, pointInBBox } from '../lib/geo.js';
+import { fetchBlmClaims } from '../sources/blm-claims.js';
+import { fetchMrds } from '../sources/usgs-mrds.js';
+import { fetchWells } from '../sources/wells.js';
+import { parseBBox } from '../lib/geo.js';
+import { query } from '../db.js';
 
 export const layersRouter = Router();
 
@@ -16,66 +17,166 @@ const LayerQuery = z.object({
   limit: z.coerce.number().int().positive().max(5000).default(1000),
 });
 
-layersRouter.get('/wells', (req, res, next) => {
+layersRouter.get('/wells', async (req, res, next) => {
   try {
     const q = LayerQuery.parse(req.query);
-    const bbox = parseBBox(q.bbox);
-    let wells = MOCK_WELLS;
-    if (bbox) wells = wells.filter((w) => pointInBBox(w.geom, bbox));
-    if (q.state) wells = wells.filter((w) => w.state === q.state);
-    if (q.county) wells = wells.filter((w) => w.county?.toLowerCase() === q.county!.toLowerCase());
-    if (q.status) wells = wells.filter((w) => w.status === q.status);
-    res.json(asFeatureCollection(wells.slice(0, q.limit)));
+    const fc = await fetchWells({
+      bbox: parseBBox(q.bbox) ?? undefined,
+      state: q.state,
+      county: q.county,
+      status: q.status,
+      limit: q.limit,
+    });
+    res.json(fc);
   } catch (err) {
     next(err);
   }
 });
 
-layersRouter.get('/claims', (req, res, next) => {
+layersRouter.get('/claims', async (req, res, next) => {
   try {
     const q = LayerQuery.parse(req.query);
-    const bbox = parseBBox(q.bbox);
-    let claims = MOCK_MINING_CLAIMS;
-    if (bbox) claims = claims.filter((c) => pointInBBox(c.centroid, bbox));
-    if (q.state) claims = claims.filter((c) => c.state === q.state);
-    if (q.county) claims = claims.filter((c) => c.county?.toLowerCase() === q.county!.toLowerCase());
-    if (q.status) claims = claims.filter((c) => c.status === q.status);
-    if (q.commodity) claims = claims.filter((c) => c.commodity === q.commodity);
-    res.json(asFeatureCollection(claims.slice(0, q.limit)));
+    const fc = await fetchBlmClaims({
+      bbox: parseBBox(q.bbox) ?? undefined,
+      state: q.state,
+      status: q.status,
+      commodity: q.commodity,
+      limit: q.limit,
+    });
+    res.json(fc);
   } catch (err) {
     next(err);
   }
 });
 
-layersRouter.get('/parcels', (req, res, next) => {
+layersRouter.get('/mineral-occurrences', async (req, res, next) => {
   try {
     const q = LayerQuery.parse(req.query);
-    const bbox = parseBBox(q.bbox);
-    let parcels = MOCK_PARCELS;
-    if (bbox) parcels = parcels.filter((p) => pointInBBox(p.centroid, bbox));
-    if (q.state) parcels = parcels.filter((p) => p.state === q.state);
-    if (q.county) parcels = parcels.filter((p) => p.county.toLowerCase() === q.county!.toLowerCase());
-    res.json(asFeatureCollection(parcels.slice(0, q.limit)));
+    const fc = await fetchMrds({
+      bbox: parseBBox(q.bbox) ?? undefined,
+      state: q.state,
+      commodity: q.commodity,
+      limit: q.limit,
+    });
+    res.json(fc);
   } catch (err) {
     next(err);
   }
 });
 
-layersRouter.get('/mineral-occurrences', (req, res, next) => {
+/**
+ * Parcels live in PostGIS only. County assessor + Regrid extracts must be
+ * loaded via ETL before this endpoint returns features. We never synthesize
+ * parcel records.
+ */
+layersRouter.get('/parcels', async (req, res, next) => {
   try {
     const q = LayerQuery.parse(req.query);
     const bbox = parseBBox(q.bbox);
-    let mocs = MOCK_MINERAL_OCCURRENCES;
-    if (bbox) mocs = mocs.filter((m) => pointInBBox(m.geom, bbox));
-    if (q.state) mocs = mocs.filter((m) => m.state === q.state);
-    if (q.commodity) mocs = mocs.filter((m) => m.primaryCommodity === q.commodity);
-    res.json(asFeatureCollection(mocs.slice(0, q.limit)));
+    const params: unknown[] = [];
+    const where: string[] = [];
+
+    if (q.state) { params.push(q.state); where.push(`state = $${params.length}`); }
+    if (q.county) { params.push(q.county); where.push(`county ILIKE $${params.length}`); }
+    if (bbox) {
+      params.push(bbox[0], bbox[1], bbox[2], bbox[3]);
+      const i = params.length;
+      where.push(`geom && ST_MakeEnvelope($${i - 3}, $${i - 2}, $${i - 1}, $${i}, 4326)`);
+    }
+    params.push(q.limit);
+    const sql = `
+      SELECT id, parcel_number, owner_name, state, county, acreage,
+             estimated_value, land_use, surface_rights, mineral_rights,
+             ST_AsGeoJSON(geom)::jsonb AS geom,
+             ST_AsGeoJSON(centroid)::jsonb AS centroid
+        FROM parcels
+        ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+        LIMIT $${params.length}
+    `;
+    const rows = await query<{
+      id: string; parcel_number: string | null; owner_name: string | null;
+      state: string; county: string; acreage: string | null; estimated_value: string | null;
+      land_use: string | null; surface_rights: boolean | null; mineral_rights: boolean | null;
+      geom: unknown; centroid: unknown;
+    }>(sql, params);
+
+    res.json({
+      type: 'FeatureCollection',
+      features: rows.rows.map((r) => ({
+        type: 'Feature',
+        id: r.id,
+        geometry: r.geom,
+        properties: {
+          id: r.id,
+          parcelNumber: r.parcel_number,
+          ownerName: r.owner_name,
+          state: r.state,
+          county: r.county,
+          acreage: r.acreage == null ? null : Number(r.acreage),
+          estimatedValue: r.estimated_value == null ? null : Number(r.estimated_value),
+          landUse: r.land_use,
+          surfaceRights: r.surface_rights,
+          mineralRights: r.mineral_rights,
+          centroid: r.centroid,
+        },
+      })),
+      meta: { source: 'postgis', note: rows.rows.length === 0 ? 'No parcels ingested for the requested area. Run scripts/etl/ingest-parcels.ts.' : undefined },
+    });
   } catch (err) {
     next(err);
   }
 });
 
-layersRouter.get('/permits', (_req, res) => {
-  // Stubbed in Phase 1.
-  res.json({ type: 'FeatureCollection', features: [] });
+/**
+ * Permits are fed by `scripts/etl/ingest-permits.ts` (BLM ePlanning + state
+ * commissions). Returns whatever has been ingested; never synthesized.
+ */
+layersRouter.get('/permits', async (req, res, next) => {
+  try {
+    const q = LayerQuery.parse(req.query);
+    const bbox = parseBBox(q.bbox);
+    const params: unknown[] = [];
+    const where: string[] = [];
+    if (q.state) { params.push(q.state); where.push(`state = $${params.length}`); }
+    if (q.status) { params.push(q.status); where.push(`status = $${params.length}::permit_status`); }
+    if (bbox) {
+      params.push(bbox[0], bbox[1], bbox[2], bbox[3]);
+      const i = params.length;
+      where.push(`geom && ST_MakeEnvelope($${i - 3}, $${i - 2}, $${i - 1}, $${i}, 4326)`);
+    }
+    params.push(q.limit);
+    const rows = await query<{
+      id: string; permit_number: string | null; permit_type: string; agency: string | null;
+      operator: string | null; title: string | null; status: string | null;
+      decision_date: Date | null; geom: unknown;
+    }>(
+      `SELECT id, permit_number, permit_type, agency, operator, title, status,
+              decision_date, ST_AsGeoJSON(geom)::jsonb AS geom
+         FROM permits
+         ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+         LIMIT $${params.length}`,
+      params,
+    );
+
+    res.json({
+      type: 'FeatureCollection',
+      features: rows.rows.map((r) => ({
+        type: 'Feature',
+        id: r.id,
+        geometry: r.geom,
+        properties: {
+          id: r.id,
+          permitNumber: r.permit_number,
+          permitType: r.permit_type,
+          agency: r.agency,
+          operator: r.operator,
+          title: r.title,
+          status: r.status,
+          decisionDate: r.decision_date?.toISOString().slice(0, 10) ?? null,
+        },
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
 });

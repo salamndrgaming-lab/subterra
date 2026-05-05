@@ -94,7 +94,7 @@ function WellDetail({ id }: { id: string }) {
 
       <Section title={`Offset wells (${offsets.length})`}>
         {offsets.length === 0 ? (
-          <div className="font-mono text-xs text-text-muted">No same-formation offsets in mock dataset.</div>
+          <div className="font-mono text-xs text-text-muted">No same-formation offsets ingested yet for this basin.</div>
         ) : (
           <ul className="space-y-1.5">
             {offsets.map((o) => (
@@ -223,10 +223,18 @@ function ParcelDetail({ id }: { id: string }) {
 }
 
 function OccurrenceDetail({ id }: { id: string }) {
-  // Phase 1 stub — Phase 2 wires /api/occurrences/:id.
   return (
     <div className="p-4 font-mono text-xs text-text-subtle">
-      Mineral occurrence <span className="text-accent">{id}</span> · detail endpoint pending in Phase 2.
+      Mineral occurrence <span className="text-accent">{id}</span> · open the full record on{' '}
+      <a
+        href={`https://mrdata.usgs.gov/mrds/show-mrds.php?dep_id=${encodeURIComponent(id)}`}
+        target="_blank"
+        rel="noreferrer"
+        className="text-accent underline-offset-2 hover:underline"
+      >
+        USGS MRDS
+      </a>
+      .
     </div>
   );
 }

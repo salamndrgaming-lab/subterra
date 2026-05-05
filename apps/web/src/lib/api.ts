@@ -49,7 +49,9 @@ function qs(params: LayerQuery): string {
 export const api = {
   layers: {
     wells: (q: LayerQuery = {}) =>
-      request<GeoJSONFeatureCollection<Well>>(`/api/layers/wells${qs(q)}`),
+      request<GeoJSONFeatureCollection<Well> & { meta: { sources: string[]; unavailableStates: string[] } }>(
+        `/api/layers/wells${qs(q)}`,
+      ),
     claims: (q: LayerQuery = {}) =>
       request<GeoJSONFeatureCollection<MiningClaim>>(`/api/layers/claims${qs(q)}`),
     parcels: (q: LayerQuery = {}) =>

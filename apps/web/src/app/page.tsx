@@ -31,7 +31,7 @@ export default function HomePage() {
           <div className="mx-auto max-w-5xl">
             <div className="inline-flex items-center gap-2 rounded-full border border-border bg-bg-panel px-3 py-1 text-xs font-mono uppercase tracking-wider text-text-subtle">
               <span className="h-1.5 w-1.5 rounded-full bg-accent animate-pulse-glow" />
-              Phase 1 · Public scaffold live
+              Live · BLM · USGS · State commissions
             </div>
 
             <h1 className="mt-6 font-display text-5xl font-medium tracking-tight text-text md:text-7xl">
