@@ -4,14 +4,15 @@
  * the requested state and normalize attributes into the shared schema.
  *
  * Currently wired:
+ *   - Texas (RRC)         — https://gis2.rrc.texas.gov/arcgis/rest/services/...
  *   - North Dakota (NDIC) — https://ndgishub.nd.gov/arcgis/rest/services
  *   - Colorado (ECMC)     — https://services1.arcgis.com/.../Wells_Spatial/FeatureServer
- *   - Wyoming (WOGCC)     — https://services.arcgis.com/.../WOGCC_Wells/FeatureServer
+ *   - Wyoming (WOGCC)     — https://services.arcgis.com/.../Wyoming_Oil_and_Gas_Wells
  *
- * Texas RRC, New Mexico OCD, and Oklahoma OCC do not publish open
- * FeatureServer endpoints. Those states return an empty FeatureCollection
- * with a `meta.source = "unavailable"` flag so the UI can surface the gap
- * instead of silently rendering nothing.
+ * New Mexico OCD and Oklahoma OCC do not publish open FeatureServer
+ * endpoints with geometry. Requests for those states return an empty
+ * FeatureCollection with `meta.unavailableStates` populated so the UI
+ * surfaces the gap instead of silently rendering nothing.
  */
 
 import type { BBoxArray, GeoJSONFeatureCollection, GeoJSONPoint } from '@subterra/shared';
@@ -112,9 +113,32 @@ const WY: SourceConfig = {
   whereForStatus: (s) => `UPPER(STATUS) = '${s.toUpperCase()}'`,
 };
 
-const SOURCES: Record<string, SourceConfig> = { ND, CO, WY };
+const TX: SourceConfig = {
+  // Texas RRC publishes a public Wells map service through their GIS Viewer
+  // backend. Layer 0 is statewide well points.
+  url:
+    process.env.TX_WELLS_LAYER ??
+    'https://gis2.rrc.texas.gov/arcgis/rest/services/Wells/Wells/MapServer/0/query',
+  state: 'TX',
+  source: 'tx_rrc',
+  map: (r) => ({
+    apiNumber: (r['API'] as string) ?? (r['API_NO'] as string) ?? null,
+    wellName: (r['LeaseName'] as string) ?? (r['WellName'] as string) ?? null,
+    operator: (r['OperatorName'] as string) ?? (r['Operator'] as string) ?? null,
+    status: lower((r['WellStatus'] as string) ?? (r['Status'] as string) ?? null),
+    wellType: lower((r['WellType'] as string) ?? null),
+    state: 'TX',
+    county: (r['CountyName'] as string) ?? (r['County'] as string) ?? null,
+    spudDate: dateOrNull(r['SpudDate'] ?? r['Spud_Date']),
+    totalDepthFt: numberOrNull(r['TotalDepth'] ?? r['MeasuredDepth']),
+    source: 'tx_rrc',
+  }),
+  whereForStatus: (s) => `UPPER(WellStatus) = '${s.toUpperCase()}'`,
+};
 
-const STATES_WITHOUT_PUBLIC_FEATURE_SERVER = new Set(['TX', 'NM', 'OK']);
+const SOURCES: Record<string, SourceConfig> = { TX, ND, CO, WY };
+
+const STATES_WITHOUT_PUBLIC_FEATURE_SERVER = new Set(['NM', 'OK']);
 
 export async function fetchWells(q: WellsQuery): Promise<GeoJSONFeatureCollection<WellProps> & { meta: { sources: string[]; unavailableStates: string[] } }> {
   const targets = q.state ? [q.state.toUpperCase()] : Object.keys(SOURCES);

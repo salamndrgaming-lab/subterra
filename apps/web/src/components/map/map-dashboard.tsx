@@ -5,6 +5,7 @@ import { LayerSidebar } from './layer-sidebar';
 import { BottomPanel } from './bottom-panel';
 import { FeatureDrawer } from './feature-drawer';
 import { MapTopBar } from './map-top-bar';
+import { AoiToolbar } from './aoi-toolbar';
 import { useMapStore } from '@/stores/map-store';
 import { cn } from '@/lib/cn';
 
@@ -28,6 +29,7 @@ export function MapDashboard() {
         >
           <div className="relative h-full w-full">
             <MapView />
+            <AoiToolbar />
             <FeatureDrawer />
           </div>
           <BottomPanel />

@@ -10,9 +10,11 @@ export interface LayerDefinition {
 export const LAYER_DEFINITIONS: LayerDefinition[] = [
   // federal
   { id: 'blm-surface-mgmt', label: 'BLM Surface Management', group: 'federal', defaultVisible: true, minZoom: 5 },
-  { id: 'usfs', label: 'US Forest Service', group: 'federal', defaultVisible: false, minZoom: 5 },
+  { id: 'usfs-admin-forest', label: 'US Forest Service', group: 'federal', defaultVisible: false, minZoom: 4 },
+  { id: 'nps-boundaries', label: 'National Parks', group: 'federal', defaultVisible: false, minZoom: 4 },
+  { id: 'usfws-refuges', label: 'Wildlife Refuges', group: 'federal', defaultVisible: false, minZoom: 4 },
   { id: 'wilderness', label: 'Wilderness Areas', group: 'federal', defaultVisible: false, minZoom: 5 },
-  { id: 'tribal', label: 'Tribal Lands', group: 'federal', defaultVisible: false, minZoom: 5 },
+  { id: 'tribal-lands', label: 'BIA Indian Lands', group: 'federal', defaultVisible: false, minZoom: 4 },
 
   // cadastral
   { id: 'plss-grid', label: 'PLSS Township/Range/Section', group: 'cadastral', defaultVisible: true, minZoom: 8 },
@@ -23,7 +25,9 @@ export const LAYER_DEFINITIONS: LayerDefinition[] = [
   { id: 'wells-plugged', label: 'Wells — Plugged', group: 'oilgas', defaultVisible: false, minZoom: 8 },
   { id: 'wells-permitted', label: 'Wells — Permitted', group: 'oilgas', defaultVisible: false, minZoom: 8 },
   { id: 'lease-boundaries', label: 'Lease Boundaries', group: 'oilgas', defaultVisible: false, minZoom: 8 },
-  { id: 'pipelines', label: 'Pipelines', group: 'infrastructure', defaultVisible: false, minZoom: 6 },
+  { id: 'pipelines-natgas', label: 'Pipelines — Natural Gas', group: 'infrastructure', defaultVisible: false, minZoom: 5 },
+  { id: 'pipelines-petroleum', label: 'Pipelines — Petroleum Products', group: 'infrastructure', defaultVisible: false, minZoom: 5 },
+  { id: 'pipelines-crude', label: 'Pipelines — Crude Oil', group: 'infrastructure', defaultVisible: false, minZoom: 5 },
 
   // mining
   { id: 'claims-active', label: 'Mining Claims — Active', group: 'mining', defaultVisible: true, minZoom: 7 },

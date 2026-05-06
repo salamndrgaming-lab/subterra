@@ -45,6 +45,10 @@ interface MapStoreState {
   drawingAoi: boolean;
   setDrawingAoi: (b: boolean) => void;
 
+  /** Most recently drawn polygon in GeoJSON form (set by MapboxDraw events). */
+  drawnPolygon: { type: 'Polygon'; coordinates: number[][][] } | null;
+  setDrawnPolygon: (p: { type: 'Polygon'; coordinates: number[][][] } | null) => void;
+
   bottomPanelOpen: boolean;
   setBottomPanelOpen: (b: boolean) => void;
 
@@ -84,6 +88,9 @@ export const useMapStore = create<MapStoreState>((set) => ({
 
   drawingAoi: false,
   setDrawingAoi: (b) => set({ drawingAoi: b }),
+
+  drawnPolygon: null,
+  setDrawnPolygon: (p) => set({ drawnPolygon: p }),
 
   bottomPanelOpen: true,
   setBottomPanelOpen: (b) => set({ bottomPanelOpen: b }),

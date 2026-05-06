@@ -31,6 +31,19 @@ interface SourceConfig {
 
 const SOURCES: SourceConfig[] = [
   {
+    state: 'TX',
+    source: 'tx_rrc',
+    url: 'https://gis2.rrc.texas.gov/arcgis/rest/services/Wells/Wells/MapServer/0/query',
+    apiField: 'API',
+    nameField: 'LeaseName',
+    operatorField: 'OperatorName',
+    statusField: 'WellStatus',
+    typeField: 'WellType',
+    countyField: 'CountyName',
+    spudField: 'SpudDate',
+    totalDepthField: 'TotalDepth',
+  },
+  {
     state: 'ND',
     source: 'ndic',
     url: 'https://ndgishub.nd.gov/arcgis/rest/services/All_GIS_Data_OilGas/Oil_and_Gas_Well_Locations/MapServer/0/query',
@@ -72,8 +85,7 @@ const SOURCES: SourceConfig[] = [
 ];
 
 const STATES_WITHOUT_PUBLIC_FEATURE_SERVER: Record<string, string> = {
-  TX: 'Texas RRC publishes well data only through their PDQ system (login required) and a quarterly Wellbore Data Pull (pipe-delimited file). Adapt this ETL when a stable public spatial endpoint or signed S3 mirror becomes available.',
-  NM: 'New Mexico OCD publishes wells via OCD Online — non-spatial. No FeatureServer.',
+  NM: 'New Mexico OCD publishes wells via OCD Online — non-spatial. No public FeatureServer.',
   OK: 'Oklahoma OCC publishes WIMS data, no public FeatureServer with geometry.',
 };
 

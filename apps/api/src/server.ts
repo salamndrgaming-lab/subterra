@@ -17,6 +17,8 @@ import { analyticsRouter } from './routes/analytics.js';
 import { stakingRouter } from './routes/staking.js';
 import { alertsRouter } from './routes/alerts.js';
 import { projectsRouter } from './routes/projects.js';
+import { aoisRouter } from './routes/aois.js';
+import { sourcesRouter } from './routes/sources.js';
 
 const app = express();
 
@@ -49,6 +51,8 @@ app.use('/api/analytics', analyticsRouter);
 app.use('/api/staking', stakingRouter);
 app.use('/api/alerts', alertsRouter);
 app.use('/api/projects', projectsRouter);
+app.use('/api/aois', aoisRouter);
+app.use('/api/sources', sourcesRouter);
 
 app.use((req, res) => {
   res.status(404).json({ error: 'not_found', path: req.path });

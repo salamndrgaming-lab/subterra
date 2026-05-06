@@ -1,11 +1,18 @@
 'use client';
 
 import Link from 'next/link';
+import { useQuery } from '@tanstack/react-query';
 import { useMapStore } from '@/stores/map-store';
+import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 
 export function MapTopBar() {
-  const { sidebarOpen, setSidebarOpen, view } = useMapStore();
+  const { sidebarOpen, setSidebarOpen, view, drawingAoi, setDrawingAoi } = useMapStore();
+  const health = useQuery({
+    queryKey: ['sources-health'],
+    queryFn: () => api.sources.health(),
+    refetchInterval: 60_000,
+  });
 
   return (
     <header className="z-30 flex h-12 items-center justify-between gap-2 border-b border-border bg-bg-surface px-3">
@@ -29,6 +36,21 @@ export function MapTopBar() {
       </div>
 
       <div className="flex items-center gap-2">
+        <button
+          onClick={() => setDrawingAoi(!drawingAoi)}
+          className={cn(
+            'flex h-8 items-center gap-1.5 rounded-md border px-3 font-mono text-xs transition',
+            drawingAoi
+              ? 'border-accent bg-accent/15 text-accent'
+              : 'border-border bg-bg-panel text-text-subtle hover:text-text',
+          )}
+        >
+          <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden>
+            <path d="M2 9 L5.5 2 L9 9 Z" stroke="currentColor" strokeWidth="1.2" />
+          </svg>
+          {drawingAoi ? 'Drawing AOI' : 'Draw AOI'}
+        </button>
+        <SourcesIndicator data={health.data} />
         <Telemetry view={view} />
         <Link
           href="/settings"
@@ -60,6 +82,23 @@ function SearchInput() {
         <circle cx="6" cy="6" r="4.25" stroke="currentColor" strokeWidth="1.2" />
         <path d="M9.5 9.5L12 12" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
       </svg>
+    </div>
+  );
+}
+
+function SourcesIndicator({ data }: { data: { overall: 'ok' | 'degraded'; sources: Array<{ id: string; name: string; status: 'ok' | 'degraded' | 'down'; latencyMs: number | null }> } | undefined }) {
+  if (!data) return null;
+  const down = data.sources.filter((s) => s.status === 'down').length;
+  const degraded = data.sources.filter((s) => s.status === 'degraded').length;
+  const dotColor = down > 0 ? 'bg-danger' : degraded > 0 ? 'bg-accent' : 'bg-success';
+  const label = down > 0 ? `${down} down` : degraded > 0 ? `${degraded} slow` : 'all live';
+  return (
+    <div
+      className="hidden h-8 items-center gap-2 rounded-md border border-border bg-bg-panel px-3 font-mono text-[10px] text-text-subtle md:flex"
+      title={data.sources.map((s) => `${s.name}: ${s.status}${s.latencyMs ? ` (${s.latencyMs}ms)` : ''}`).join('\n')}
+    >
+      <span className={cn('h-1.5 w-1.5 rounded-full', dotColor)} />
+      <span>sources · {label}</span>
     </div>
   );
 }

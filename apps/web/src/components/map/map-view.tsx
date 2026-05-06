@@ -2,7 +2,9 @@
 
 import { useEffect, useRef } from 'react';
 import mapboxgl, { type Map as MapboxMap, type GeoJSONSource } from 'mapbox-gl';
+import MapboxDraw from '@mapbox/mapbox-gl-draw';
 import 'mapbox-gl/dist/mapbox-gl.css';
+import '@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css';
 import { useQuery } from '@tanstack/react-query';
 import { DATA_SOURCES } from '@subterra/shared';
 import { useMapStore } from '@/stores/map-store';
@@ -14,12 +16,21 @@ const MAPBOX_STYLE = process.env.NEXT_PUBLIC_MAPBOX_STYLE ?? DATA_SOURCES.mapbox
 export function MapView() {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapboxMap | null>(null);
+  const drawRef = useRef<MapboxDraw | null>(null);
 
   const view = useMapStore((s) => s.view);
   const setView = useMapStore((s) => s.setView);
   const layerVisibility = useMapStore((s) => s.layerVisibility);
   const filters = useMapStore((s) => s.filters);
   const selectFeature = useMapStore((s) => s.selectFeature);
+  const drawingAoi = useMapStore((s) => s.drawingAoi);
+  const setDrawnPolygon = useMapStore((s) => s.setDrawnPolygon);
+
+  const rasterCatalog = useQuery({
+    queryKey: ['rasters'],
+    queryFn: () => api.sources.rasters(),
+    staleTime: 24 * 60 * 60 * 1000,
+  });
 
   // Data
   const wellsQuery = useQuery({
@@ -230,14 +241,80 @@ export function MapView() {
       setView({ longitude: c.lng, latitude: c.lat, zoom: map.getZoom(), bearing: map.getBearing(), pitch: map.getPitch() });
     });
 
+    // MapboxDraw — installed lazily once the style is loaded.
+    map.once('load', () => {
+      const draw = new MapboxDraw({
+        displayControlsDefault: false,
+        controls: { polygon: true, trash: true },
+        defaultMode: 'simple_select',
+        styles: drawStyles,
+      });
+      map.addControl(draw, 'top-right');
+      drawRef.current = draw;
+
+      const emit = () => {
+        const fc = draw.getAll();
+        const polygon = fc.features.find((f) => f.geometry.type === 'Polygon');
+        if (polygon) {
+          setDrawnPolygon(polygon.geometry as { type: 'Polygon'; coordinates: number[][][] });
+        } else {
+          setDrawnPolygon(null);
+        }
+      };
+      map.on('draw.create', emit);
+      map.on('draw.update', emit);
+      map.on('draw.delete', emit);
+    });
+
     mapRef.current = map;
     return () => {
       map.remove();
       mapRef.current = null;
+      drawRef.current = null;
     };
     // we intentionally only run once on mount
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Toggle draw mode based on store state.
+  useEffect(() => {
+    const draw = drawRef.current;
+    if (!draw) return;
+    if (drawingAoi) draw.changeMode('draw_polygon');
+    else draw.changeMode('simple_select');
+  }, [drawingAoi]);
+
+  // Register dynamic raster overlays (federal lands + pipelines) once the
+  // catalog has loaded. Each entry is added as an ArcGIS export-image raster
+  // tile source so visibility can be toggled from the sidebar.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !rasterCatalog.data) return;
+    const install = () => {
+      const all = [...rasterCatalog.data!.federalLands, ...rasterCatalog.data!.pipelines];
+      for (const r of all) {
+        if (map.getSource(r.id)) continue;
+        map.addSource(r.id, {
+          type: 'raster',
+          tiles: [
+            `${r.mapServer}/export?bbox={bbox-epsg-3857}&bboxSR=3857&imageSR=3857&size=512,512&dpi=96&format=png32&transparent=true&f=image`,
+          ],
+          tileSize: 512,
+          attribution: r.attribution,
+        });
+        map.addLayer({
+          id: r.id,
+          type: 'raster',
+          source: r.id,
+          minzoom: r.minZoom,
+          paint: { 'raster-opacity': r.opacity },
+          layout: { visibility: 'none' },
+        });
+      }
+    };
+    if (map.isStyleLoaded()) install();
+    else map.once('load', install);
+  }, [rasterCatalog.data]);
 
   // sync layer visibility
   useEffect(() => {
@@ -289,3 +366,42 @@ function MapPlaceholder() {
     </div>
   );
 }
+
+/**
+ * Dark-theme overrides for MapboxDraw. Default styles use light/blue colors
+ * that wash out against our base-dark cartography.
+ */
+const drawStyles = [
+  {
+    id: 'gl-draw-polygon-fill-active',
+    type: 'fill',
+    filter: ['all', ['==', '$type', 'Polygon'], ['==', 'active', 'true']],
+    paint: { 'fill-color': '#f59e0b', 'fill-opacity': 0.15 },
+  },
+  {
+    id: 'gl-draw-polygon-stroke-active',
+    type: 'line',
+    filter: ['all', ['==', '$type', 'Polygon'], ['==', 'active', 'true']],
+    layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: { 'line-color': '#f59e0b', 'line-dasharray': [0.4, 2], 'line-width': 2 },
+  },
+  {
+    id: 'gl-draw-polygon-fill-inactive',
+    type: 'fill',
+    filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon']],
+    paint: { 'fill-color': '#f59e0b', 'fill-opacity': 0.1 },
+  },
+  {
+    id: 'gl-draw-polygon-stroke-inactive',
+    type: 'line',
+    filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon']],
+    layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: { 'line-color': '#f59e0b', 'line-width': 1.5 },
+  },
+  {
+    id: 'gl-draw-polygon-and-line-vertex',
+    type: 'circle',
+    filter: ['all', ['==', 'meta', 'vertex'], ['==', '$type', 'Point']],
+    paint: { 'circle-radius': 5, 'circle-color': '#0a0c10', 'circle-stroke-color': '#f59e0b', 'circle-stroke-width': 2 },
+  },
+];

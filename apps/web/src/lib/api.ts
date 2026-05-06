@@ -7,14 +7,17 @@ import type {
   Parcel,
   OpportunityScore,
 } from '@subterra/shared';
+import { useAuthStore } from '@/stores/auth-store';
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = typeof window !== 'undefined' ? useAuthStore.getState().tokens?.accessToken : null;
   const res = await fetch(`${BASE_URL}${path}`, {
     ...init,
     headers: {
       'content-type': 'application/json',
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
       ...(init?.headers ?? {}),
     },
   });
@@ -84,4 +87,59 @@ export const api = {
     request<OpportunityScore>(
       `/api/score?lat=${params.lat}&lng=${params.lng}&radius=${params.radiusKm}${params.commodity ? `&commodity=${params.commodity}` : ''}`,
     ),
+  aois: {
+    list: (projectId?: string) =>
+      request<{ aois: SavedAoi[] }>(`/api/aois${projectId ? `?projectId=${projectId}` : ''}`),
+    create: (body: { name: string; notes?: string | null; projectId?: string | null; geometry: { type: 'Polygon'; coordinates: number[][][] } }) =>
+      request<{ aoi: SavedAoi }>(`/api/aois`, { method: 'POST', body: JSON.stringify(body) }),
+    remove: (id: string) => request<void>(`/api/aois/${id}`, { method: 'DELETE' }),
+  },
+  sources: {
+    health: () =>
+      request<{ overall: 'ok' | 'degraded'; checkedAt: string; sources: SourceHealth[] }>(`/api/sources/health`),
+    rasters: () =>
+      request<{
+        federalLands: RasterSource[];
+        pipelines: RasterSource[];
+        base: Record<string, { mapServer: string; attribution: string }>;
+      }>(`/api/sources/rasters`),
+  },
+  staking: {
+    checkConflict: (geometry: { type: 'Polygon'; coordinates: number[][][] }) =>
+      request<{ acreage: number; conflictCount: number; conflicts: Array<{ serialNumber: string; claimName: string | null; owner: string | null; commodity: string | null; acreage: number | null }>; source: string }>(
+        `/api/staking/check-conflict`, { method: 'POST', body: JSON.stringify({ geometry }) },
+      ),
+  },
 };
+
+export interface SavedAoi {
+  id: string;
+  userId: string;
+  projectId: string | null;
+  name: string;
+  notes: string | null;
+  areaAcres: number | null;
+  geom: { type: 'MultiPolygon'; coordinates: number[][][][] };
+  centroid: { type: 'Point'; coordinates: [number, number] };
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SourceHealth {
+  id: string;
+  name: string;
+  url: string;
+  status: 'ok' | 'degraded' | 'down';
+  httpStatus: number | null;
+  latencyMs: number | null;
+  error: string | null;
+}
+
+export interface RasterSource {
+  id: string;
+  label: string;
+  mapServer: string;
+  opacity: number;
+  minZoom: number;
+  attribution: string;
+}
