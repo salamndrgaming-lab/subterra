@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useMapStore } from '@/stores/map-store';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
+import { AuthStatus } from '../auth/auth-status';
 
 export function MapTopBar() {
   const { sidebarOpen, setSidebarOpen, view, drawingAoi, setDrawingAoi } = useMapStore();
@@ -52,6 +53,7 @@ export function MapTopBar() {
         </button>
         <SourcesIndicator data={health.data} />
         <Telemetry view={view} />
+        <AuthStatus />
         <Link
           href="/settings"
           className="flex h-8 items-center rounded-md border border-border bg-bg-panel px-3 font-mono text-xs text-text-subtle hover:text-text"

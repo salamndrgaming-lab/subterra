@@ -19,6 +19,27 @@ export interface RasterSource {
   attribution: string;
 }
 
+export const LEASE_RASTERS: RasterSource[] = [
+  {
+    id: 'blm-fed-oil-gas-leases',
+    label: 'BLM Federal Oil & Gas Leases',
+    mapServer:
+      'https://gis.blm.gov/arcgis/rest/services/energy/BLM_Natl_Oil_Gas_Lease/MapServer',
+    opacity: 0.45,
+    minZoom: 6,
+    attribution: 'BLM Energy',
+  },
+  {
+    id: 'blm-mining-claims-raster',
+    label: 'BLM Mining Claims (raster)',
+    mapServer:
+      'https://gis.blm.gov/arcgis/rest/services/mining/BLM_Natl_Mining_Claims/MapServer',
+    opacity: 0.45,
+    minZoom: 6,
+    attribution: 'BLM',
+  },
+];
+
 export const FEDERAL_LAND_RASTERS: RasterSource[] = [
   {
     id: 'usfs-admin-forest',

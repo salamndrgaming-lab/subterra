@@ -55,6 +55,10 @@ export const api = {
       request<GeoJSONFeatureCollection<Well> & { meta: { sources: string[]; unavailableStates: string[] } }>(
         `/api/layers/wells${qs(q)}`,
       ),
+    wellLaterals: (q: LayerQuery = {}) =>
+      request<GeoJSONFeatureCollection<{ apiNumber: string | null; wellName: string | null; operator: string | null; state: string; source: string }> & { meta: { sources: string[]; unavailableStates: string[] } }>(
+        `/api/layers/well-laterals${qs(q)}`,
+      ),
     claims: (q: LayerQuery = {}) =>
       request<GeoJSONFeatureCollection<MiningClaim>>(`/api/layers/claims${qs(q)}`),
     parcels: (q: LayerQuery = {}) =>
@@ -100,6 +104,7 @@ export const api = {
     rasters: () =>
       request<{
         federalLands: RasterSource[];
+        leases: RasterSource[];
         pipelines: RasterSource[];
         base: Record<string, { mapServer: string; attribution: string }>;
       }>(`/api/sources/rasters`),
@@ -110,7 +115,21 @@ export const api = {
         `/api/staking/check-conflict`, { method: 'POST', body: JSON.stringify({ geometry }) },
       ),
   },
+  auth: {
+    register: (body: { email: string; password: string; displayName?: string }) =>
+      request<AuthResponse>(`/api/auth/register`, { method: 'POST', body: JSON.stringify(body) }),
+    login: (body: { email: string; password: string }) =>
+      request<AuthResponse>(`/api/auth/login`, { method: 'POST', body: JSON.stringify(body) }),
+    logout: () => request<{ ok: true }>(`/api/auth/logout`, { method: 'POST' }),
+    me: () =>
+      request<{ user: { id: string; email: string; displayName: string | null; role: 'admin' | 'pro' | 'free'; isVerified: boolean } }>(`/api/auth/me`),
+  },
 };
+
+export interface AuthResponse {
+  user: { id: string; email: string; displayName: string | null; role: 'admin' | 'pro' | 'free' };
+  tokens: { accessToken: string; refreshToken: string; expiresIn: number };
+}
 
 export interface SavedAoi {
   id: string;

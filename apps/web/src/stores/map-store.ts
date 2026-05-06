@@ -49,6 +49,12 @@ interface MapStoreState {
   drawnPolygon: { type: 'Polygon'; coordinates: number[][][] } | null;
   setDrawnPolygon: (p: { type: 'Polygon'; coordinates: number[][][] } | null) => void;
 
+  /** Live Mapbox instance; set by MapView once the map mounts. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  mapInstance: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  setMapInstance: (m: any) => void;
+
   bottomPanelOpen: boolean;
   setBottomPanelOpen: (b: boolean) => void;
 
@@ -91,6 +97,9 @@ export const useMapStore = create<MapStoreState>((set) => ({
 
   drawnPolygon: null,
   setDrawnPolygon: (p) => set({ drawnPolygon: p }),
+
+  mapInstance: null,
+  setMapInstance: (m) => set({ mapInstance: m }),
 
   bottomPanelOpen: true,
   setBottomPanelOpen: (b) => set({ bottomPanelOpen: b }),

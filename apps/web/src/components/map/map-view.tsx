@@ -25,6 +25,7 @@ export function MapView() {
   const selectFeature = useMapStore((s) => s.selectFeature);
   const drawingAoi = useMapStore((s) => s.drawingAoi);
   const setDrawnPolygon = useMapStore((s) => s.setDrawnPolygon);
+  const setMapInstance = useMapStore((s) => s.setMapInstance);
 
   const rasterCatalog = useQuery({
     queryKey: ['rasters'],
@@ -44,6 +45,11 @@ export function MapView() {
   const occQuery = useQuery({
     queryKey: ['layers', 'mineral-occurrences', filters],
     queryFn: () => api.layers.mineralOccurrences({ state: filters.state, commodity: filters.commodity }),
+  });
+  const lateralsQuery = useQuery({
+    queryKey: ['layers', 'well-laterals', filters],
+    queryFn: () => api.layers.wellLaterals({ state: filters.state, limit: 800 }),
+    enabled: !!layerVisibility['well-laterals'],
   });
 
   // Init map
@@ -126,6 +132,20 @@ export function MapView() {
       map.addSource('wells', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
       map.addSource('claims', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
       map.addSource('mineral-occurrences', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      map.addSource('well-laterals', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+
+      map.addLayer({
+        id: 'well-laterals',
+        type: 'line',
+        source: 'well-laterals',
+        minzoom: 9,
+        paint: {
+          'line-color': '#10b981',
+          'line-width': ['interpolate', ['linear'], ['zoom'], 9, 0.6, 13, 1.6],
+          'line-opacity': 0.85,
+        },
+        layout: { visibility: 'none' },
+      });
 
       // wells — split into active/plugged/permitted by data-driven styling
       map.addLayer({
@@ -267,7 +287,9 @@ export function MapView() {
     });
 
     mapRef.current = map;
+    setMapInstance(map);
     return () => {
+      setMapInstance(null);
       map.remove();
       mapRef.current = null;
       drawRef.current = null;
@@ -291,7 +313,11 @@ export function MapView() {
     const map = mapRef.current;
     if (!map || !rasterCatalog.data) return;
     const install = () => {
-      const all = [...rasterCatalog.data!.federalLands, ...rasterCatalog.data!.pipelines];
+      const all = [
+        ...rasterCatalog.data!.federalLands,
+        ...rasterCatalog.data!.leases,
+        ...rasterCatalog.data!.pipelines,
+      ];
       for (const r of all) {
         if (map.getSource(r.id)) continue;
         map.addSource(r.id, {
@@ -344,10 +370,12 @@ export function MapView() {
       if (claimsSrc && claimsQuery.data) claimsSrc.setData(claimsQuery.data as GeoJSON.FeatureCollection);
       const occSrc = map.getSource('mineral-occurrences') as GeoJSONSource | undefined;
       if (occSrc && occQuery.data) occSrc.setData(occQuery.data as GeoJSON.FeatureCollection);
+      const latSrc = map.getSource('well-laterals') as GeoJSONSource | undefined;
+      if (latSrc && lateralsQuery.data) latSrc.setData(lateralsQuery.data as GeoJSON.FeatureCollection);
     };
     if (map.isStyleLoaded()) update();
     else map.once('load', update);
-  }, [wellsQuery.data, claimsQuery.data, occQuery.data]);
+  }, [wellsQuery.data, claimsQuery.data, occQuery.data, lateralsQuery.data]);
 
   if (!MAPBOX_TOKEN) {
     return <MapPlaceholder />;

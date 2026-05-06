@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { fetchBlmClaims } from '../sources/blm-claims.js';
 import { fetchMrds } from '../sources/usgs-mrds.js';
 import { fetchWells } from '../sources/wells.js';
+import { fetchWellLaterals } from '../sources/well-laterals.js';
 import { parseBBox } from '../lib/geo.js';
 import { query } from '../db.js';
 
@@ -25,6 +26,20 @@ layersRouter.get('/wells', async (req, res, next) => {
       state: q.state,
       county: q.county,
       status: q.status,
+      limit: q.limit,
+    });
+    res.json(fc);
+  } catch (err) {
+    next(err);
+  }
+});
+
+layersRouter.get('/well-laterals', async (req, res, next) => {
+  try {
+    const q = LayerQuery.parse(req.query);
+    const fc = await fetchWellLaterals({
+      bbox: parseBBox(q.bbox) ?? undefined,
+      state: q.state,
       limit: q.limit,
     });
     res.json(fc);

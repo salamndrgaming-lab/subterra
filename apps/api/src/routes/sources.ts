@@ -6,13 +6,14 @@
  */
 import { Router } from 'express';
 import { DATA_SOURCES } from '@subterra/shared';
-import { FEDERAL_LAND_RASTERS, PIPELINE_RASTERS } from '../sources/federal-lands.js';
+import { FEDERAL_LAND_RASTERS, LEASE_RASTERS, PIPELINE_RASTERS } from '../sources/federal-lands.js';
 
 export const sourcesRouter = Router();
 
 sourcesRouter.get('/rasters', (_req, res) => {
   res.json({
     federalLands: FEDERAL_LAND_RASTERS,
+    leases: LEASE_RASTERS,
     pipelines: PIPELINE_RASTERS,
     base: {
       blmSurfaceMgmt: { mapServer: DATA_SOURCES.blm.surfaceManagement, attribution: 'BLM' },

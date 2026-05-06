@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { AuthStatus } from './auth/auth-status';
 
 export function TopNav() {
   return (
@@ -19,17 +20,12 @@ export function TopNav() {
         </div>
 
         <div className="flex items-center gap-2">
+          <AuthStatus />
           <Link
             href="/settings"
             className="rounded-md px-3 py-1.5 font-mono text-xs text-text-subtle transition hover:text-text"
           >
             Settings
-          </Link>
-          <Link
-            href="/map"
-            className="rounded-md bg-accent px-3 py-1.5 font-mono text-xs text-bg transition hover:brightness-110"
-          >
-            Launch
           </Link>
         </div>
       </nav>
