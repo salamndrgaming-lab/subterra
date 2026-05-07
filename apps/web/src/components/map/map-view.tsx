@@ -1,21 +1,27 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import mapboxgl, { type Map as MapboxMap, type GeoJSONSource } from 'mapbox-gl';
-import MapboxDraw from '@mapbox/mapbox-gl-draw';
-import 'mapbox-gl/dist/mapbox-gl.css';
+import maplibregl, { type Map as MapLibreMap, type GeoJSONSource } from 'maplibre-gl';
+import 'maplibre-gl/dist/maplibre-gl.css';
 import '@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css';
 import { useQuery } from '@tanstack/react-query';
 import { DATA_SOURCES } from '@subterra/shared';
 import { useMapStore } from '@/stores/map-store';
 import { api } from '@/lib/api';
 
-const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? '';
-const MAPBOX_STYLE = process.env.NEXT_PUBLIC_MAPBOX_STYLE ?? DATA_SOURCES.mapbox.darkStyle;
+// mapbox-gl-draw expects a global `mapboxgl`; satisfy with maplibre-gl so
+// we can reuse the polished Mapbox draw control without paying for Mapbox.
+if (typeof window !== 'undefined' && !(window as unknown as { mapboxgl?: unknown }).mapboxgl) {
+  (window as unknown as { mapboxgl: unknown }).mapboxgl = maplibregl;
+}
+// eslint-disable-next-line import/order
+import MapboxDraw from '@mapbox/mapbox-gl-draw';
+
+const MAP_STYLE = process.env.NEXT_PUBLIC_MAP_STYLE_URL ?? DATA_SOURCES.basemap.darkStyle;
 
 export function MapView() {
   const containerRef = useRef<HTMLDivElement>(null);
-  const mapRef = useRef<MapboxMap | null>(null);
+  const mapRef = useRef<MapLibreMap | null>(null);
   const drawRef = useRef<MapboxDraw | null>(null);
 
   const view = useMapStore((s) => s.view);
@@ -56,17 +62,9 @@ export function MapView() {
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
 
-    if (!MAPBOX_TOKEN) {
-      // Render a placeholder if no token; the rest of the dashboard still works.
-      console.warn('[map] NEXT_PUBLIC_MAPBOX_TOKEN not set — map will not render.');
-      return;
-    }
-
-    mapboxgl.accessToken = MAPBOX_TOKEN;
-
-    const map = new mapboxgl.Map({
+    const map = new maplibregl.Map({
       container: containerRef.current,
-      style: MAPBOX_STYLE,
+      style: MAP_STYLE,
       center: [view.longitude, view.latitude],
       zoom: view.zoom,
       bearing: view.bearing,
@@ -74,9 +72,16 @@ export function MapView() {
       attributionControl: false,
     });
 
-    map.addControl(new mapboxgl.NavigationControl({ visualizePitch: true }), 'top-right');
-    map.addControl(new mapboxgl.ScaleControl({ unit: 'imperial' }), 'bottom-left');
-    map.addControl(new mapboxgl.AttributionControl({ compact: true }), 'bottom-right');
+    map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
+    map.addControl(new maplibregl.ScaleControl({ unit: 'imperial' }), 'bottom-left');
+    map.addControl(
+      new maplibregl.AttributionControl({
+        compact: true,
+        customAttribution:
+          '<a href="https://openfreemap.org" target="_blank" rel="noreferrer">OpenFreeMap</a> · <a href="https://openmaptiles.org" target="_blank" rel="noreferrer">OpenMapTiles</a> · © OpenStreetMap',
+      }),
+      'bottom-right',
+    );
 
     map.on('load', () => {
       // BLM SMA — surface management areas via ArcGIS REST tile export
@@ -377,22 +382,7 @@ export function MapView() {
     else map.once('load', update);
   }, [wellsQuery.data, claimsQuery.data, occQuery.data, lateralsQuery.data]);
 
-  if (!MAPBOX_TOKEN) {
-    return <MapPlaceholder />;
-  }
-
   return <div ref={containerRef} className="absolute inset-0 h-full w-full" />;
-}
-
-function MapPlaceholder() {
-  return (
-    <div className="absolute inset-0 flex items-center justify-center bg-bg-surface">
-      <div className="max-w-md rounded-lg border border-border bg-bg-panel p-6 text-center font-mono text-xs text-text-subtle">
-        <div className="mb-2 font-display text-base text-text">Mapbox token missing</div>
-        Set <code className="text-accent">NEXT_PUBLIC_MAPBOX_TOKEN</code> in <code>.env.local</code> and reload.
-      </div>
-    </div>
-  );
 }
 
 /**

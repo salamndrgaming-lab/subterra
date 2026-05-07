@@ -49,7 +49,7 @@ export function SettingsShell() {
         </Group>
 
         <Group title="Map preferences">
-          <Row label="Default style" value="Mapbox dark v11" />
+          <Row label="Default style" value="OpenFreeMap dark (MapLibre)" />
           <Row label="Units" value="imperial (ft, mi, ac)" />
         </Group>
 

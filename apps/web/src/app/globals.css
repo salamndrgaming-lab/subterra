@@ -20,7 +20,11 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Mapbox attribution + scale styling overrides */
+/* MapLibre / Mapbox attribution + control overrides. We keep both class
+   prefixes so ports of upstream Mapbox plugins (mapbox-gl-draw) keep their
+   styling alongside MapLibre's native chrome. */
+.maplibregl-ctrl-attrib,
+.maplibregl-ctrl-attrib a,
 .mapboxgl-ctrl-attrib,
 .mapboxgl-ctrl-attrib a {
   background-color: rgba(10, 12, 16, 0.7) !important;
@@ -28,24 +32,29 @@ body {
   font-size: 10px !important;
 }
 
+.maplibregl-ctrl-group,
 .mapboxgl-ctrl-group {
   background-color: #161a22 !important;
   border: 1px solid #1e2430 !important;
 }
 
+.maplibregl-ctrl-group button,
 .mapboxgl-ctrl-group button {
   background-color: transparent !important;
   border-color: #1e2430 !important;
 }
 
+.maplibregl-ctrl-group button:hover,
 .mapboxgl-ctrl-group button:hover {
   background-color: #1c2230 !important;
 }
 
+.maplibregl-ctrl-group button .maplibregl-ctrl-icon,
 .mapboxgl-ctrl-group button .mapboxgl-ctrl-icon {
   filter: invert(1) brightness(0.8);
 }
 
+.maplibregl-popup-content,
 .mapboxgl-popup-content {
   background-color: #161a22 !important;
   color: #e2e8f0 !important;
@@ -55,6 +64,7 @@ body {
   font-size: 12px !important;
 }
 
+.maplibregl-popup-tip,
 .mapboxgl-popup-tip {
   border-top-color: #161a22 !important;
 }

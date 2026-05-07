@@ -24,9 +24,10 @@ subterra/
 
 **Stack**
 
-- **Frontend:** Next.js 14, TypeScript, TailwindCSS, Mapbox GL JS, React Query, Zustand, Recharts
+- **Frontend:** Next.js 14, TypeScript, TailwindCSS, MapLibre GL JS (no token, no caps), React Query, Zustand, Recharts
 - **Backend:** Node.js + Express, Prisma, PostgreSQL + PostGIS, Redis
 - **Infra:** Vercel (web), Railway/Render (api + db), R2/S3 (assets)
+- **Basemap:** OpenFreeMap dark vector tiles by default — free, no API key, no usage caps. Drop in any MapLibre style URL via `NEXT_PUBLIC_MAP_STYLE_URL` (Protomaps for fully self-hosted, Esri Dark Gray, etc.).
 
 ---
 
@@ -37,14 +38,19 @@ subterra/
 - Node.js 20+
 - PostgreSQL 15+ with PostGIS 3+
 - Redis 7+
-- A Mapbox public access token
+
+No Mapbox account, no Mapbox token, no usage caps. The map renders MapLibre GL
+JS against OpenFreeMap's free vector tile servers by default. To go fully
+self-hosted, point `NEXT_PUBLIC_MAP_STYLE_URL` at your own Protomaps PMTiles
+service or any MapLibre-compatible style.
 
 ### 2. Install
 
 ```bash
 npm install
 cp .env.example .env
-# Fill in DATABASE_URL, REDIS_URL, NEXT_PUBLIC_MAPBOX_TOKEN
+cp apps/web/.env.example apps/web/.env.local
+# Fill in DATABASE_URL and REDIS_URL. The default basemap works as-is.
 ```
 
 ### 3. Database
@@ -68,9 +74,9 @@ npm run dev
 
 ## Map dashboard
 
-Open `http://localhost:3000/map`. The map page uses Mapbox GL JS and ships with:
+Open `http://localhost:3000/map`. The map page uses MapLibre GL JS and ships with:
 
-- **Base layers** — dark Mapbox style + USGS topo overlay
+- **Base layers** — OpenFreeMap dark vector tiles + USGS topo overlay
 - **Federal/BLM** surface management areas (BLM ArcGIS REST)
 - **PLSS grid** (BLM Cadastral)
 - **Wells** — live ND/CO/WY state-commission FeatureServers; click opens right drawer with real production chart (when ingested)

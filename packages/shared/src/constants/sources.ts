@@ -26,8 +26,21 @@ export const DATA_SOURCES = {
     ok_occ: 'https://oklahoma.gov/occ/divisions/oil-gas.html',
     wy_wogcc: 'https://wogcc.wyo.gov/',
   },
-  mapbox: {
-    darkStyle: 'mapbox://styles/mapbox/dark-v11',
-    satelliteStyle: 'mapbox://styles/mapbox/satellite-streets-v12',
+  /**
+   * Free, no-key vector + raster basemap styles. All require zero auth and
+   * have no usage caps for normal app traffic. Self-hosting via Protomaps
+   * is the fully-offline option; OpenFreeMap is the easiest hosted choice.
+   */
+  basemap: {
+    /** OpenFreeMap dark — free hosted MapLibre vector tiles, no key. */
+    darkStyle: 'https://tiles.openfreemap.org/styles/dark',
+    /** OpenFreeMap "liberty" street style. */
+    streetsStyle: 'https://tiles.openfreemap.org/styles/liberty',
+    /** USGS imagery raster (XYZ). */
+    usgsImagery:
+      'https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}',
+    /** Esri World Dark Gray Canvas (free, no key). */
+    esriDarkGray:
+      'https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
   },
 } as const;

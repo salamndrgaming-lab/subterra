@@ -3,7 +3,7 @@
 import { useEffect } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
-import mapboxgl, { type Map as MapboxMap, type GeoJSONSource } from 'mapbox-gl';
+import type { Map as MapLibreMap, GeoJSONSource, LngLatBoundsLike } from 'maplibre-gl';
 import { api, type SavedAoi } from '@/lib/api';
 
 /**
@@ -11,7 +11,7 @@ import { api, type SavedAoi } from '@/lib/api';
  * outline on the map, and fly to its bounding box. The component renders
  * nothing — it is a side-effect anchor.
  */
-export function AoiDeeplink({ map }: { map: MapboxMap | null }) {
+export function AoiDeeplink({ map }: { map: MapLibreMap | null }) {
   const params = useSearchParams();
   const aoiId = params.get('aoi');
 
@@ -32,7 +32,7 @@ export function AoiDeeplink({ map }: { map: MapboxMap | null }) {
   return null;
 }
 
-function renderAoi(map: MapboxMap, aoi: SavedAoi) {
+function renderAoi(map: MapLibreMap, aoi: SavedAoi) {
   const sourceId = 'saved-aoi';
   const fillId = 'saved-aoi-fill';
   const lineId = 'saved-aoi-line';
@@ -67,7 +67,7 @@ function renderAoi(map: MapboxMap, aoi: SavedAoi) {
   }
 }
 
-function computeBounds(coords: number[][][][]): mapboxgl.LngLatBoundsLike | null {
+function computeBounds(coords: number[][][][]): LngLatBoundsLike | null {
   let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
   for (const polygon of coords) {
     for (const ring of polygon) {
