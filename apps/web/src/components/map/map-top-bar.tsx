@@ -6,6 +6,7 @@ import { useMapStore } from '@/stores/map-store';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { AuthStatus } from '../auth/auth-status';
+import { SearchBox } from './search-box';
 
 export function MapTopBar() {
   const { sidebarOpen, setSidebarOpen, view, drawingAoi, setDrawingAoi } = useMapStore();
@@ -33,7 +34,7 @@ export function MapTopBar() {
       </div>
 
       <div className="hidden flex-1 items-center justify-center md:flex">
-        <SearchInput />
+        <SearchBox />
       </div>
 
       <div className="flex items-center gap-2">
@@ -62,29 +63,6 @@ export function MapTopBar() {
         </Link>
       </div>
     </header>
-  );
-}
-
-function SearchInput() {
-  return (
-    <div className="relative w-full max-w-xl">
-      <input
-        type="search"
-        placeholder="Search wells, claims, owners, APN, township..."
-        className="h-8 w-full rounded-md border border-border bg-bg-panel pl-9 pr-3 font-mono text-xs text-text placeholder:text-text-muted focus:border-accent focus:outline-none"
-      />
-      <svg
-        aria-hidden
-        className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted"
-        width="14"
-        height="14"
-        viewBox="0 0 14 14"
-        fill="none"
-      >
-        <circle cx="6" cy="6" r="4.25" stroke="currentColor" strokeWidth="1.2" />
-        <path d="M9.5 9.5L12 12" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-      </svg>
-    </div>
   );
 }
 

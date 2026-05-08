@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { fetchBlmClaims } from '../sources/blm-claims.js';
 import { fetchMrds } from '../sources/usgs-mrds.js';
 import { fetchWells } from '../sources/wells.js';
+import { geocode } from '../sources/nominatim.js';
 import { parseBBox } from '../lib/geo.js';
 import { query } from '../db.js';
 
@@ -31,10 +32,30 @@ searchRouter.get('/', async (req, res, next) => {
   try {
     const q = SearchQuery.parse(req.query);
     const bbox = parseBBox(q.bbox) ?? undefined;
-    const types = (q.types ?? 'wells,claims,parcels,occurrences').split(',').map((t) => t.trim());
+    const types = (q.types ?? 'places,wells,claims,parcels,occurrences').split(',').map((t) => t.trim());
     const term = q.q?.toLowerCase().trim() || null;
 
     const results: Result[] = [];
+
+    // OSM Nominatim geocoder hits — placed first so users can type a city,
+    // township, county, or address and fly the map there immediately.
+    if (types.includes('places') && term) {
+      try {
+        const places = await geocode(term, 6);
+        for (const p of places) {
+          results.push({
+            kind: 'place',
+            id: `${p.lat},${p.lng}`,
+            label: p.label,
+            subtitle: `${p.type} · OSM`,
+            coordinates: [p.lng, p.lat],
+            meta: { bbox: p.bbox, importance: p.importance },
+          });
+        }
+      } catch (err) {
+        console.warn('[search] geocoder failed', err);
+      }
+    }
 
     if (types.includes('wells')) {
       const wells = await fetchWells({ bbox, state: q.state, county: q.county, limit: 200 });

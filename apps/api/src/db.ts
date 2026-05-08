@@ -10,9 +10,22 @@ export const pool = new Pool({
   connectionTimeoutMillis: 5_000,
 });
 
+let dbWarned = false;
 pool.on('error', (err) => {
-  console.error('[db] unexpected pool error', err);
+  if (!dbWarned) {
+    console.warn(`[db] pool error — DB-backed routes will return 503 until reachable.`, (err as Error).message);
+    dbWarned = true;
+  }
 });
+
+export async function dbStatus(): Promise<'ok' | 'unavailable'> {
+  try {
+    const r = await pool.query('SELECT 1 AS ok');
+    return r.rowCount === 1 ? 'ok' : 'unavailable';
+  } catch {
+    return 'unavailable';
+  }
+}
 
 export async function query<T extends pg.QueryResultRow = pg.QueryResultRow>(
   text: string,

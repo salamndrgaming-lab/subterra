@@ -8,9 +8,15 @@
     "packages/*"
   ],
   "scripts": {
+    "setup": "tsx scripts/setup.ts",
+    "infra:up": "docker compose up -d",
+    "infra:down": "docker compose down",
+    "infra:reset": "docker compose down -v && docker compose up -d",
+    "infra:logs": "docker compose logs -f",
     "dev": "npm-run-all --parallel dev:web dev:api",
     "dev:web": "npm --workspace apps/web run dev",
     "dev:api": "npm --workspace apps/api run dev",
+    "start": "npm run infra:up && npm run setup && npm run dev",
     "build": "npm-run-all build:shared build:web build:api",
     "build:shared": "npm --workspace packages/shared run build",
     "build:web": "npm --workspace apps/web run build",
@@ -22,14 +28,19 @@
     "typecheck:web": "npm --workspace apps/web run typecheck",
     "typecheck:api": "npm --workspace apps/api run typecheck",
     "etl": "tsx scripts/etl/index.ts",
-    "db:migrate": "psql $DATABASE_URL -f db/schema.sql",
+    "db:migrate": "tsx scripts/migrate.ts",
     "db:seed": "tsx scripts/seed.ts"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "pg": "^8.13.1"
   },
   "devDependencies": {
     "npm-run-all": "^4.1.5",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3",
-    "@types/node": "^22.9.0"
+    "@types/node": "^22.9.0",
+    "@types/pg": "^8.11.10"
   },
   "engines": {
     "node": ">=20"

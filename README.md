@@ -31,44 +31,36 @@ subterra/
 
 ---
 
-## Quickstart
+## Quickstart — three commands
 
-### 1. Prerequisites
-
-- Node.js 20+
-- PostgreSQL 15+ with PostGIS 3+
-- Redis 7+
-
-No Mapbox account, no Mapbox token, no usage caps. The map renders MapLibre GL
-JS against OpenFreeMap's free vector tile servers by default. To go fully
-self-hosted, point `NEXT_PUBLIC_MAP_STYLE_URL` at your own Protomaps PMTiles
-service or any MapLibre-compatible style.
-
-### 2. Install
+You need only Node 20+, Docker Desktop, and Git. No Mapbox account, no API
+keys for any data layer. The basemap renders MapLibre GL JS against
+OpenFreeMap's free vector tiles by default.
 
 ```bash
-npm install
-cp .env.example .env
-cp apps/web/.env.example apps/web/.env.local
-# Fill in DATABASE_URL and REDIS_URL. The default basemap works as-is.
+git clone https://github.com/salamndrgaming-lab/subterra.git
+cd subterra
+git checkout claude/subterra-phase-1-scaffold-mJvN3
+
+npm install              # 1. install workspaces
+npm run infra:up         # 2. start Postgres+PostGIS and Redis in Docker
+npm run setup            # 3. copy envs, apply schema, seed real BLM + USGS data
+
+npm run dev              # → http://localhost:3000/map
 ```
 
-### 3. Database
+Single-shot: `npm run start` runs `infra:up`, `setup`, and `dev` in order.
 
-```bash
-createdb subterra
-psql subterra -c "CREATE EXTENSION IF NOT EXISTS postgis;"
-npm run db:migrate
-npm run db:seed
-```
+### Re-running
 
-### 4. Run
+`npm run setup` is idempotent — re-run any time to re-apply the schema or
+re-seed. To wipe the DB volume and start fresh: `npm run infra:reset`.
 
-```bash
-npm run dev
-# web   → http://localhost:3000
-# api   → http://localhost:4000
-```
+### Without Docker
+
+Install PostgreSQL 15+ with PostGIS 3+ and Redis 7+ directly. Update
+`DATABASE_URL` and `REDIS_URL` in `.env`, then run `npm run setup` and
+`npm run dev`. Nothing else changes.
 
 ---
 

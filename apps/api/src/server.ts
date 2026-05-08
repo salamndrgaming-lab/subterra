@@ -5,6 +5,8 @@ import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 
 import { config } from './config.js';
+import { dbStatus } from './db.js';
+import { redisStatus } from './redis.js';
 import { errorHandler } from './middleware/error.js';
 import { authRouter } from './routes/auth.js';
 import { layersRouter } from './routes/layers.js';
@@ -36,8 +38,18 @@ const apiLimiter = rateLimit({
 });
 app.use('/api', apiLimiter);
 
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', service: 'subterra-api', ts: new Date().toISOString() });
+app.get('/health', async (_req, res) => {
+  const [db, redis] = await Promise.all([dbStatus(), redisStatus()]);
+  const overall = db === 'ok' ? 'ok' : 'degraded';
+  res.json({
+    status: overall,
+    service: 'subterra-api',
+    ts: new Date().toISOString(),
+    components: { db, redis },
+    note: overall === 'ok'
+      ? undefined
+      : 'API is running but PostgreSQL is unreachable. Live ArcGIS / WFS layers still work; AOIs, projects, and auth need a DB.',
+  });
 });
 
 app.use('/api/auth', authRouter);

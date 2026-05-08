@@ -14,43 +14,57 @@ CREATE EXTENSION IF NOT EXISTS btree_gist;
 CREATE EXTENSION IF NOT EXISTS citext;
 
 -- ---------------------------------------------------------------------
--- ENUMS
+-- ENUMS  (idempotent — safe to re-run)
 -- ---------------------------------------------------------------------
 
-CREATE TYPE well_status AS ENUM (
+DO $$ BEGIN
+  CREATE TYPE well_status AS ENUM (
     'active', 'inactive', 'plugged', 'permitted',
     'drilling', 'completed', 'abandoned', 'shut_in'
-);
+  );
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TYPE well_type AS ENUM (
+DO $$ BEGIN
+  CREATE TYPE well_type AS ENUM (
     'oil', 'gas', 'oil_gas', 'injection', 'disposal',
     'water', 'dry_hole', 'service', 'observation'
-);
+  );
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TYPE claim_status AS ENUM (
+DO $$ BEGIN
+  CREATE TYPE claim_status AS ENUM (
     'active', 'closed', 'void', 'pending', 'relinquished', 'forfeited'
-);
+  );
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TYPE claim_type AS ENUM (
+DO $$ BEGIN
+  CREATE TYPE claim_type AS ENUM (
     'lode', 'placer', 'mill_site', 'tunnel_site', 'sand_gravel'
-);
+  );
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TYPE permit_status AS ENUM (
+DO $$ BEGIN
+  CREATE TYPE permit_status AS ENUM (
     'pending', 'approved', 'denied', 'expired', 'withdrawn', 'active'
-);
+  );
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TYPE alert_event_kind AS ENUM (
+DO $$ BEGIN
+  CREATE TYPE alert_event_kind AS ENUM (
     'new_claim_filed', 'claim_dropped', 'permit_filed', 'permit_approved',
     'well_spudded', 'production_change', 'lease_filed', 'price_threshold'
-);
+  );
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TYPE user_role AS ENUM ('admin', 'pro', 'free');
+DO $$ BEGIN
+  CREATE TYPE user_role AS ENUM ('admin', 'pro', 'free');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- ---------------------------------------------------------------------
 -- USERS / AUTH
 -- ---------------------------------------------------------------------
 
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     email           CITEXT UNIQUE NOT NULL,
     password_hash   TEXT NOT NULL,
@@ -62,9 +76,9 @@ CREATE TABLE users (
     last_login_at   TIMESTAMPTZ
 );
 
-CREATE INDEX idx_users_email ON users (email);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
 
-CREATE TABLE refresh_tokens (
+CREATE TABLE IF NOT EXISTS refresh_tokens (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     token_hash  TEXT NOT NULL,
@@ -75,14 +89,14 @@ CREATE TABLE refresh_tokens (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_refresh_tokens_user ON refresh_tokens (user_id);
-CREATE INDEX idx_refresh_tokens_hash ON refresh_tokens (token_hash);
+CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens (user_id);
+CREATE INDEX IF NOT EXISTS idx_refresh_tokens_hash ON refresh_tokens (token_hash);
 
 -- ---------------------------------------------------------------------
 -- PROJECTS / WATCHLISTS / AOIs
 -- ---------------------------------------------------------------------
 
-CREATE TABLE projects (
+CREATE TABLE IF NOT EXISTS projects (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name            TEXT NOT NULL,
@@ -93,9 +107,9 @@ CREATE TABLE projects (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_projects_user ON projects (user_id);
+CREATE INDEX IF NOT EXISTS idx_projects_user ON projects (user_id);
 
-CREATE TABLE aois (
+CREATE TABLE IF NOT EXISTS aois (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     project_id  UUID REFERENCES projects(id) ON DELETE CASCADE,
     user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -108,18 +122,18 @@ CREATE TABLE aois (
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_aois_geom ON aois USING GIST (geom);
-CREATE INDEX idx_aois_project ON aois (project_id);
-CREATE INDEX idx_aois_user ON aois (user_id);
+CREATE INDEX IF NOT EXISTS idx_aois_geom ON aois USING GIST (geom);
+CREATE INDEX IF NOT EXISTS idx_aois_project ON aois (project_id);
+CREATE INDEX IF NOT EXISTS idx_aois_user ON aois (user_id);
 
-CREATE TABLE watchlists (
+CREATE TABLE IF NOT EXISTS watchlists (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name        TEXT NOT NULL,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE watchlist_items (
+CREATE TABLE IF NOT EXISTS watchlist_items (
     watchlist_id    UUID NOT NULL REFERENCES watchlists(id) ON DELETE CASCADE,
     entity_type     TEXT NOT NULL CHECK (entity_type IN ('parcel','well','claim','permit','aoi')),
     entity_id       UUID NOT NULL,
@@ -131,7 +145,7 @@ CREATE TABLE watchlist_items (
 -- PARCELS — surface ownership records
 -- ---------------------------------------------------------------------
 
-CREATE TABLE parcels (
+CREATE TABLE IF NOT EXISTS parcels (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     parcel_number       TEXT,                       -- county APN
     state               CHAR(2) NOT NULL,
@@ -154,16 +168,16 @@ CREATE TABLE parcels (
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_parcels_geom ON parcels USING GIST (geom);
-CREATE INDEX idx_parcels_state_county ON parcels (state, county);
-CREATE INDEX idx_parcels_owner ON parcels (owner_name);
-CREATE INDEX idx_parcels_apn ON parcels (parcel_number);
+CREATE INDEX IF NOT EXISTS idx_parcels_geom ON parcels USING GIST (geom);
+CREATE INDEX IF NOT EXISTS idx_parcels_state_county ON parcels (state, county);
+CREATE INDEX IF NOT EXISTS idx_parcels_owner ON parcels (owner_name);
+CREATE INDEX IF NOT EXISTS idx_parcels_apn ON parcels (parcel_number);
 
 -- ---------------------------------------------------------------------
 -- WELLS — oil & gas
 -- ---------------------------------------------------------------------
 
-CREATE TABLE wells (
+CREATE TABLE IF NOT EXISTS wells (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     api_number          TEXT UNIQUE,                -- 14-digit API
     well_name           TEXT,
@@ -197,16 +211,16 @@ CREATE TABLE wells (
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_wells_geom ON wells USING GIST (geom);
-CREATE INDEX idx_wells_lateral_geom ON wells USING GIST (lateral_geom);
-CREATE INDEX idx_wells_state_county ON wells (state, county);
-CREATE INDEX idx_wells_operator ON wells (operator);
-CREATE INDEX idx_wells_status ON wells (status);
-CREATE INDEX idx_wells_basin_formation ON wells (basin, formation);
-CREATE INDEX idx_wells_spud_date ON wells (spud_date);
+CREATE INDEX IF NOT EXISTS idx_wells_geom ON wells USING GIST (geom);
+CREATE INDEX IF NOT EXISTS idx_wells_lateral_geom ON wells USING GIST (lateral_geom);
+CREATE INDEX IF NOT EXISTS idx_wells_state_county ON wells (state, county);
+CREATE INDEX IF NOT EXISTS idx_wells_operator ON wells (operator);
+CREATE INDEX IF NOT EXISTS idx_wells_status ON wells (status);
+CREATE INDEX IF NOT EXISTS idx_wells_basin_formation ON wells (basin, formation);
+CREATE INDEX IF NOT EXISTS idx_wells_spud_date ON wells (spud_date);
 
 -- monthly production volumes
-CREATE TABLE well_production (
+CREATE TABLE IF NOT EXISTS well_production (
     id              BIGSERIAL PRIMARY KEY,
     well_id         UUID NOT NULL REFERENCES wells(id) ON DELETE CASCADE,
     report_month    DATE NOT NULL,                  -- first of month
@@ -219,10 +233,10 @@ CREATE TABLE well_production (
     UNIQUE (well_id, report_month)
 );
 
-CREATE INDEX idx_well_production_well_month ON well_production (well_id, report_month DESC);
+CREATE INDEX IF NOT EXISTS idx_well_production_well_month ON well_production (well_id, report_month DESC);
 
 -- LAS file references and curve data
-CREATE TABLE well_logs (
+CREATE TABLE IF NOT EXISTS well_logs (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     well_id         UUID NOT NULL REFERENCES wells(id) ON DELETE CASCADE,
     log_type        TEXT,                            -- 'gamma_ray', 'resistivity', 'sonic', etc
@@ -236,14 +250,14 @@ CREATE TABLE well_logs (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_well_logs_well ON well_logs (well_id);
-CREATE INDEX idx_well_logs_curves_gin ON well_logs USING GIN (curves);
+CREATE INDEX IF NOT EXISTS idx_well_logs_well ON well_logs (well_id);
+CREATE INDEX IF NOT EXISTS idx_well_logs_curves_gin ON well_logs USING GIN (curves);
 
 -- ---------------------------------------------------------------------
 -- MINING CLAIMS — BLM MLRS data
 -- ---------------------------------------------------------------------
 
-CREATE TABLE mining_claims (
+CREATE TABLE IF NOT EXISTS mining_claims (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     serial_number       TEXT UNIQUE NOT NULL,        -- BLM serial e.g. 'NMC-1234567'
     claim_name          TEXT,
@@ -271,18 +285,18 @@ CREATE TABLE mining_claims (
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_mining_claims_geom ON mining_claims USING GIST (geom);
-CREATE INDEX idx_mining_claims_serial ON mining_claims (serial_number);
-CREATE INDEX idx_mining_claims_state_county ON mining_claims (state, county);
-CREATE INDEX idx_mining_claims_status ON mining_claims (status);
-CREATE INDEX idx_mining_claims_commodity ON mining_claims (commodity);
-CREATE INDEX idx_mining_claims_owner ON mining_claims (owner_name);
+CREATE INDEX IF NOT EXISTS idx_mining_claims_geom ON mining_claims USING GIST (geom);
+CREATE INDEX IF NOT EXISTS idx_mining_claims_serial ON mining_claims (serial_number);
+CREATE INDEX IF NOT EXISTS idx_mining_claims_state_county ON mining_claims (state, county);
+CREATE INDEX IF NOT EXISTS idx_mining_claims_status ON mining_claims (status);
+CREATE INDEX IF NOT EXISTS idx_mining_claims_commodity ON mining_claims (commodity);
+CREATE INDEX IF NOT EXISTS idx_mining_claims_owner ON mining_claims (owner_name);
 
 -- ---------------------------------------------------------------------
 -- MINERAL OCCURRENCES — USGS MRDS
 -- ---------------------------------------------------------------------
 
-CREATE TABLE mineral_occurrences (
+CREATE TABLE IF NOT EXISTS mineral_occurrences (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     mrds_id             TEXT UNIQUE,                 -- USGS dep_id
     site_name           TEXT,
@@ -301,16 +315,16 @@ CREATE TABLE mineral_occurrences (
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_mineral_occurrences_geom ON mineral_occurrences USING GIST (geom);
-CREATE INDEX idx_mineral_occurrences_state ON mineral_occurrences (state);
-CREATE INDEX idx_mineral_occurrences_commodity ON mineral_occurrences (primary_commodity);
-CREATE INDEX idx_mineral_occurrences_status ON mineral_occurrences (development_status);
+CREATE INDEX IF NOT EXISTS idx_mineral_occurrences_geom ON mineral_occurrences USING GIST (geom);
+CREATE INDEX IF NOT EXISTS idx_mineral_occurrences_state ON mineral_occurrences (state);
+CREATE INDEX IF NOT EXISTS idx_mineral_occurrences_commodity ON mineral_occurrences (primary_commodity);
+CREATE INDEX IF NOT EXISTS idx_mineral_occurrences_status ON mineral_occurrences (development_status);
 
 -- ---------------------------------------------------------------------
 -- HISTORICAL MINES
 -- ---------------------------------------------------------------------
 
-CREATE TABLE historical_mines (
+CREATE TABLE IF NOT EXISTS historical_mines (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     name                TEXT NOT NULL,
     state               CHAR(2),
@@ -327,15 +341,15 @@ CREATE TABLE historical_mines (
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_historical_mines_geom ON historical_mines USING GIST (geom);
-CREATE INDEX idx_historical_mines_state_county ON historical_mines (state, county);
-CREATE INDEX idx_historical_mines_commodity ON historical_mines (commodity);
+CREATE INDEX IF NOT EXISTS idx_historical_mines_geom ON historical_mines USING GIST (geom);
+CREATE INDEX IF NOT EXISTS idx_historical_mines_state_county ON historical_mines (state, county);
+CREATE INDEX IF NOT EXISTS idx_historical_mines_commodity ON historical_mines (commodity);
 
 -- ---------------------------------------------------------------------
 -- PERMITS — drilling, mining, NEPA
 -- ---------------------------------------------------------------------
 
-CREATE TABLE permits (
+CREATE TABLE IF NOT EXISTS permits (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     permit_number       TEXT,
     permit_type         TEXT,                        -- 'drilling', 'mining_pod', 'NEPA_EA', 'NEPA_EIS'
@@ -359,17 +373,17 @@ CREATE TABLE permits (
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_permits_geom ON permits USING GIST (geom);
-CREATE INDEX idx_permits_state_county ON permits (state, county);
-CREATE INDEX idx_permits_status ON permits (status);
-CREATE INDEX idx_permits_type ON permits (permit_type);
-CREATE INDEX idx_permits_decision_date ON permits (decision_date);
+CREATE INDEX IF NOT EXISTS idx_permits_geom ON permits USING GIST (geom);
+CREATE INDEX IF NOT EXISTS idx_permits_state_county ON permits (state, county);
+CREATE INDEX IF NOT EXISTS idx_permits_status ON permits (status);
+CREATE INDEX IF NOT EXISTS idx_permits_type ON permits (permit_type);
+CREATE INDEX IF NOT EXISTS idx_permits_decision_date ON permits (decision_date);
 
 -- ---------------------------------------------------------------------
 -- LEASE BOUNDARIES — federal & state oil/gas/mineral leases
 -- ---------------------------------------------------------------------
 
-CREATE TABLE lease_boundaries (
+CREATE TABLE IF NOT EXISTS lease_boundaries (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     lease_number        TEXT UNIQUE,
     lessee              TEXT,
@@ -392,16 +406,16 @@ CREATE TABLE lease_boundaries (
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_lease_boundaries_geom ON lease_boundaries USING GIST (geom);
-CREATE INDEX idx_lease_boundaries_state ON lease_boundaries (state);
-CREATE INDEX idx_lease_boundaries_status ON lease_boundaries (status);
-CREATE INDEX idx_lease_boundaries_lessee ON lease_boundaries (lessee);
+CREATE INDEX IF NOT EXISTS idx_lease_boundaries_geom ON lease_boundaries USING GIST (geom);
+CREATE INDEX IF NOT EXISTS idx_lease_boundaries_state ON lease_boundaries (state);
+CREATE INDEX IF NOT EXISTS idx_lease_boundaries_status ON lease_boundaries (status);
+CREATE INDEX IF NOT EXISTS idx_lease_boundaries_lessee ON lease_boundaries (lessee);
 
 -- ---------------------------------------------------------------------
 -- OPPORTUNITY SCORES — cached scoring output
 -- ---------------------------------------------------------------------
 
-CREATE TABLE opportunity_scores (
+CREATE TABLE IF NOT EXISTS opportunity_scores (
     id                          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     entity_type                 TEXT NOT NULL CHECK (entity_type IN ('parcel','claim','aoi','grid_cell')),
     entity_id                   UUID NOT NULL,
@@ -421,16 +435,16 @@ CREATE TABLE opportunity_scores (
     UNIQUE (entity_type, entity_id, commodity)
 );
 
-CREATE INDEX idx_opportunity_scores_entity ON opportunity_scores (entity_type, entity_id);
-CREATE INDEX idx_opportunity_scores_score ON opportunity_scores (score DESC);
-CREATE INDEX idx_opportunity_scores_geom ON opportunity_scores USING GIST (geom);
-CREATE INDEX idx_opportunity_scores_commodity ON opportunity_scores (commodity);
+CREATE INDEX IF NOT EXISTS idx_opportunity_scores_entity ON opportunity_scores (entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_opportunity_scores_score ON opportunity_scores (score DESC);
+CREATE INDEX IF NOT EXISTS idx_opportunity_scores_geom ON opportunity_scores USING GIST (geom);
+CREATE INDEX IF NOT EXISTS idx_opportunity_scores_commodity ON opportunity_scores (commodity);
 
 -- ---------------------------------------------------------------------
 -- ALERTS — user-defined rules + triggered events
 -- ---------------------------------------------------------------------
 
-CREATE TABLE alerts (
+CREATE TABLE IF NOT EXISTS alerts (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id             UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     project_id          UUID REFERENCES projects(id) ON DELETE SET NULL,
@@ -447,11 +461,11 @@ CREATE TABLE alerts (
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_alerts_user ON alerts (user_id);
-CREATE INDEX idx_alerts_enabled ON alerts (is_enabled) WHERE is_enabled = true;
-CREATE INDEX idx_alerts_bbox ON alerts USING GIST (bbox);
+CREATE INDEX IF NOT EXISTS idx_alerts_user ON alerts (user_id);
+CREATE INDEX IF NOT EXISTS idx_alerts_enabled ON alerts (is_enabled) WHERE is_enabled = true;
+CREATE INDEX IF NOT EXISTS idx_alerts_bbox ON alerts USING GIST (bbox);
 
-CREATE TABLE alert_events (
+CREATE TABLE IF NOT EXISTS alert_events (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     alert_id        UUID NOT NULL REFERENCES alerts(id) ON DELETE CASCADE,
     event_kind      alert_event_kind NOT NULL,
@@ -464,9 +478,9 @@ CREATE TABLE alert_events (
     is_read         BOOLEAN NOT NULL DEFAULT false
 );
 
-CREATE INDEX idx_alert_events_alert ON alert_events (alert_id, fired_at DESC);
-CREATE INDEX idx_alert_events_unread ON alert_events (alert_id) WHERE is_read = false;
-CREATE INDEX idx_alert_events_geom ON alert_events USING GIST (geom);
+CREATE INDEX IF NOT EXISTS idx_alert_events_alert ON alert_events (alert_id, fired_at DESC);
+CREATE INDEX IF NOT EXISTS idx_alert_events_unread ON alert_events (alert_id) WHERE is_read = false;
+CREATE INDEX IF NOT EXISTS idx_alert_events_geom ON alert_events USING GIST (geom);
 
 -- ---------------------------------------------------------------------
 -- updated_at triggers
@@ -490,6 +504,7 @@ BEGIN
             'mining_claims','permits','alerts'
         ])
     LOOP
+        EXECUTE format('DROP TRIGGER IF EXISTS set_updated_at ON %I;', t);
         EXECUTE format(
             'CREATE TRIGGER set_updated_at BEFORE UPDATE ON %I
              FOR EACH ROW EXECUTE FUNCTION trigger_set_updated_at();', t);
@@ -510,12 +525,15 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS set_centroid_aois ON aois;
 CREATE TRIGGER set_centroid_aois BEFORE INSERT OR UPDATE OF geom ON aois
     FOR EACH ROW EXECUTE FUNCTION set_centroid_from_geom();
 
+DROP TRIGGER IF EXISTS set_centroid_parcels ON parcels;
 CREATE TRIGGER set_centroid_parcels BEFORE INSERT OR UPDATE OF geom ON parcels
     FOR EACH ROW EXECUTE FUNCTION set_centroid_from_geom();
 
+DROP TRIGGER IF EXISTS set_centroid_mining_claims ON mining_claims;
 CREATE TRIGGER set_centroid_mining_claims BEFORE INSERT OR UPDATE OF geom ON mining_claims
     FOR EACH ROW EXECUTE FUNCTION set_centroid_from_geom();
 
