@@ -108,6 +108,17 @@ export const api = {
         pipelines: RasterSource[];
         base: Record<string, { mapServer: string; attribution: string }>;
       }>(`/api/sources/rasters`),
+    mode: () =>
+      request<{
+        db: 'ok' | 'unavailable';
+        redis: 'ok' | 'unavailable';
+        demoMode: boolean;
+        capabilities: {
+          publicLayers: boolean; geocoder: boolean; opportunityScoring: boolean;
+          auth: boolean; savedAois: boolean; projects: boolean; alerts: boolean;
+          ingestedProduction: boolean; ingestedParcels: boolean;
+        };
+      }>(`/api/sources/mode`),
   },
   staking: {
     checkConflict: (geometry: { type: 'Polygon'; coordinates: number[][][] }) =>

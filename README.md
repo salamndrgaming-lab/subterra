@@ -64,6 +64,44 @@ Install PostgreSQL 15+ with PostGIS 3+ and Redis 7+ directly. Update
 
 ---
 
+## Desktop app — build a portable `.exe`
+
+The `apps/desktop/` workspace wraps the API + Next.js + MapLibre into a
+single Electron application. The Windows build target is **portable** —
+one `.exe` file, no installer, no admin rights, no system service.
+
+### Run in dev (no installer needed)
+
+```bash
+npm install
+npm run desktop:dev
+```
+
+A Subterra window opens, the API and web servers start as child processes,
+and you can hit the live BLM/USGS/state layers immediately. PostgreSQL is
+optional — without it the app runs in **demo mode** (a small banner
+explains what's disabled).
+
+### Build the portable Windows exe
+
+```bash
+npm install
+npm run build              # compile shared, api, and Next.js standalone bundle
+npm run desktop:pack:win   # produce apps/desktop/dist/Subterra-*-portable.exe
+```
+
+The output `Subterra-0.1.0-portable.exe` is self-contained and runs from
+any folder. Double-click to launch.
+
+| Command | What it does |
+|---|---|
+| `npm run desktop:dev` | Live-reload Electron window pointing at `localhost:3000/map` |
+| `npm run desktop:pack:win` | Single-file Windows portable `.exe` |
+| `npm run desktop:pack:mac` | macOS `.dmg` (x64 + arm64) |
+| `npm run desktop:pack:linux` | Linux `AppImage` |
+
+---
+
 ## Map dashboard
 
 Open `http://localhost:3000/map`. The map page uses MapLibre GL JS and ships with:

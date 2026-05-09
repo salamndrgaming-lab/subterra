@@ -39,3 +39,7 @@ data/cache/
 # misc
 coverage/
 .nyc_output/
+
+# electron-builder output
+apps/desktop/dist/
+apps/desktop/.cache/

@@ -7,8 +7,30 @@
 import { Router } from 'express';
 import { DATA_SOURCES } from '@subterra/shared';
 import { FEDERAL_LAND_RASTERS, LEASE_RASTERS, PIPELINE_RASTERS } from '../sources/federal-lands.js';
+import { dbStatus } from '../db.js';
+import { redisStatus } from '../redis.js';
 
 export const sourcesRouter = Router();
+
+sourcesRouter.get('/mode', async (_req, res) => {
+  const [db, redis] = await Promise.all([dbStatus(), redisStatus()]);
+  res.json({
+    db,
+    redis,
+    demoMode: db !== 'ok',
+    capabilities: {
+      publicLayers: true,             // BLM, USGS, state wells, federal lands, pipelines
+      geocoder: true,                 // OSM Nominatim
+      opportunityScoring: true,       // computed live from public sources
+      auth: db === 'ok',
+      savedAois: db === 'ok',
+      projects: db === 'ok',
+      alerts: db === 'ok',
+      ingestedProduction: db === 'ok',
+      ingestedParcels: db === 'ok',
+    },
+  });
+});
 
 sourcesRouter.get('/rasters', (_req, res) => {
   res.json({

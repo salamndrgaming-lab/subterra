@@ -1,0 +1,59 @@
+{
+  "appId": "app.subterra.desktop",
+  "productName": "Subterra",
+  "asar": true,
+  "directories": {
+    "output": "dist",
+    "buildResources": "build"
+  },
+  "files": [
+    "main.js",
+    "preload.js",
+    "package.json"
+  ],
+  "extraResources": [
+    {
+      "from": "../../apps/api/dist",
+      "to": "app/apps/api/dist",
+      "filter": ["**/*"]
+    },
+    {
+      "from": "../../apps/api/node_modules",
+      "to": "app/apps/api/node_modules",
+      "filter": ["**/*"]
+    },
+    {
+      "from": "../../apps/web/.next/standalone",
+      "to": "app/apps/web/.next/standalone",
+      "filter": ["**/*"]
+    },
+    {
+      "from": "../../apps/web/.next/static",
+      "to": "app/apps/web/.next/standalone/apps/web/.next/static",
+      "filter": ["**/*"]
+    },
+    {
+      "from": "../../apps/web/public",
+      "to": "app/apps/web/.next/standalone/apps/web/public",
+      "filter": ["**/*"]
+    }
+  ],
+  "win": {
+    "target": [
+      { "target": "portable", "arch": ["x64"] }
+    ],
+    "artifactName": "Subterra-${version}-portable.${ext}"
+  },
+  "mac": {
+    "target": [
+      { "target": "dmg", "arch": ["x64", "arm64"] }
+    ],
+    "category": "public.app-category.utilities"
+  },
+  "linux": {
+    "target": [
+      { "target": "AppImage", "arch": ["x64"] }
+    ],
+    "category": "Utility"
+  }
+}
