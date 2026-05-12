@@ -12,9 +12,7 @@
     "plugins": [{ "name": "next" }],
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"],
-      "@subterra/shared": ["../../packages/shared/src"],
-      "@subterra/shared/*": ["../../packages/shared/src/*"]
+      "@/*": ["./src/*"]
     }
   },
   "include": [

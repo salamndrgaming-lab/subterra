@@ -21,7 +21,8 @@
   },
   "files": ["dist", "src"],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true});require('fs').rmSync('tsconfig.tsbuildinfo',{force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.json && node -e \"if(!require('fs').existsSync('dist/index.js'))throw new Error('build failed: dist/index.js not written')\"",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {
