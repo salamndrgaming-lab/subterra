@@ -1,0 +1,55 @@
+{
+  "name": "subterra",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Geospatial land, mineral, and oil/gas opportunity aggregation platform",
+  "workspaces": [
+    "apps/web",
+    "apps/api",
+    "packages/*"
+  ],
+  "scripts": {
+    "setup": "tsx scripts/setup.ts",
+    "infra:up": "docker compose up -d",
+    "infra:down": "docker compose down",
+    "infra:reset": "docker compose down -v && docker compose up -d",
+    "infra:logs": "docker compose logs -f",
+    "dev": "npm-run-all --parallel dev:web dev:api",
+    "dev:web": "npm --workspace apps/web run dev",
+    "dev:api": "npm --workspace apps/api run dev",
+    "desktop:install": "cd apps/desktop && npm install",
+    "desktop:dev": "npm run desktop:install && cd apps/desktop && npm run start",
+    "desktop:build": "npm run build && npm run desktop:pack:win",
+    "desktop:pack:win": "npm run desktop:install && cd apps/desktop && npm run build:win",
+    "desktop:pack:mac": "npm run desktop:install && cd apps/desktop && npm run build:mac",
+    "desktop:pack:linux": "npm run desktop:install && cd apps/desktop && npm run build:linux",
+    "start": "npm run infra:up && npm run setup && npm run dev",
+    "build": "npm-run-all build:shared build:api build:web",
+    "build:shared": "npm --workspace packages/shared run build",
+    "build:web": "npm --workspace apps/web run build",
+    "build:api": "npm --workspace apps/api run build",
+    "lint": "npm-run-all --parallel lint:web lint:api",
+    "lint:web": "npm --workspace apps/web run lint",
+    "lint:api": "npm --workspace apps/api run lint",
+    "typecheck": "npm-run-all --parallel typecheck:web typecheck:api",
+    "typecheck:web": "npm --workspace apps/web run typecheck",
+    "typecheck:api": "npm --workspace apps/api run typecheck",
+    "etl": "tsx scripts/etl/index.ts",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "db:seed": "tsx scripts/seed.ts"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "npm-run-all": "^4.1.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "@types/node": "^22.9.0",
+    "@types/pg": "^8.11.10"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,85 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-display: 'JetBrains Mono', 'IBM Plex Mono', ui-monospace, monospace;
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'IBM Plex Mono', ui-monospace, monospace;
+}
+
+html, body {
+  height: 100%;
+  background-color: #0a0c10;
+  color: #e2e8f0;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  -webkit-font-smoothing: antialiased;
+}
+
+/* MapLibre / Mapbox attribution + control overrides. We keep both class
+   prefixes so ports of upstream Mapbox plugins (mapbox-gl-draw) keep their
+   styling alongside MapLibre's native chrome. */
+.maplibregl-ctrl-attrib,
+.maplibregl-ctrl-attrib a,
+.mapboxgl-ctrl-attrib,
+.mapboxgl-ctrl-attrib a {
+  background-color: rgba(10, 12, 16, 0.7) !important;
+  color: #94a3b8 !important;
+  font-size: 10px !important;
+}
+
+.maplibregl-ctrl-group,
+.mapboxgl-ctrl-group {
+  background-color: #161a22 !important;
+  border: 1px solid #1e2430 !important;
+}
+
+.maplibregl-ctrl-group button,
+.mapboxgl-ctrl-group button {
+  background-color: transparent !important;
+  border-color: #1e2430 !important;
+}
+
+.maplibregl-ctrl-group button:hover,
+.mapboxgl-ctrl-group button:hover {
+  background-color: #1c2230 !important;
+}
+
+.maplibregl-ctrl-group button .maplibregl-ctrl-icon,
+.mapboxgl-ctrl-group button .mapboxgl-ctrl-icon {
+  filter: invert(1) brightness(0.8);
+}
+
+.maplibregl-popup-content,
+.mapboxgl-popup-content {
+  background-color: #161a22 !important;
+  color: #e2e8f0 !important;
+  border: 1px solid #1e2430 !important;
+  border-radius: 6px !important;
+  font-family: var(--font-mono);
+  font-size: 12px !important;
+}
+
+.maplibregl-popup-tip,
+.mapboxgl-popup-tip {
+  border-top-color: #161a22 !important;
+}
+
+/* scrollbar */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: #0a0c10; }
+::-webkit-scrollbar-thumb { background: #1e2430; border-radius: 6px; }
+::-webkit-scrollbar-thumb:hover { background: #2a3245; }
+
+/* utility classes */
+.surface { background-color: #111318; border: 1px solid #1e2430; }
+.panel { background-color: #161a22; border: 1px solid #1e2430; }
+
+.data-value {
+  font-family: var(--font-mono);
+  font-feature-settings: 'tnum';
+}
