@@ -17,11 +17,6 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "incremental": true,
-    "baseUrl": ".",
-    "paths": {
-      "@subterra/shared": ["packages/shared/src"],
-      "@subterra/shared/*": ["packages/shared/src/*"]
-    }
+    "incremental": true
   }
 }
