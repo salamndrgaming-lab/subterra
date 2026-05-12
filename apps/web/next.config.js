@@ -5,10 +5,15 @@ const nextConfig = {
   // into .next/standalone, which the Electron desktop wrapper packages into
   // the .exe. Harmless for non-desktop deployments — Vercel ignores it.
   output: 'standalone',
-  outputFileTracingRoot: require('path').join(__dirname, '..', '..'),
-  transpilePackages: ['@subterra/shared'],
+  // @subterra/shared ships precompiled JS via its `dist/` output, so no
+  // runtime transpile is needed. Build order in the root build script
+  // guarantees the dist is fresh before next build runs.
   experimental: {
     typedRoutes: false,
+    // Tell Next.js the monorepo root so the standalone tracer follows
+    // workspace symlinks for @subterra/shared. Under Next 14.2.x this lives
+    // under `experimental`; promoted to top-level in 15.x.
+    outputFileTracingRoot: require('path').join(__dirname, '..', '..'),
   },
   images: {
     remotePatterns: [

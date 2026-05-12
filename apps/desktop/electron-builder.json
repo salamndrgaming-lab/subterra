@@ -68,7 +68,11 @@
     "target": [
       { "target": "portable", "arch": ["x64"] }
     ],
-    "artifactName": "Subterra-${version}-portable.${ext}"
+    "artifactName": "Subterra-${version}-portable.${ext}",
+    "signAndEditExecutable": false,
+    "signtoolOptions": null,
+    "verifyUpdateCodeSignature": false,
+    "forceCodeSigning": false
   },
   "mac": {
     "target": [
