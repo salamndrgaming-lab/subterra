@@ -78,7 +78,8 @@ searchRouter.get('/', async (req, res, next) => {
       for (const f of claims.features) {
         const p = f.properties;
         if (term && !matchAny(term, [p.serialNumber, p.claimName, p.ownerName])) continue;
-        const ring = f.geometry.coordinates[0]?.[0];
+        const coords = f.geometry.coordinates as unknown as number[][][][];
+        const ring = coords[0]?.[0];
         const centroid = ring && ring.length ? avgCoords(ring) : null;
         results.push({
           kind: 'claim',

@@ -93,7 +93,7 @@ claimsRouter.get('/:id', async (req, res, next) => {
       });
       nearbyOccurrences = occ.features
         .map((f) => ({
-          ...(f.properties as Record<string, unknown>),
+          ...(f.properties as unknown as Record<string, unknown>),
           distanceKm: haversineKm([lng!, lat!], (f.geometry as { coordinates: [number, number] }).coordinates),
         }))
         .filter((m) => m.distanceKm < 50)

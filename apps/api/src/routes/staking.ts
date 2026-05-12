@@ -65,7 +65,8 @@ stakingRouter.post('/check-conflict', async (req, res, next) => {
     const conflicts: Array<{ id: string; serialNumber: string; claimName: string | null; owner: string | null; commodity: string | null; acreage: number | null }> = [];
 
     for (const f of claims.features) {
-      const r = f.geometry.coordinates[0]?.[0];
+      const coords = f.geometry.coordinates as unknown as number[][][][];
+      const r = coords[0]?.[0];
       if (!r) continue;
       let sx = 0, sy = 0;
       for (const pt of r) { sx += pt[0]!; sy += pt[1]!; }

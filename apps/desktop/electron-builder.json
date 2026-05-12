@@ -1,6 +1,8 @@
 {
   "appId": "app.subterra.desktop",
   "productName": "Subterra",
+  "electronVersion": "33.2.0",
+  "nodeGypRebuild": false,
   "asar": true,
   "directories": {
     "output": "dist",
@@ -18,11 +20,6 @@
       "filter": ["**/*"]
     },
     {
-      "from": "../../apps/api/node_modules",
-      "to": "app/apps/api/node_modules",
-      "filter": ["**/*"]
-    },
-    {
       "from": "../../apps/web/.next/standalone",
       "to": "app/apps/web/.next/standalone",
       "filter": ["**/*"]
@@ -36,6 +33,35 @@
       "from": "../../apps/web/public",
       "to": "app/apps/web/.next/standalone/apps/web/public",
       "filter": ["**/*"]
+    },
+    {
+      "from": "../../node_modules",
+      "to": "app/node_modules",
+      "filter": [
+        "**/*",
+        "!**/*.md",
+        "!**/*.markdown",
+        "!**/test/**",
+        "!**/tests/**",
+        "!**/*.d.ts",
+        "!**/*.map",
+        "!**/.bin/**",
+        "!**/typescript/**",
+        "!**/tsx/**",
+        "!**/@types/**",
+        "!**/@mapbox/**",
+        "!**/electron/**",
+        "!**/electron-builder/**",
+        "!**/mapbox-gl/**",
+        "!**/maplibre-gl/**",
+        "!**/recharts/**",
+        "!**/next/**",
+        "!**/react/**",
+        "!**/react-dom/**",
+        "!**/tailwindcss/**",
+        "!**/postcss/**",
+        "!**/autoprefixer/**"
+      ]
     }
   ],
   "win": {

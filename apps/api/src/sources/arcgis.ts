@@ -61,7 +61,7 @@ interface EsriResponse {
  * request `f=geojson`; if the server rejects it we retry with `f=json` and
  * convert the Esri geometries to GeoJSON manually.
  */
-export async function arcgisQuery<P extends Record<string, unknown> = Record<string, unknown>>(
+export async function arcgisQuery<P = Record<string, unknown>>(
   endpoint: string,
   q: ArcGISQuery = {},
   init?: RequestInit,
@@ -109,7 +109,7 @@ function buildQueryUrl(endpoint: string, q: ArcGISQuery, format: 'geojson' | 'js
   return `${endpoint}${sep}${params.toString()}`;
 }
 
-function esriToGeoJson<P extends Record<string, unknown>>(esri: EsriResponse): GeoJSONFeatureCollection<P> {
+function esriToGeoJson<P = Record<string, unknown>>(esri: EsriResponse): GeoJSONFeatureCollection<P> {
   const features: GeoJSONFeatureCollection<P>['features'] = [];
   for (const f of esri.features ?? []) {
     const geometry = esriGeometry(f.geometry, esri.geometryType);
@@ -127,7 +127,10 @@ function esriGeometry(g: EsriRing | undefined, kind: string | undefined): GeoJSO
   if (!g) return null;
   if (g.rings && g.rings.length) {
     const polygons = splitEsriRings(g.rings);
-    const mp: GeoJSONMultiPolygon = { type: 'MultiPolygon', coordinates: polygons };
+    const mp: GeoJSONMultiPolygon = {
+      type: 'MultiPolygon',
+      coordinates: polygons as unknown as GeoJSONMultiPolygon['coordinates'],
+    };
     return mp;
   }
   if (g.paths && g.paths.length) {

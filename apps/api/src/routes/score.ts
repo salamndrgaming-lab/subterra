@@ -74,7 +74,8 @@ scoreRouter.get('/', async (req, res, next) => {
     try {
       const claims = await fetchBlmClaims({ bbox, status: 'active', commodity: q.commodity, limit: 1000 });
       competingClaims = claims.features.filter((f) => {
-        const ring = f.geometry.coordinates[0]?.[0];
+        const coords = f.geometry.coordinates as unknown as number[][][][];
+        const ring = coords[0]?.[0];
         if (!ring) return false;
         let sx = 0, sy = 0; for (const pt of ring) { sx += pt[0]!; sy += pt[1]!; }
         const c: [number, number] = [sx / ring.length, sy / ring.length];

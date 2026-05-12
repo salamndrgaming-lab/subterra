@@ -4,7 +4,8 @@
   "private": true,
   "description": "Geospatial land, mineral, and oil/gas opportunity aggregation platform",
   "workspaces": [
-    "apps/*",
+    "apps/web",
+    "apps/api",
     "packages/*"
   ],
   "scripts": {
@@ -16,12 +17,12 @@
     "dev": "npm-run-all --parallel dev:web dev:api",
     "dev:web": "npm --workspace apps/web run dev",
     "dev:api": "npm --workspace apps/api run dev",
-    "desktop:dev": "npm --workspace apps/desktop run start",
-    "desktop:build": "npm-run-all build desktop:pack",
-    "desktop:pack": "npm --workspace apps/desktop run build",
-    "desktop:pack:win": "npm --workspace apps/desktop run build:win",
-    "desktop:pack:mac": "npm --workspace apps/desktop run build:mac",
-    "desktop:pack:linux": "npm --workspace apps/desktop run build:linux",
+    "desktop:install": "cd apps/desktop && npm install",
+    "desktop:dev": "npm run desktop:install && cd apps/desktop && npm run start",
+    "desktop:build": "npm run build && npm run desktop:pack:win",
+    "desktop:pack:win": "npm run desktop:install && cd apps/desktop && npm run build:win",
+    "desktop:pack:mac": "npm run desktop:install && cd apps/desktop && npm run build:mac",
+    "desktop:pack:linux": "npm run desktop:install && cd apps/desktop && npm run build:linux",
     "start": "npm run infra:up && npm run setup && npm run dev",
     "build": "npm-run-all build:shared build:api build:web",
     "build:shared": "npm --workspace packages/shared run build",
