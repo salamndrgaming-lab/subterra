@@ -19,7 +19,7 @@ export function SettingsShell() {
   });
 
   return (
-    <main className="mx-auto w-full max-w-3xl flex-1 overflow-y-auto px-6 py-8">
+    <main className="mx-auto min-h-0 w-full max-w-3xl flex-1 overflow-y-auto px-6 py-8">
       <h1 className="font-display text-3xl text-text">Settings</h1>
       <p className="mt-2 text-sm text-text-subtle">Account, session, data-source health.</p>
 

@@ -13,8 +13,8 @@ export function BottomPanel() {
   const [tab, setTab] = useTabState();
 
   return (
-    <section className="border-t border-border bg-bg-surface">
-      <header className="flex h-9 items-center justify-between border-b border-border px-3">
+    <section className="flex h-full flex-col overflow-hidden border-t border-border bg-bg-surface">
+      <header className="flex h-9 shrink-0 items-center justify-between border-b border-border px-3">
         <div className="flex items-center gap-1">
           <TabButton active={tab === 'wells'} onClick={() => setTab('wells')}>Wells</TabButton>
           <TabButton active={tab === 'claims'} onClick={() => setTab('claims')}>Claims</TabButton>
@@ -29,7 +29,7 @@ export function BottomPanel() {
       </header>
 
       {bottomPanelOpen && (
-        <div className="h-[calc(280px-36px)] overflow-auto">
+        <div className="min-h-0 flex-1 overflow-auto">
           {tab === 'wells' && <WellsTable filters={filters} onSelect={(id) => selectFeature({ kind: 'well', id })} />}
           {tab === 'claims' && <ClaimsTable filters={filters} onSelect={(id) => selectFeature({ kind: 'claim', id })} />}
           {tab === 'occurrences' && <OccurrencesTable filters={filters} onSelect={(id) => selectFeature({ kind: 'occurrence', id })} />}

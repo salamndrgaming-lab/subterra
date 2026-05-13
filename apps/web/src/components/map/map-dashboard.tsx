@@ -8,6 +8,7 @@ import { FeatureDrawer } from './feature-drawer';
 import { MapTopBar } from './map-top-bar';
 import { AoiToolbar } from './aoi-toolbar';
 import { AoiDeeplink } from './aoi-deeplink';
+import { DataStatus } from './data-status';
 import { useMapStore } from '@/stores/map-store';
 import { cn } from '@/lib/cn';
 
@@ -36,6 +37,7 @@ export function MapDashboard() {
               <AoiDeeplink map={mapInstance} />
             </Suspense>
             <AoiToolbar />
+            <DataStatus />
             <FeatureDrawer />
           </div>
           <BottomPanel />

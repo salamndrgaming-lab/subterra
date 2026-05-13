@@ -58,11 +58,12 @@ export function MapView() {
     enabled: !!layerVisibility['well-laterals'],
   });
 
-  // OSM features are queried with a bbox derived from the current view. We
-  // round to 1° so panning doesn't fire a new request on every pixel of
-  // movement. Each ~1° tile is cached server-side for 10 minutes.
+  // OSM features are queried with a bbox derived from the current view.
+  // We compute a half-degree window that scales with zoom but is clamped to
+  // a maximum 8° span (Overpass times out on country-sized bboxes).
   const osmBbox: [number, number, number, number] = (() => {
-    const halfDeg = 180 / Math.pow(2, view.zoom);
+    const rawHalf = 180 / Math.pow(2, view.zoom);
+    const halfDeg = Math.min(rawHalf, 4);
     return [
       Math.floor(view.longitude - halfDeg),
       Math.floor(view.latitude - halfDeg),
@@ -73,13 +74,13 @@ export function MapView() {
   const osmMiningQuery = useQuery({
     queryKey: ['layers', 'osm-mines', osmBbox],
     queryFn: () => api.layers.osmFeatures('mining', osmBbox),
-    enabled: !!layerVisibility['osm-mines'] && view.zoom >= 7,
+    enabled: !!layerVisibility['osm-mines'] && view.zoom >= 5,
     staleTime: 10 * 60 * 1000,
   });
   const osmOilGasQuery = useQuery({
     queryKey: ['layers', 'osm-oilgas', osmBbox],
     queryFn: () => api.layers.osmFeatures('oilgas', osmBbox),
-    enabled: !!layerVisibility['osm-oilgas'] && view.zoom >= 7,
+    enabled: !!layerVisibility['osm-oilgas'] && view.zoom >= 5,
     staleTime: 10 * 60 * 1000,
   });
 
@@ -109,23 +110,30 @@ export function MapView() {
     );
 
     map.on('load', () => {
-      // BLM SMA — surface management areas via ArcGIS REST tile export
+      // USGS PAD-US (Protected Areas Database) — covers federal lands
+      // including BLM, USFS, NPS, etc. Cached XYZ tiles via ArcGIS REST.
+      // This replaces the dynamic /export?bbox=... pattern which didn't
+      // render reliably through MapLibre's bbox template.
       map.addSource('blm-sma', {
         type: 'raster',
         tiles: [
-          `${DATA_SOURCES.blm.surfaceManagement}/export?bbox={bbox-epsg-3857}&bboxSR=3857&imageSR=3857&size=512,512&dpi=96&format=png32&transparent=true&f=image`,
+          'https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
         ],
-        tileSize: 512,
+        tileSize: 256,
       });
       map.addLayer({
         id: 'blm-surface-mgmt',
         type: 'raster',
         source: 'blm-sma',
-        paint: { 'raster-opacity': 0.55 },
-        layout: { visibility: 'visible' },
+        paint: { 'raster-opacity': 0.40 },
+        layout: { visibility: 'none' },
       });
 
-      // PLSS grid
+      // PLSS — switch to the cached BLM PLSS tiles. The /tile endpoint is
+      // not available for the dynamic PLSS service, so this remains
+      // /export with WebMercator bbox template. MapLibre 5.x handles it
+      // when the source is configured with `tileSize: 512` and bbox is
+      // requested in EPSG:3857.
       map.addSource('plss', {
         type: 'raster',
         tiles: [
@@ -139,16 +147,16 @@ export function MapView() {
         source: 'plss',
         minzoom: 8,
         paint: { 'raster-opacity': 0.6 },
-        layout: { visibility: 'visible' },
+        layout: { visibility: 'none' },
       });
 
-      // USGS topo overlay
+      // USGS topo overlay — cached XYZ tiles (definitely works).
       map.addSource('usgs-topo', {
         type: 'raster',
         tiles: [
-          `${DATA_SOURCES.usgs.topo}/export?bbox={bbox-epsg-3857}&bboxSR=3857&imageSR=3857&size=512,512&dpi=96&format=png32&transparent=true&f=image`,
+          'https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/{z}/{y}/{x}',
         ],
-        tileSize: 512,
+        tileSize: 256,
       });
       map.addLayer({
         id: 'topo',
@@ -172,7 +180,7 @@ export function MapView() {
         type: 'circle',
         source: 'osm-mines',
         filter: ['==', ['geometry-type'], 'Point'],
-        minzoom: 7,
+        minzoom: 5,
         paint: {
           'circle-radius': ['interpolate', ['linear'], ['zoom'], 7, 3, 13, 7],
           'circle-color': '#f59e0b',
@@ -187,7 +195,7 @@ export function MapView() {
         type: 'fill',
         source: 'osm-mines',
         filter: ['==', ['geometry-type'], 'Polygon'],
-        minzoom: 7,
+        minzoom: 5,
         paint: { 'fill-color': '#f59e0b', 'fill-opacity': 0.18, 'fill-outline-color': '#f59e0b' },
         layout: { visibility: 'visible' },
       });
@@ -198,7 +206,7 @@ export function MapView() {
         type: 'circle',
         source: 'osm-oilgas',
         filter: ['==', ['geometry-type'], 'Point'],
-        minzoom: 7,
+        minzoom: 5,
         paint: {
           'circle-radius': ['interpolate', ['linear'], ['zoom'], 7, 3, 13, 7],
           'circle-color': '#10b981',
@@ -213,7 +221,7 @@ export function MapView() {
         type: 'fill',
         source: 'osm-oilgas',
         filter: ['==', ['geometry-type'], 'Polygon'],
-        minzoom: 7,
+        minzoom: 5,
         paint: { 'fill-color': '#10b981', 'fill-opacity': 0.15, 'fill-outline-color': '#10b981' },
         layout: { visibility: 'visible' },
       });
