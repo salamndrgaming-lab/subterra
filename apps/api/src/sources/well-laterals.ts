@@ -29,9 +29,7 @@ const SOURCES: Record<string, SourceConfig> = {
   ND: {
     state: 'ND',
     source: 'ndic',
-    url:
-      process.env.ND_WELL_LINES_LAYER ??
-      'https://ndgishub.nd.gov/arcgis/rest/services/All_GIS_Data_OilGas/Wellbore_Lines/MapServer/0/query',
+    url: process.env.ND_WELL_LINES_LAYER ?? '',
     apiField: 'API_NO',
     nameField: 'Well_Name',
     operatorField: 'Current_Operator',
@@ -39,9 +37,7 @@ const SOURCES: Record<string, SourceConfig> = {
   CO: {
     state: 'CO',
     source: 'cogcc',
-    url:
-      process.env.CO_WELL_LINES_LAYER ??
-      'https://services1.arcgis.com/zTagxbhxHBVOIYW6/arcgis/rest/services/Wells_Lines/FeatureServer/0/query',
+    url: process.env.CO_WELL_LINES_LAYER ?? '',
     apiField: 'API',
     nameField: 'Facility_Name',
     operatorField: 'Operator',
@@ -65,6 +61,7 @@ export async function fetchWellLaterals(q: { bbox?: BBoxArray; state?: string; l
   for (const state of targets) {
     const cfg = SOURCES[state];
     if (!cfg) { unavailable.push(state); continue; }
+    if (!cfg.url) { unavailable.push(state); continue; }
     const key = `well-laterals:${state}:${(q.bbox ?? []).join(',')}:${q.limit ?? 500}`;
     try {
       const fc = await cached(key, 300, () =>

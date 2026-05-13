@@ -17,7 +17,17 @@
 import type { BBoxArray, GeoJSONFeatureCollection, GeoJSONPoint, GeoJSONPolygon } from '@subterra/shared';
 import { cached } from './cache.js';
 
-const ENDPOINT = process.env.OVERPASS_URL ?? 'https://overpass-api.de/api/interpreter';
+const PRIMARY = process.env.OVERPASS_URL ?? 'https://overpass-api.de/api/interpreter';
+// Mirrors used when the primary returns 4xx or times out. All are public
+// and free; published by the Overpass community.
+const MIRRORS = (process.env.OVERPASS_MIRRORS ?? [
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.osm.ch/api/interpreter',
+  'https://overpass.openstreetmap.fr/api/interpreter',
+].join(',')).split(',').map((s) => s.trim()).filter(Boolean);
+
+const USER_AGENT = process.env.OVERPASS_USER_AGENT ??
+  'Subterra/0.1 (+https://github.com/salamndrgaming-lab/subterra)';
 
 export type OsmFeatureKind = 'mining' | 'oilgas';
 
@@ -83,16 +93,7 @@ export async function fetchOsmFeatures(
   const key = `osm:${kind}:${bbox.join(',')}`;
   try {
     return await cached(key, 600, async () => {
-      const res = await fetch(ENDPOINT, {
-        method: 'POST',
-        body: new URLSearchParams({ data: q }),
-        headers: { 'content-type': 'application/x-www-form-urlencoded' },
-        signal: AbortSignal.timeout(30_000),
-      });
-      if (!res.ok) {
-        throw new Error(`Overpass ${res.status}: ${(await res.text()).slice(0, 200)}`);
-      }
-      const body = (await res.json()) as OverpassResponse;
+      const body = await postOverpass(q);
       return {
         type: 'FeatureCollection' as const,
         features: body.elements.flatMap((el) => convert(el, kind)).filter(Boolean) as GeoJSONFeatureCollection<OsmFeatureProps>['features'],
@@ -103,9 +104,43 @@ export async function fetchOsmFeatures(
     return {
       type: 'FeatureCollection',
       features: [],
-      meta: { unavailable: `overpass:${kind}`, endpoint: ENDPOINT },
+      meta: { unavailable: `overpass:${kind}`, endpoint: PRIMARY },
     };
   }
+}
+
+/**
+ * POSTs an Overpass QL query, trying the primary endpoint first and falling
+ * back to community mirrors on 4xx/5xx/timeout. Sets Accept + User-Agent
+ * explicitly so well-behaved Overpass instances don't 406 us.
+ */
+async function postOverpass(q: string): Promise<OverpassResponse> {
+  const endpoints = [PRIMARY, ...MIRRORS];
+  let lastError: unknown;
+  for (const url of endpoints) {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        body: new URLSearchParams({ data: q }),
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          'accept': 'application/json',
+          'user-agent': USER_AGENT,
+        },
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!res.ok) {
+        const text = (await res.text()).slice(0, 200);
+        lastError = new Error(`${url} → HTTP ${res.status}: ${text}`);
+        // Permanent 4xx on one mirror? try the next.
+        continue;
+      }
+      return (await res.json()) as OverpassResponse;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError ?? new Error('All Overpass endpoints unreachable');
 }
 
 function convert(el: OverpassElement, kind: OsmFeatureKind): GeoJSONFeatureCollection<OsmFeatureProps>['features'][number] | null {
