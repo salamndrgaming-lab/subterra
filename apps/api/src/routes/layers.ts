@@ -4,6 +4,7 @@ import { fetchBlmClaims } from '../sources/blm-claims.js';
 import { fetchMrds } from '../sources/usgs-mrds.js';
 import { fetchWells } from '../sources/wells.js';
 import { fetchWellLaterals } from '../sources/well-laterals.js';
+import { fetchOsmFeatures } from '../sources/overpass.js';
 import { parseBBox } from '../lib/geo.js';
 import { query } from '../db.js';
 
@@ -73,6 +74,28 @@ layersRouter.get('/mineral-occurrences', async (req, res, next) => {
       commodity: q.commodity,
       limit: q.limit,
     });
+    res.json(fc);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * OSM-tagged real-world features. Free, no key. Always works (uses the
+ * public Overpass API). Returns mining + quarry features under
+ * `?kind=mining` and oil/gas surface infrastructure under `?kind=oilgas`.
+ */
+layersRouter.get('/osm-features', async (req, res, next) => {
+  try {
+    const q = LayerQuery.parse(req.query);
+    const kindRaw = (req.query['kind'] as string) ?? 'mining';
+    const kind = kindRaw === 'oilgas' ? 'oilgas' : 'mining';
+    const bbox = parseBBox(q.bbox);
+    if (!bbox) {
+      res.status(400).json({ error: 'bbox_required', message: 'Pass ?bbox=west,south,east,north (max ~4 degree span)' });
+      return;
+    }
+    const fc = await fetchOsmFeatures(kind, bbox);
     res.json(fc);
   } catch (err) {
     next(err);

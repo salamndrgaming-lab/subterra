@@ -1,4 +1,16 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// Load committed public defaults first, then user .env (which overrides).
+// repoRoot is two levels up from this file when running compiled (dist) or
+// source (src) — both resolve to apps/api, then ../.. = repo root.
+// here = apps/api/src/  (or apps/api/dist/ when packaged)
+// repoRoot is three levels up.
+const here = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(here, '..', '..', '..');
+dotenv.config({ path: path.join(repoRoot, '.env.defaults') });
+dotenv.config({ path: path.join(repoRoot, '.env'), override: true });
 
 function required(name: string): string {
   const v = process.env[name];

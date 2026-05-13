@@ -1,0 +1,142 @@
+/**
+ * OSM Overpass API client — gives Subterra a reliable, key-less feed of
+ * features tagged in OpenStreetMap that overlap our domain:
+ *
+ *   - active and historical mines (`industrial=mine`, `man_made=mineshaft`,
+ *     `landuse=quarry`)
+ *   - oil/gas wells (`man_made=petroleum_well`, `man_made=oil_well`,
+ *     `industrial=oil`, `industrial=oil_field`)
+ *
+ * The Overpass API is free, public, and well-documented. Every Subterra
+ * install gets it out of the box — no agency-specific URLs to verify.
+ *
+ * Endpoint: https://overpass-api.de/api/interpreter
+ * Docs:    https://wiki.openstreetmap.org/wiki/Overpass_API
+ */
+
+import type { BBoxArray, GeoJSONFeatureCollection, GeoJSONPoint, GeoJSONPolygon } from '@subterra/shared';
+import { cached } from './cache.js';
+
+const ENDPOINT = process.env.OVERPASS_URL ?? 'https://overpass-api.de/api/interpreter';
+
+export type OsmFeatureKind = 'mining' | 'oilgas';
+
+export interface OsmFeatureProps {
+  osmId: string;
+  osmType: 'node' | 'way' | 'relation';
+  kind: OsmFeatureKind;
+  name: string | null;
+  resource: string | null;        // e.g. "gold", "coal", "oil"
+  operator: string | null;
+  startDate: string | null;
+  endDate: string | null;
+  surface: string | null;
+  tags: Record<string, string>;
+}
+
+const QUERIES: Record<OsmFeatureKind, (bbox: BBoxArray) => string> = {
+  // Mines + quarries + mineshafts
+  mining: ([w, s, e, n]) => `[out:json][timeout:25];
+(
+  node["industrial"="mine"](${s},${w},${n},${e});
+  way["industrial"="mine"](${s},${w},${n},${e});
+  node["man_made"="mineshaft"](${s},${w},${n},${e});
+  node["man_made"="adit"](${s},${w},${n},${e});
+  node["historic"="mine"](${s},${w},${n},${e});
+  node["landuse"="quarry"](${s},${w},${n},${e});
+  way["landuse"="quarry"](${s},${w},${n},${e});
+);
+out geom 1500;`,
+
+  // Oil & gas surface infrastructure
+  oilgas: ([w, s, e, n]) => `[out:json][timeout:25];
+(
+  node["man_made"="petroleum_well"](${s},${w},${n},${e});
+  node["man_made"="oil_well"](${s},${w},${n},${e});
+  node["man_made"="gas_well"](${s},${w},${n},${e});
+  node["man_made"="pumpjack"](${s},${w},${n},${e});
+  way["industrial"="oil"](${s},${w},${n},${e});
+  way["industrial"="oil_field"](${s},${w},${n},${e});
+  way["industrial"="oil_terminal"](${s},${w},${n},${e});
+);
+out geom 1500;`,
+};
+
+interface OverpassElement {
+  type: 'node' | 'way' | 'relation';
+  id: number;
+  lat?: number;
+  lon?: number;
+  geometry?: Array<{ lat: number; lon: number }>;
+  tags?: Record<string, string>;
+}
+
+interface OverpassResponse {
+  elements: OverpassElement[];
+}
+
+export async function fetchOsmFeatures(
+  kind: OsmFeatureKind,
+  bbox: BBoxArray,
+): Promise<GeoJSONFeatureCollection<OsmFeatureProps> & { meta?: { unavailable?: string; endpoint?: string } }> {
+  const q = QUERIES[kind](bbox);
+  const key = `osm:${kind}:${bbox.join(',')}`;
+  try {
+    return await cached(key, 600, async () => {
+      const res = await fetch(ENDPOINT, {
+        method: 'POST',
+        body: new URLSearchParams({ data: q }),
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!res.ok) {
+        throw new Error(`Overpass ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      }
+      const body = (await res.json()) as OverpassResponse;
+      return {
+        type: 'FeatureCollection' as const,
+        features: body.elements.flatMap((el) => convert(el, kind)).filter(Boolean) as GeoJSONFeatureCollection<OsmFeatureProps>['features'],
+      };
+    });
+  } catch (err) {
+    console.warn(`[osm:${kind}] upstream failed: ${(err as Error).message.slice(0, 200)}`);
+    return {
+      type: 'FeatureCollection',
+      features: [],
+      meta: { unavailable: `overpass:${kind}`, endpoint: ENDPOINT },
+    };
+  }
+}
+
+function convert(el: OverpassElement, kind: OsmFeatureKind): GeoJSONFeatureCollection<OsmFeatureProps>['features'][number] | null {
+  const tags = el.tags ?? {};
+  const props: OsmFeatureProps = {
+    osmId: `${el.type}/${el.id}`,
+    osmType: el.type,
+    kind,
+    name: tags['name'] ?? null,
+    resource: tags['resource'] ?? tags['mineral'] ?? null,
+    operator: tags['operator'] ?? null,
+    startDate: tags['start_date'] ?? null,
+    endDate: tags['end_date'] ?? tags['abandoned:date'] ?? null,
+    surface: tags['surface'] ?? null,
+    tags,
+  };
+
+  if (el.type === 'node' && typeof el.lon === 'number' && typeof el.lat === 'number') {
+    const geom: GeoJSONPoint = { type: 'Point', coordinates: [el.lon, el.lat] };
+    return { type: 'Feature', geometry: geom, properties: props };
+  }
+
+  if ((el.type === 'way' || el.type === 'relation') && el.geometry && el.geometry.length >= 3) {
+    // Treat closed ways as polygons; ignore degenerate ones.
+    const ring = el.geometry.map((p) => [p.lon, p.lat] as [number, number]);
+    const first = ring[0]; const last = ring[ring.length - 1];
+    if (!first || !last) return null;
+    if (first[0] !== last[0] || first[1] !== last[1]) ring.push([first[0], first[1]]);
+    const geom: GeoJSONPolygon = { type: 'Polygon', coordinates: [ring] };
+    return { type: 'Feature', geometry: geom, properties: props };
+  }
+
+  return null;
+}

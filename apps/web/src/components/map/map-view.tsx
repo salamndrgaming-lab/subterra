@@ -58,6 +58,31 @@ export function MapView() {
     enabled: !!layerVisibility['well-laterals'],
   });
 
+  // OSM features are queried with a bbox derived from the current view. We
+  // round to 1° so panning doesn't fire a new request on every pixel of
+  // movement. Each ~1° tile is cached server-side for 10 minutes.
+  const osmBbox: [number, number, number, number] = (() => {
+    const halfDeg = 180 / Math.pow(2, view.zoom);
+    return [
+      Math.floor(view.longitude - halfDeg),
+      Math.floor(view.latitude - halfDeg),
+      Math.ceil(view.longitude + halfDeg),
+      Math.ceil(view.latitude + halfDeg),
+    ];
+  })();
+  const osmMiningQuery = useQuery({
+    queryKey: ['layers', 'osm-mines', osmBbox],
+    queryFn: () => api.layers.osmFeatures('mining', osmBbox),
+    enabled: !!layerVisibility['osm-mines'] && view.zoom >= 7,
+    staleTime: 10 * 60 * 1000,
+  });
+  const osmOilGasQuery = useQuery({
+    queryKey: ['layers', 'osm-oilgas', osmBbox],
+    queryFn: () => api.layers.osmFeatures('oilgas', osmBbox),
+    enabled: !!layerVisibility['osm-oilgas'] && view.zoom >= 7,
+    staleTime: 10 * 60 * 1000,
+  });
+
   // Init map
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -138,6 +163,60 @@ export function MapView() {
       map.addSource('claims', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
       map.addSource('mineral-occurrences', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
       map.addSource('well-laterals', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      map.addSource('osm-mines', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      map.addSource('osm-oilgas', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+
+      // OSM mining/quarry features — orange-amber points + polygon outlines
+      map.addLayer({
+        id: 'osm-mines',
+        type: 'circle',
+        source: 'osm-mines',
+        filter: ['==', ['geometry-type'], 'Point'],
+        minzoom: 7,
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 7, 3, 13, 7],
+          'circle-color': '#f59e0b',
+          'circle-stroke-color': '#0a0c10',
+          'circle-stroke-width': 1,
+          'circle-opacity': 0.9,
+        },
+        layout: { visibility: 'visible' },
+      });
+      map.addLayer({
+        id: 'osm-mines-polys',
+        type: 'fill',
+        source: 'osm-mines',
+        filter: ['==', ['geometry-type'], 'Polygon'],
+        minzoom: 7,
+        paint: { 'fill-color': '#f59e0b', 'fill-opacity': 0.18, 'fill-outline-color': '#f59e0b' },
+        layout: { visibility: 'visible' },
+      });
+
+      // OSM oil/gas surface infrastructure — emerald points + polygons
+      map.addLayer({
+        id: 'osm-oilgas',
+        type: 'circle',
+        source: 'osm-oilgas',
+        filter: ['==', ['geometry-type'], 'Point'],
+        minzoom: 7,
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 7, 3, 13, 7],
+          'circle-color': '#10b981',
+          'circle-stroke-color': '#0a0c10',
+          'circle-stroke-width': 1,
+          'circle-opacity': 0.9,
+        },
+        layout: { visibility: 'visible' },
+      });
+      map.addLayer({
+        id: 'osm-oilgas-polys',
+        type: 'fill',
+        source: 'osm-oilgas',
+        filter: ['==', ['geometry-type'], 'Polygon'],
+        minzoom: 7,
+        paint: { 'fill-color': '#10b981', 'fill-opacity': 0.15, 'fill-outline-color': '#10b981' },
+        layout: { visibility: 'visible' },
+      });
 
       map.addLayer({
         id: 'well-laterals',
@@ -232,7 +311,7 @@ export function MapView() {
       });
 
       // hover cursor
-      const interactiveLayers = ['wells-active', 'wells-plugged', 'wells-permitted', 'claims-active', 'claims-closed', 'mineral-occurrences'];
+      const interactiveLayers = ['wells-active', 'wells-plugged', 'wells-permitted', 'claims-active', 'claims-closed', 'mineral-occurrences', 'osm-mines', 'osm-mines-polys', 'osm-oilgas', 'osm-oilgas-polys'];
       for (const id of interactiveLayers) {
         map.on('mouseenter', id, () => (map.getCanvas().style.cursor = 'pointer'));
         map.on('mouseleave', id, () => (map.getCanvas().style.cursor = ''));
@@ -257,6 +336,30 @@ export function MapView() {
         } else if (feature.layer.id === 'mineral-occurrences') {
           const id = String(props['mrdsId'] ?? props['mrds_id'] ?? '');
           if (id) selectFeature({ kind: 'occurrence', id });
+        } else if (feature.layer.id.startsWith('osm-')) {
+          // OSM features don't have a server-side detail route; pop a
+          // MapLibre popup with the on-feature tags + a link to OSM.
+          const osmId = String(props['osmId'] ?? '');
+          const name = String(props['name'] ?? 'Unnamed');
+          const resource = props['resource'] ? String(props['resource']) : null;
+          const operator = props['operator'] ? String(props['operator']) : null;
+          const lngLat = (feature.geometry as { type: string; coordinates: [number, number] }).type === 'Point'
+            ? (feature.geometry as { coordinates: [number, number] }).coordinates
+            : [e.lngLat.lng, e.lngLat.lat];
+          const html = `
+            <div style="font-family:ui-monospace,monospace;font-size:11px;line-height:1.4">
+              <div style="color:#f59e0b;font-weight:600;margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em;font-size:10px">${feature.layer.id.includes('mines') ? 'OSM mine' : 'OSM oil/gas'}</div>
+              <div style="color:#e2e8f0;font-size:13px;margin-bottom:6px">${escapeHtml(name)}</div>
+              ${resource ? `<div style="color:#94a3b8">resource: <span style="color:#e2e8f0">${escapeHtml(resource)}</span></div>` : ''}
+              ${operator ? `<div style="color:#94a3b8">operator: <span style="color:#e2e8f0">${escapeHtml(operator)}</span></div>` : ''}
+              <div style="margin-top:6px">
+                <a href="https://www.openstreetmap.org/${osmId}" target="_blank" rel="noreferrer" style="color:#f59e0b;text-decoration:underline">view on OSM →</a>
+              </div>
+            </div>`;
+          new maplibregl.Popup({ closeOnClick: true, maxWidth: '280px' })
+            .setLngLat(lngLat as [number, number])
+            .setHTML(html)
+            .addTo(map);
         }
       });
     });
@@ -359,6 +462,13 @@ export function MapView() {
         if (id === 'claims-active' && map.getLayer('claims-active-outline')) {
           map.setLayoutProperty('claims-active-outline', 'visibility', visible ? 'visible' : 'none');
         }
+        // OSM layers each have a point + polygon companion that toggles together.
+        if (id === 'osm-mines' && map.getLayer('osm-mines-polys')) {
+          map.setLayoutProperty('osm-mines-polys', 'visibility', visible ? 'visible' : 'none');
+        }
+        if (id === 'osm-oilgas' && map.getLayer('osm-oilgas-polys')) {
+          map.setLayoutProperty('osm-oilgas-polys', 'visibility', visible ? 'visible' : 'none');
+        }
       }
     };
     apply();
@@ -377,10 +487,14 @@ export function MapView() {
       if (occSrc && occQuery.data) occSrc.setData(occQuery.data as GeoJSON.FeatureCollection);
       const latSrc = map.getSource('well-laterals') as GeoJSONSource | undefined;
       if (latSrc && lateralsQuery.data) latSrc.setData(lateralsQuery.data as GeoJSON.FeatureCollection);
+      const osmMinesSrc = map.getSource('osm-mines') as GeoJSONSource | undefined;
+      if (osmMinesSrc && osmMiningQuery.data) osmMinesSrc.setData(osmMiningQuery.data as GeoJSON.FeatureCollection);
+      const osmOilSrc = map.getSource('osm-oilgas') as GeoJSONSource | undefined;
+      if (osmOilSrc && osmOilGasQuery.data) osmOilSrc.setData(osmOilGasQuery.data as GeoJSON.FeatureCollection);
     };
     if (map.isStyleLoaded()) update();
     else map.once('load', update);
-  }, [wellsQuery.data, claimsQuery.data, occQuery.data, lateralsQuery.data]);
+  }, [wellsQuery.data, claimsQuery.data, occQuery.data, lateralsQuery.data, osmMiningQuery.data, osmOilGasQuery.data]);
 
   return <div ref={containerRef} className="absolute inset-0 h-full w-full" />;
 }
@@ -389,6 +503,10 @@ export function MapView() {
  * Dark-theme overrides for MapboxDraw. Default styles use light/blue colors
  * that wash out against our base-dark cartography.
  */
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] ?? c));
+}
+
 const drawStyles = [
   {
     id: 'gl-draw-polygon-fill-active',
