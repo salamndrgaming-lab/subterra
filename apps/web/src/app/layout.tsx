@@ -27,10 +27,10 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${inter.variable} ${mono.variable} dark`}>
-      <body className="bg-bg text-text antialiased">
+      <body className="flex h-screen flex-col overflow-hidden bg-bg text-text antialiased">
         <AppProviders>
           <DemoModeBanner />
-          {children}
+          <div className="min-h-0 flex-1 overflow-hidden">{children}</div>
         </AppProviders>
       </body>
     </html>

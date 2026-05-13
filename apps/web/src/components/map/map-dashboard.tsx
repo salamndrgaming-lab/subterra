@@ -17,7 +17,7 @@ export function MapDashboard() {
   const mapInstance = useMapStore((s) => s.mapInstance);
 
   return (
-    <div className="grid h-screen w-screen grid-rows-[48px_1fr] overflow-hidden bg-bg text-text">
+    <div className="grid h-full w-full grid-rows-[48px_1fr] overflow-hidden bg-bg text-text">
       <MapTopBar />
 
       <div className="relative grid h-full w-full overflow-hidden"

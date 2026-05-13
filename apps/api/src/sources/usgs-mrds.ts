@@ -12,7 +12,8 @@
 import type { BBoxArray, GeoJSONFeatureCollection, GeoJSONPoint } from '@subterra/shared';
 import { cached } from './cache.js';
 
-const WFS_ENDPOINT = process.env.USGS_MRDS_WFS ?? 'https://mrdata.usgs.gov/wfs/mrds';
+const WFS_ENDPOINT = process.env.USGS_MRDS_WFS ?? 'https://mrdata.usgs.gov/services/wfs/mrds';
+const MRDS_TYPENAME = process.env.USGS_MRDS_TYPENAME ?? 'mrds';
 const SHOW_ENDPOINT = process.env.USGS_MRDS_SHOW ?? 'https://mrdata.usgs.gov/mrds/show-mrds.php';
 
 export interface MrdsProps {
@@ -33,12 +34,12 @@ export interface MrdsQuery {
   limit?: number;
 }
 
-export async function fetchMrds(q: MrdsQuery): Promise<GeoJSONFeatureCollection<MrdsProps>> {
+export async function fetchMrds(q: MrdsQuery): Promise<GeoJSONFeatureCollection<MrdsProps> & { meta?: { unavailable?: string; endpoint?: string } }> {
   const params = new URLSearchParams({
     service: 'WFS',
     version: '2.0.0',
     request: 'GetFeature',
-    typeNames: 'mrds:mrds',
+    typeNames: MRDS_TYPENAME,
     outputFormat: 'application/json',
     srsName: 'EPSG:4326',
     count: String(q.limit ?? 1000),
@@ -58,21 +59,30 @@ export async function fetchMrds(q: MrdsQuery): Promise<GeoJSONFeatureCollection<
   const url = `${WFS_ENDPOINT}?${params.toString()}`;
   const key = `mrds:wfs:${params.toString()}`;
 
-  return cached(key, 300, async () => {
-    const res = await fetch(url, { headers: { accept: 'application/json' } });
-    if (!res.ok) {
-      throw new Error(`USGS MRDS WFS ${res.status}: ${(await res.text()).slice(0, 240)}`);
-    }
-    const body = (await res.json()) as GeoJSONFeatureCollection<Record<string, unknown>>;
+  try {
+    return await cached(key, 300, async () => {
+      const res = await fetch(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15_000) });
+      if (!res.ok) {
+        throw new Error(`USGS MRDS WFS ${res.status}: ${(await res.text()).slice(0, 240)}`);
+      }
+      const body = (await res.json()) as GeoJSONFeatureCollection<Record<string, unknown>>;
+      return {
+        type: 'FeatureCollection' as const,
+        features: (body.features ?? []).map((f) => ({
+          type: 'Feature' as const,
+          geometry: f.geometry as GeoJSONPoint,
+          properties: normalize(f.properties),
+        })),
+      };
+    });
+  } catch (err) {
+    console.warn(`[usgs-mrds] upstream failed: ${(err as Error).message.slice(0, 200)}`);
     return {
       type: 'FeatureCollection',
-      features: (body.features ?? []).map((f) => ({
-        type: 'Feature' as const,
-        geometry: f.geometry as GeoJSONPoint,
-        properties: normalize(f.properties),
-      })),
+      features: [],
+      meta: { unavailable: 'usgs_mrds_wfs', endpoint: WFS_ENDPOINT },
     };
-  });
+  }
 }
 
 function normalize(p: Record<string, unknown>): MrdsProps {

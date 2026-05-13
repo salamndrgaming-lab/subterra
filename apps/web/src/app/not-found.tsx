@@ -2,7 +2,7 @@ import Link from 'next/link';
 
 export default function NotFound() {
   return (
-    <div className="flex h-screen flex-col items-center justify-center bg-bg text-center">
+    <div className="flex h-full flex-col items-center justify-center bg-bg text-center">
       <div className="font-mono text-[10px] uppercase tracking-wider text-text-muted">404</div>
       <h1 className="mt-2 font-display text-4xl text-text">Off the map.</h1>
       <p className="mt-2 max-w-md text-sm text-text-subtle">

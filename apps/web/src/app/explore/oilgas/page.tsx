@@ -6,7 +6,7 @@ export const metadata: Metadata = { title: 'Explore oil & gas' };
 
 export default function ExploreOilGasPage() {
   return (
-    <div className="flex h-screen flex-col bg-bg">
+    <div className="flex h-full flex-col bg-bg">
       <TopNav />
       <ExploreShell
         title="Oil &amp; gas wells"

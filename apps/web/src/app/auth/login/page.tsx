@@ -6,7 +6,7 @@ export const metadata: Metadata = { title: 'Sign in' };
 
 export default function LoginPage() {
   return (
-    <div className="flex min-h-screen flex-col bg-bg">
+    <div className="flex min-h-full flex-col bg-bg">
       <TopNav />
       <main className="grid flex-1 place-items-center px-6 py-10">
         <LoginForm />

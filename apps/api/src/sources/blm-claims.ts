@@ -68,24 +68,36 @@ export interface BlmClaimsQuery {
   limit?: number;
 }
 
-export async function fetchBlmClaims(q: BlmClaimsQuery): Promise<GeoJSONFeatureCollection<BlmClaimProps>> {
+export async function fetchBlmClaims(q: BlmClaimsQuery): Promise<GeoJSONFeatureCollection<BlmClaimProps> & { meta?: { unavailable?: string; endpoint?: string } }> {
   const where = buildWhere(q);
   const key = `blm:claims:${where}:${(q.bbox ?? []).join(',')}:${q.limit ?? 1000}`;
-  return cached(key, 300, async () => {
-    const raw = await arcgisQuery<BlmRaw>(ENDPOINT, {
-      where,
-      bbox: q.bbox,
-      resultRecordCount: q.limit ?? 1000,
+  try {
+    return await cached(key, 300, async () => {
+      const raw = await arcgisQuery<BlmRaw>(ENDPOINT, {
+        where,
+        bbox: q.bbox,
+        resultRecordCount: q.limit ?? 1000,
+      });
+      return {
+        type: 'FeatureCollection' as const,
+        features: raw.features.map((f) => ({
+          type: 'Feature' as const,
+          geometry: f.geometry as GeoJSONMultiPolygon,
+          properties: normalize(f.properties),
+        })),
+      };
     });
+  } catch (err) {
+    console.warn(`[blm-claims] upstream failed: ${(err as Error).message.slice(0, 200)}`);
     return {
       type: 'FeatureCollection',
-      features: raw.features.map((f) => ({
-        type: 'Feature' as const,
-        geometry: f.geometry as GeoJSONMultiPolygon,
-        properties: normalize(f.properties),
-      })),
+      features: [],
+      meta: {
+        unavailable: 'blm_national_mining_claims',
+        endpoint: ENDPOINT,
+      },
     };
-  });
+  }
 }
 
 function buildWhere(q: BlmClaimsQuery): string {
@@ -137,13 +149,18 @@ function dateOrNull(v: number | string | null | undefined): string | null {
 
 export async function fetchBlmClaimById(serial: string): Promise<BlmClaimProps & { geom: GeoJSONMultiPolygon } | null> {
   const key = `blm:claim:${serial}`;
-  return cached(key, 600, async () => {
-    const raw = await arcgisQuery<BlmRaw>(ENDPOINT, {
-      where: `CASE_RECORD_SERIAL_NR = '${serial.replace(/'/g, "''")}' OR SERIAL_NR = '${serial.replace(/'/g, "''")}'`,
-      resultRecordCount: 1,
+  try {
+    return await cached(key, 600, async () => {
+      const raw = await arcgisQuery<BlmRaw>(ENDPOINT, {
+        where: `CASE_RECORD_SERIAL_NR = '${serial.replace(/'/g, "''")}' OR SERIAL_NR = '${serial.replace(/'/g, "''")}'`,
+        resultRecordCount: 1,
+      });
+      const f = raw.features[0];
+      if (!f) return null;
+      return { ...normalize(f.properties), geom: f.geometry as GeoJSONMultiPolygon };
     });
-    const f = raw.features[0];
-    if (!f) return null;
-    return { ...normalize(f.properties), geom: f.geometry as GeoJSONMultiPolygon };
-  });
+  } catch (err) {
+    console.warn(`[blm-claim-detail] upstream failed: ${(err as Error).message.slice(0, 200)}`);
+    return null;
+  }
 }
