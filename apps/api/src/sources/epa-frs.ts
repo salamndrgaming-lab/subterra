@@ -50,7 +50,13 @@ export async function fetchEpaFrs(
   q: { bbox?: BBoxArray; state?: string; limit?: number } = {},
 ): Promise<GeoJSONFeatureCollection<EpaFrsProps> & { meta?: { unavailable?: string; endpoint?: string } }> {
   const naics = NAICS_FILTERS[kind];
-  const naicsClauses = naics.map((p) => `NAICS_CODES LIKE '${p}%'`).join(' OR ');
+  // EPA FRS uses several NAICS-related field names depending on the service.
+  // We OR across the candidates so the where works regardless. If a field
+  // doesn't exist on this service version, ArcGIS raises a clearer error
+  // than 500 (which we then surface as meta.unavailable).
+  const orFor = (prefix: string) =>
+    [`NAICS LIKE '${prefix}%'`, `PGM_NAICS LIKE '${prefix}%'`, `NAICS_CODES LIKE '%${prefix}%'`].join(' OR ');
+  const naicsClauses = naics.map((p) => `(${orFor(p)})`).join(' OR ');
   const where = [`(${naicsClauses})`, q.state ? `STATE_CODE = '${q.state.toUpperCase()}'` : null]
     .filter(Boolean)
     .join(' AND ');
@@ -62,6 +68,8 @@ export async function fetchEpaFrs(
         where,
         bbox: q.bbox,
         resultRecordCount: q.limit ?? 2000,
+        // Restrict outFields so a non-existent column doesn't 500 the query.
+        outFields: 'REGISTRY_ID,PRIMARY_NAME,STATE_CODE,COUNTY_NAME,CITY_NAME,NAICS,PGM_NAICS',
       });
       return {
         type: 'FeatureCollection' as const,

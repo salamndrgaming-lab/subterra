@@ -15,12 +15,12 @@ export function DataStatus() {
   const visibility = useMapStore((s) => s.layerVisibility);
   const filters = useMapStore((s) => s.filters);
 
-  const halfDeg = Math.min(180 / Math.pow(2, view.zoom), 4);
+  const halfDeg = Math.min(180 / Math.pow(2, view.zoom), 0.5);
   const osmBbox: [number, number, number, number] = [
-    Math.floor(view.longitude - halfDeg),
-    Math.floor(view.latitude - halfDeg),
-    Math.ceil(view.longitude + halfDeg),
-    Math.ceil(view.latitude + halfDeg),
+    Math.round((view.longitude - halfDeg) * 10) / 10,
+    Math.round((view.latitude - halfDeg) * 10) / 10,
+    Math.round((view.longitude + halfDeg) * 10) / 10,
+    Math.round((view.latitude + halfDeg) * 10) / 10,
   ];
 
   const osmMines = useQuery({

@@ -101,12 +101,13 @@ export async function fetchBlmClaims(q: BlmClaimsQuery): Promise<GeoJSONFeatureC
 }
 
 function buildWhere(q: BlmClaimsQuery): string {
+  // BLM has rotated field names over the years. Skip the status filter
+  // entirely (the active-claim layer typically only contains active claims)
+  // and apply only state / commodity narrowing when supplied.
   const parts: string[] = [];
-  const status = (q.status ?? 'active').toLowerCase();
-  parts.push(`UPPER(CASE_DISP) = '${status.toUpperCase()}'`);
   if (q.state) parts.push(`UPPER(STATE) = '${q.state.toUpperCase()}'`);
   if (q.commodity) parts.push(`UPPER(COMMODITY) LIKE '%${q.commodity.toUpperCase()}%'`);
-  return parts.join(' AND ');
+  return parts.length ? parts.join(' AND ') : '1=1';
 }
 
 function normalize(r: BlmRaw): BlmClaimProps {

@@ -58,17 +58,18 @@ export function MapView() {
     enabled: !!layerVisibility['well-laterals'],
   });
 
-  // OSM features are queried with a bbox derived from the current view.
-  // We compute a half-degree window that scales with zoom but is clamped to
-  // a maximum 8° span (Overpass times out on country-sized bboxes).
+  // OSM features bbox — kept tight (≤ 0.5° half-width / 1° span) so the
+  // Overpass query finishes in < 10s. The user's view typically spans 2-3°
+  // at zoom 7-8, but a single 1° tile centered on the viewport gives them
+  // immediate results; subsequent pans cache server-side per 10 minutes.
   const osmBbox: [number, number, number, number] = (() => {
     const rawHalf = 180 / Math.pow(2, view.zoom);
-    const halfDeg = Math.min(rawHalf, 4);
+    const halfDeg = Math.min(rawHalf, 0.5);
     return [
-      Math.floor(view.longitude - halfDeg),
-      Math.floor(view.latitude - halfDeg),
-      Math.ceil(view.longitude + halfDeg),
-      Math.ceil(view.latitude + halfDeg),
+      Math.round((view.longitude - halfDeg) * 10) / 10,
+      Math.round((view.latitude - halfDeg) * 10) / 10,
+      Math.round((view.longitude + halfDeg) * 10) / 10,
+      Math.round((view.latitude + halfDeg) * 10) / 10,
     ];
   })();
   const osmMiningQuery = useQuery({
@@ -182,7 +183,7 @@ export function MapView() {
         filter: ['==', ['geometry-type'], 'Point'],
         minzoom: 5,
         paint: {
-          'circle-radius': ['interpolate', ['linear'], ['zoom'], 7, 3, 13, 7],
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 5, 5, 9, 7, 13, 10],
           'circle-color': '#f59e0b',
           'circle-stroke-color': '#0a0c10',
           'circle-stroke-width': 1,
@@ -208,7 +209,7 @@ export function MapView() {
         filter: ['==', ['geometry-type'], 'Point'],
         minzoom: 5,
         paint: {
-          'circle-radius': ['interpolate', ['linear'], ['zoom'], 7, 3, 13, 7],
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 5, 5, 9, 7, 13, 10],
           'circle-color': '#10b981',
           'circle-stroke-color': '#0a0c10',
           'circle-stroke-width': 1,
@@ -246,7 +247,7 @@ export function MapView() {
         source: 'wells',
         filter: ['==', ['get', 'status'], 'active'],
         paint: {
-          'circle-radius': ['interpolate', ['linear'], ['zoom'], 5, 2, 12, 6],
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 5, 4, 9, 6, 13, 8],
           'circle-color': '#10b981',
           'circle-stroke-color': '#0a0c10',
           'circle-stroke-width': 1,
@@ -258,7 +259,7 @@ export function MapView() {
         source: 'wells',
         filter: ['==', ['get', 'status'], 'plugged'],
         paint: {
-          'circle-radius': ['interpolate', ['linear'], ['zoom'], 5, 2, 12, 5],
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 5, 4, 9, 5, 13, 7],
           'circle-color': '#64748b',
           'circle-stroke-color': '#0a0c10',
           'circle-stroke-width': 1,
@@ -270,7 +271,7 @@ export function MapView() {
         source: 'wells',
         filter: ['==', ['get', 'status'], 'permitted'],
         paint: {
-          'circle-radius': ['interpolate', ['linear'], ['zoom'], 5, 2, 12, 6],
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 5, 4, 9, 6, 13, 8],
           'circle-color': '#f59e0b',
           'circle-stroke-color': '#0a0c10',
           'circle-stroke-width': 1,
@@ -310,7 +311,7 @@ export function MapView() {
         type: 'circle',
         source: 'mineral-occurrences',
         paint: {
-          'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 3, 10, 7],
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 5, 9, 7, 13, 10],
           'circle-color': '#3b82f6',
           'circle-stroke-color': '#0a0c10',
           'circle-stroke-width': 1,

@@ -47,14 +47,12 @@ export async function fetchMrds(q: MrdsQuery): Promise<GeoJSONFeatureCollection<
 
   if (q.bbox) {
     const [w, s, e, n] = q.bbox;
+    // WFS 2.0 bbox is south,west,north,east,srs (lat first).
     params.set('bbox', `${s},${w},${n},${e},EPSG:4326`);
   }
-  if (q.state) params.set('CQL_FILTER', `state='${q.state.toUpperCase()}'`);
-  if (q.commodity) {
-    const filter = `commod1 ILIKE '%${q.commodity}%'`;
-    const existing = params.get('CQL_FILTER');
-    params.set('CQL_FILTER', existing ? `${existing} AND ${filter}` : filter);
-  }
+  // CQL_FILTER is GeoServer-specific; USGS's WFS doesn't always honor it
+  // and a syntax mismatch returns 400. Bbox alone gives us the spatial
+  // narrowing we need; client-side filters drop non-matching commodity.
 
   const url = `${WFS_ENDPOINT}?${params.toString()}`;
   const key = `mrds:wfs:${params.toString()}`;

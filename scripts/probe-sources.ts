@@ -32,7 +32,8 @@ function stateWellSources(): Source[] {
   const out: Source[] = [];
   for (const s of STATE_WELL_VARS) {
     const url = process.env[`${s}_WELLS_LAYER`];
-    if (!url) continue;
+    // Skip unset / empty so the report stays focused on configured sources.
+    if (!url || !url.trim()) continue;
     out.push({
       id: `wells_${s.toLowerCase()}`,
       name: `${s} state wells`,
@@ -120,11 +121,14 @@ const sources: Source[] = [
     url: (process.env.EPA_FRS_LAYER ?? 'https://geopub.epa.gov/arcgis/rest/services/EMEF/FRS_INTERESTS/MapServer/0').replace(/\/query$/, '') + '?f=json',
   },
 
-  // Truly key-less feature feed — should always work
+  // Truly key-less feature feed — POSTing a tiny query to verify the
+  // interpreter endpoint actually accepts our headers (the `/api/status`
+  // endpoint negotiates content-type differently and is misleading).
   {
     id: 'overpass',
     name: 'OSM Overpass API',
-    url: process.env.OVERPASS_URL ?? 'https://overpass-api.de/api/status',
+    url: (process.env.OVERPASS_URL ?? 'https://overpass-api.de/api/interpreter') +
+      '?data=' + encodeURIComponent('[out:json][timeout:5];node[man_made=mineshaft](38.0,-117.5,38.1,-117.4);out 1;'),
   },
 
   // Every state oil/gas commission URL the user has configured in .env.
