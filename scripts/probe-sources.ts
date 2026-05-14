@@ -22,6 +22,26 @@ interface Source {
   init?: RequestInit;
 }
 
+const STATE_WELL_VARS = [
+  'TX', 'ND', 'CO', 'WY', 'NM', 'OK', 'KS', 'LA', 'CA', 'AK', 'UT', 'MT',
+  'PA', 'OH', 'WV', 'MI', 'IL', 'MS', 'AL', 'AR', 'TN', 'KY', 'IN', 'VA',
+  'NY', 'FL', 'NV', 'AZ', 'ID', 'OR', 'WA', 'SD', 'NE',
+];
+
+function stateWellSources(): Source[] {
+  const out: Source[] = [];
+  for (const s of STATE_WELL_VARS) {
+    const url = process.env[`${s}_WELLS_LAYER`];
+    if (!url) continue;
+    out.push({
+      id: `wells_${s.toLowerCase()}`,
+      name: `${s} state wells`,
+      url: url.replace(/\/query$/, '') + '?f=json',
+    });
+  }
+  return out;
+}
+
 const verbose = process.argv.includes('--verbose');
 
 const sources: Source[] = [
@@ -93,12 +113,23 @@ const sources: Source[] = [
     url: 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Pipelines/FeatureServer/0?f=json',
   },
 
+  // EPA Facility Registry — nationwide oil/gas + mining fallback
+  {
+    id: 'epa_frs',
+    name: 'EPA Facility Registry (nationwide)',
+    url: (process.env.EPA_FRS_LAYER ?? 'https://geopub.epa.gov/arcgis/rest/services/EMEF/FRS_INTERESTS/MapServer/0').replace(/\/query$/, '') + '?f=json',
+  },
+
   // Truly key-less feature feed — should always work
   {
     id: 'overpass',
     name: 'OSM Overpass API',
     url: process.env.OVERPASS_URL ?? 'https://overpass-api.de/api/status',
   },
+
+  // Every state oil/gas commission URL the user has configured in .env.
+  // Probes only the ones with a non-empty value so the report stays focused.
+  ...stateWellSources(),
 
   // Geocoder
   {
