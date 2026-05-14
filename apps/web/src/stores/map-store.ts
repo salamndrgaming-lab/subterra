@@ -66,11 +66,14 @@ const defaultLayerVisibility: LayerVisibility = Object.fromEntries(
   LAYER_DEFINITIONS.map((l) => [l.id, l.defaultVisible]),
 );
 
-// Default view: centered on the western US, zoomed to show major mineral districts.
+// Default view: central Nevada mining belt — Tonopah / Round Mountain.
+// At zoom 7 the OSM mining + oil/gas Overpass queries return real features
+// within a few hundred ms, so the first paint shows live data, not an
+// empty basemap.
 const DEFAULT_VIEW: ViewState = {
-  longitude: -110.5,
-  latitude: 39.5,
-  zoom: 4.4,
+  longitude: -117.06,
+  latitude: 38.66,
+  zoom: 7.5,
   bearing: 0,
   pitch: 0,
 };

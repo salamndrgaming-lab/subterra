@@ -4,6 +4,8 @@ import { fetchBlmClaims } from '../sources/blm-claims.js';
 import { fetchMrds } from '../sources/usgs-mrds.js';
 import { fetchWells } from '../sources/wells.js';
 import { fetchWellLaterals } from '../sources/well-laterals.js';
+import { fetchOsmFeatures } from '../sources/overpass.js';
+import { fetchEpaFrs } from '../sources/epa-frs.js';
 import { parseBBox } from '../lib/geo.js';
 import { query } from '../db.js';
 
@@ -21,11 +23,56 @@ const LayerQuery = z.object({
 layersRouter.get('/wells', async (req, res, next) => {
   try {
     const q = LayerQuery.parse(req.query);
-    const fc = await fetchWells({
+    const bbox = parseBBox(q.bbox) ?? undefined;
+    // State-commission wells (opt-in, may be empty if no state URL is wired).
+    const stateFc = await fetchWells({ bbox, state: q.state, county: q.county, status: q.status, limit: q.limit });
+
+    // EPA Facility Registry — nationwide fallback. Returns every NAICS-211
+    // oil/gas facility regardless of which state has a configured upstream.
+    // Merged together so the layer is never empty on a fresh install.
+    const epa = await fetchEpaFrs('oilgas', { bbox, state: q.state, limit: q.limit });
+    const merged = {
+      type: 'FeatureCollection' as const,
+      features: [
+        ...stateFc.features,
+        ...epa.features.map((f) => ({
+          type: 'Feature' as const,
+          geometry: f.geometry,
+          properties: {
+            apiNumber: f.properties.facilityId,
+            wellName: f.properties.name,
+            operator: null,
+            status: 'active',
+            wellType: 'oil_gas',
+            state: f.properties.state,
+            county: f.properties.county,
+            spudDate: null,
+            totalDepthFt: null,
+            source: 'epa_frs',
+          },
+        })),
+      ],
+      meta: {
+        sources: [...stateFc.meta.sources, epa.meta?.unavailable ? `epa_frs:unavailable` : 'epa_frs'],
+        unavailableStates: stateFc.meta.unavailableStates,
+      },
+    };
+    res.json(merged);
+  } catch (err) {
+    next(err);
+  }
+});
+
+layersRouter.get('/epa-frs', async (req, res, next) => {
+  try {
+    const q = LayerQuery.parse(req.query);
+    const kindRaw = (req.query['kind'] as string) ?? 'all';
+    const kind = (['oilgas', 'mining', 'all'] as const).includes(kindRaw as never)
+      ? (kindRaw as 'oilgas' | 'mining' | 'all')
+      : 'all';
+    const fc = await fetchEpaFrs(kind, {
       bbox: parseBBox(q.bbox) ?? undefined,
       state: q.state,
-      county: q.county,
-      status: q.status,
       limit: q.limit,
     });
     res.json(fc);
@@ -73,6 +120,28 @@ layersRouter.get('/mineral-occurrences', async (req, res, next) => {
       commodity: q.commodity,
       limit: q.limit,
     });
+    res.json(fc);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * OSM-tagged real-world features. Free, no key. Always works (uses the
+ * public Overpass API). Returns mining + quarry features under
+ * `?kind=mining` and oil/gas surface infrastructure under `?kind=oilgas`.
+ */
+layersRouter.get('/osm-features', async (req, res, next) => {
+  try {
+    const q = LayerQuery.parse(req.query);
+    const kindRaw = (req.query['kind'] as string) ?? 'mining';
+    const kind = kindRaw === 'oilgas' ? 'oilgas' : 'mining';
+    const bbox = parseBBox(q.bbox);
+    if (!bbox) {
+      res.status(400).json({ error: 'bbox_required', message: 'Pass ?bbox=west,south,east,north (max ~4 degree span)' });
+      return;
+    }
+    const fc = await fetchOsmFeatures(kind, bbox);
     res.json(fc);
   } catch (err) {
     next(err);

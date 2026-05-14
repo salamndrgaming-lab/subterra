@@ -66,26 +66,38 @@ export async function arcgisQuery<P = Record<string, unknown>>(
   q: ArcGISQuery = {},
   init?: RequestInit,
 ): Promise<GeoJSONFeatureCollection<P>> {
-  const url = buildQueryUrl(endpoint, q, 'geojson');
-  const res = await fetch(url, { ...init, headers: { accept: 'application/json', ...(init?.headers ?? {}) } });
+  // Try f=geojson first (modern ArcGIS).
+  const geojsonUrl = buildQueryUrl(endpoint, q, 'geojson');
+  try {
+    const res = await fetch(geojsonUrl, {
+      ...init,
+      headers: { accept: 'application/json', ...(init?.headers ?? {}) },
+      signal: AbortSignal.timeout(15_000),
+    });
 
-  if (res.ok) {
-    const text = await res.text();
-    // Some servers return JSON even when geojson is requested if there's an
-    // error envelope; sniff the body before trusting it.
-    if (text.startsWith('{') && text.includes('"FeatureCollection"')) {
-      return JSON.parse(text) as GeoJSONFeatureCollection<P>;
+    if (res.ok) {
+      const text = await res.text();
+      if (text.startsWith('{') && text.includes('"FeatureCollection"')) {
+        return JSON.parse(text) as GeoJSONFeatureCollection<P>;
+      }
     }
-    // fall through to esri-json conversion
-    const esriUrl = buildQueryUrl(endpoint, q, 'json');
-    const esriRes = await fetch(esriUrl);
-    if (!esriRes.ok) throw new ArcGISError(esriUrl, esriRes.status, await esriRes.text());
-    const esri = (await esriRes.json()) as EsriResponse;
-    if (esri.error) throw new ArcGISError(esriUrl, 500, esri.error.message);
-    return esriToGeoJson<P>(esri);
+  } catch {
+    // fall through to esri-json
   }
 
-  throw new ArcGISError(url, res.status, await res.text());
+  // Fall back to f=json (older ArcGIS that doesn't speak geojson, or 4xx/5xx
+  // responses to the geojson endpoint).
+  const esriUrl = buildQueryUrl(endpoint, q, 'json');
+  const esriRes = await fetch(esriUrl, { signal: AbortSignal.timeout(15_000) });
+  if (!esriRes.ok) throw new ArcGISError(esriUrl, esriRes.status, await esriRes.text());
+  const esri = (await esriRes.json()) as EsriResponse;
+  if (esri.error) throw new ArcGISError(esriUrl, 500, esri.error.message);
+  return esriToGeoJson<P>(esri);
+}
+
+/** Returns an empty FeatureCollection — handy fallback when an upstream is unreachable. */
+export function emptyFeatureCollection<P = Record<string, unknown>>(): GeoJSONFeatureCollection<P> {
+  return { type: 'FeatureCollection', features: [] };
 }
 
 function buildQueryUrl(endpoint: string, q: ArcGISQuery, format: 'geojson' | 'json'): string {

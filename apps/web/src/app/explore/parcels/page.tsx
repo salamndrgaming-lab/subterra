@@ -6,7 +6,7 @@ export const metadata: Metadata = { title: 'Explore parcels' };
 
 export default function ExploreParcelsPage() {
   return (
-    <div className="flex h-screen flex-col bg-bg">
+    <div className="flex h-full flex-col bg-bg">
       <TopNav />
       <ExploreShell
         title="Parcels"

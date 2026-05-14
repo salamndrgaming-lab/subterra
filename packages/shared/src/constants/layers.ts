@@ -24,6 +24,7 @@ export const LAYER_DEFINITIONS: LayerDefinition[] = [
   { id: 'wells-active', label: 'Wells — Active', group: 'oilgas', defaultVisible: true, minZoom: 7 },
   { id: 'wells-plugged', label: 'Wells — Plugged', group: 'oilgas', defaultVisible: false, minZoom: 8 },
   { id: 'wells-permitted', label: 'Wells — Permitted', group: 'oilgas', defaultVisible: false, minZoom: 8 },
+  { id: 'osm-oilgas', label: 'OSM Oil/Gas Wells', group: 'oilgas', defaultVisible: true, minZoom: 7 },
   { id: 'well-laterals', label: 'Well Laterals (ND/CO)', group: 'oilgas', defaultVisible: false, minZoom: 9 },
   { id: 'blm-fed-oil-gas-leases', label: 'BLM Federal Oil & Gas Leases', group: 'oilgas', defaultVisible: false, minZoom: 6 },
   { id: 'blm-mining-claims-raster', label: 'BLM Mining Claims (raster)', group: 'mining', defaultVisible: false, minZoom: 6 },
@@ -36,6 +37,7 @@ export const LAYER_DEFINITIONS: LayerDefinition[] = [
   { id: 'claims-active', label: 'Mining Claims — Active', group: 'mining', defaultVisible: true, minZoom: 7 },
   { id: 'claims-closed', label: 'Mining Claims — Closed', group: 'mining', defaultVisible: false, minZoom: 8 },
   { id: 'mineral-occurrences', label: 'USGS Mineral Occurrences', group: 'mining', defaultVisible: true, minZoom: 5 },
+  { id: 'osm-mines', label: 'OSM Mines & Quarries', group: 'mining', defaultVisible: true, minZoom: 7 },
   { id: 'historical-mines', label: 'Historical Mines', group: 'mining', defaultVisible: false, minZoom: 6 },
 
   // geology

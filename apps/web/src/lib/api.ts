@@ -59,6 +59,10 @@ export const api = {
       request<GeoJSONFeatureCollection<{ apiNumber: string | null; wellName: string | null; operator: string | null; state: string; source: string }> & { meta: { sources: string[]; unavailableStates: string[] } }>(
         `/api/layers/well-laterals${qs(q)}`,
       ),
+    osmFeatures: (kind: 'mining' | 'oilgas', bbox: [number, number, number, number]) =>
+      request<GeoJSONFeatureCollection<{ osmId: string; osmType: string; kind: string; name: string | null; resource: string | null; operator: string | null }> & { meta?: { unavailable?: string } }>(
+        `/api/layers/osm-features?kind=${kind}&bbox=${bbox.join(',')}`,
+      ),
     claims: (q: LayerQuery = {}) =>
       request<GeoJSONFeatureCollection<MiningClaim>>(`/api/layers/claims${qs(q)}`),
     parcels: (q: LayerQuery = {}) =>

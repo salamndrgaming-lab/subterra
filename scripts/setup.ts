@@ -11,7 +11,7 @@
  *
  * Re-running this is safe — every step is idempotent.
  */
-import 'dotenv/config';
+import dotenv from 'dotenv';
 import { spawn } from 'node:child_process';
 import { copyFileSync, existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -19,6 +19,8 @@ import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+dotenv.config({ path: path.join(repoRoot, '.env.defaults') });
+dotenv.config({ path: path.join(repoRoot, '.env'), override: true });
 
 function step(n: number, msg: string) { console.log(`\n[setup] (${n}) ${msg}`); }
 function info(msg: string) { console.log(`        ${msg}`); }

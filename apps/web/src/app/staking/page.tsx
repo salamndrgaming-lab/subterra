@@ -6,7 +6,7 @@ export const metadata: Metadata = { title: 'Staking toolkit' };
 
 export default function StakingPage() {
   return (
-    <div className="flex h-screen flex-col bg-bg">
+    <div className="flex h-full flex-col bg-bg">
       <TopNav />
       <StakingShell />
     </div>

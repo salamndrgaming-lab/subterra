@@ -14,7 +14,7 @@ export function ProjectsShell() {
   });
 
   return (
-    <main className="mx-auto w-full max-w-7xl flex-1 overflow-y-auto px-6 py-8">
+    <main className="mx-auto min-h-0 w-full max-w-7xl flex-1 overflow-y-auto px-6 py-8">
       <header className="flex items-end justify-between">
         <div>
           <h1 className="font-display text-3xl text-text">Projects &amp; AOIs</h1>

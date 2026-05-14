@@ -41,7 +41,7 @@ export interface WellsQuery {
 }
 
 interface SourceConfig {
-  url: string;
+  url: string | undefined;        // undefined = skip (no public endpoint configured)
   state: string;
   source: string;
   map: (raw: Record<string, unknown>) => WellProps;
@@ -50,9 +50,9 @@ interface SourceConfig {
 
 const ND: SourceConfig = {
   // ND DMR / NDIC oil & gas wells, statewide, points.
-  url:
-    process.env.ND_WELLS_LAYER ??
-    'https://ndgishub.nd.gov/arcgis/rest/services/All_GIS_Data_OilGas/Oil_and_Gas_Well_Locations/MapServer/0/query',
+  // The historical URL is in .env.defaults but the service has been
+  // restructured; we treat it as opt-in until a working endpoint is wired.
+  url: process.env.ND_WELLS_LAYER || undefined,
   state: 'ND',
   source: 'ndic',
   map: (r) => ({
@@ -71,10 +71,8 @@ const ND: SourceConfig = {
 };
 
 const CO: SourceConfig = {
-  // Colorado ECMC public Wells_Spatial layer.
-  url:
-    process.env.CO_WELLS_LAYER ??
-    'https://services1.arcgis.com/zTagxbhxHBVOIYW6/arcgis/rest/services/Wells_Spatial/FeatureServer/0/query',
+  // Colorado ECMC public Wells_Spatial layer (opt-in; URL must be supplied).
+  url: process.env.CO_WELLS_LAYER || undefined,
   state: 'CO',
   source: 'cogcc',
   map: (r) => ({
@@ -93,9 +91,8 @@ const CO: SourceConfig = {
 };
 
 const WY: SourceConfig = {
-  url:
-    process.env.WY_WELLS_LAYER ??
-    'https://services.arcgis.com/RmCCgQtiZLDFtw04/arcgis/rest/services/Wyoming_Oil_and_Gas_Wells/FeatureServer/0/query',
+  // WOGCC oil & gas wells (opt-in; URL must be supplied).
+  url: process.env.WY_WELLS_LAYER || undefined,
   state: 'WY',
   source: 'wogcc',
   map: (r) => ({
@@ -114,11 +111,10 @@ const WY: SourceConfig = {
 };
 
 const TX: SourceConfig = {
-  // Texas RRC publishes a public Wells map service through their GIS Viewer
-  // backend. Layer 0 is statewide well points.
-  url:
-    process.env.TX_WELLS_LAYER ??
-    'https://gis2.rrc.texas.gov/arcgis/rest/services/Wells/Wells/MapServer/0/query',
+  // Texas RRC publishes a public Wells map service via their GIS backend
+  // (opt-in; URL must be supplied — the gis2.rrc.texas.gov host is
+  // frequently unreachable from outside Texas state networks).
+  url: process.env.TX_WELLS_LAYER || undefined,
   state: 'TX',
   source: 'tx_rrc',
   map: (r) => ({
@@ -153,13 +149,14 @@ export async function fetchWells(q: WellsQuery): Promise<GeoJSONFeatureCollectio
     }
     const cfg = SOURCES[state];
     if (!cfg) continue;
+    if (!cfg.url) { unavailable.push(state); continue; }
 
     const where = buildWhere(cfg, q);
     const key = `wells:${state}:${where}:${(q.bbox ?? []).join(',')}:${q.limit ?? 1000}`;
 
     try {
       const fc = await cached(key, 180, () =>
-        arcgisQuery<Record<string, unknown>>(cfg.url, {
+        arcgisQuery<Record<string, unknown>>(cfg.url!, {
           where,
           bbox: q.bbox,
           resultRecordCount: q.limit ?? 1000,
@@ -198,6 +195,7 @@ export async function fetchWellByApi(api: string): Promise<(WellProps & { geom: 
   const key = `wells:detail:${api}`;
   return cached(key, 600, async () => {
     for (const cfg of Object.values(SOURCES)) {
+      if (!cfg.url) continue;
       try {
         const fc = await arcgisQuery<Record<string, unknown>>(cfg.url, {
           where: `API = '${api.replace(/'/g, "''")}' OR API_NO = '${api.replace(/'/g, "''")}' OR API_NUM = '${api.replace(/'/g, "''")}'`,
