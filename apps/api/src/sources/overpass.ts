@@ -26,8 +26,10 @@ const MIRRORS = (process.env.OVERPASS_MIRRORS ?? [
   'https://overpass.openstreetmap.fr/api/interpreter',
 ].join(',')).split(',').map((s) => s.trim()).filter(Boolean);
 
+// Overpass servers 406 anonymous Node/undici user-agents. A browser-like UA
+// + descriptive contact string passes their content-negotiation gate.
 const USER_AGENT = process.env.OVERPASS_USER_AGENT ??
-  'Subterra/0.1 (+https://github.com/salamndrgaming-lab/subterra)';
+  'Mozilla/5.0 Subterra/0.1 (+https://github.com/salamndrgaming-lab/subterra; geospatial-platform)';
 
 export type OsmFeatureKind = 'mining' | 'oilgas';
 
@@ -118,26 +120,30 @@ async function postOverpass(q: string): Promise<OverpassResponse> {
   const endpoints = [PRIMARY, ...MIRRORS];
   let lastError: unknown;
   for (const url of endpoints) {
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        body: new URLSearchParams({ data: q }),
-        headers: {
-          'content-type': 'application/x-www-form-urlencoded',
-          'accept': 'application/json',
-          'user-agent': USER_AGENT,
-        },
-        signal: AbortSignal.timeout(30_000),
-      });
-      if (!res.ok) {
-        const text = (await res.text()).slice(0, 200);
-        lastError = new Error(`${url} → HTTP ${res.status}: ${text}`);
-        // Permanent 4xx on one mirror? try the next.
-        continue;
+    // Try POST first, then GET — some Overpass mirrors only accept GET
+    // for short queries; some 406 the POST content-type from Node.
+    for (const method of ['POST', 'GET'] as const) {
+      try {
+        const reqUrl = method === 'GET' ? `${url}?data=${encodeURIComponent(q)}` : url;
+        const res = await fetch(reqUrl, {
+          method,
+          body: method === 'POST' ? new URLSearchParams({ data: q }) : undefined,
+          headers: {
+            ...(method === 'POST' ? { 'content-type': 'application/x-www-form-urlencoded' } : {}),
+            accept: 'application/json',
+            'user-agent': USER_AGENT,
+          },
+          signal: AbortSignal.timeout(30_000),
+        });
+        if (!res.ok) {
+          const text = (await res.text()).slice(0, 200);
+          lastError = new Error(`${url} [${method}] → HTTP ${res.status}: ${text}`);
+          continue;
+        }
+        return (await res.json()) as OverpassResponse;
+      } catch (err) {
+        lastError = err;
       }
-      return (await res.json()) as OverpassResponse;
-    } catch (err) {
-      lastError = err;
     }
   }
   throw lastError ?? new Error('All Overpass endpoints unreachable');

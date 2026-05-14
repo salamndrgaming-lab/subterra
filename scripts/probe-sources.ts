@@ -86,26 +86,6 @@ const sources: Source[] = [
     name: 'USGS MRDS WFS (alt /wfs path)',
     url: 'https://mrdata.usgs.gov/wfs/mrds?service=WFS&request=GetCapabilities',
   },
-  {
-    id: 'nd_wells',
-    name: 'ND DMR oil & gas wells (FeatureServer)',
-    url: (process.env.ND_WELLS_LAYER ?? 'https://ndgishub.nd.gov/arcgis/rest/services/All_GIS_Data_OilGas/Oil_and_Gas_Well_Locations/MapServer/0').replace(/\/query$/, '') + '?f=json',
-  },
-  {
-    id: 'co_wells',
-    name: 'CO ECMC Wells_Spatial (FeatureServer)',
-    url: (process.env.CO_WELLS_LAYER ?? 'https://services1.arcgis.com/zTagxbhxHBVOIYW6/arcgis/rest/services/Wells_Spatial/FeatureServer/0').replace(/\/query$/, '') + '?f=json',
-  },
-  {
-    id: 'wy_wells',
-    name: 'WY WOGCC oil & gas wells (FeatureServer)',
-    url: (process.env.WY_WELLS_LAYER ?? 'https://services.arcgis.com/RmCCgQtiZLDFtw04/arcgis/rest/services/Wyoming_Oil_and_Gas_Wells/FeatureServer/0').replace(/\/query$/, '') + '?f=json',
-  },
-  {
-    id: 'tx_wells',
-    name: 'TX RRC Wells (MapServer)',
-    url: (process.env.TX_WELLS_LAYER ?? 'https://gis2.rrc.texas.gov/arcgis/rest/services/Wells/Wells/MapServer/0').replace(/\/query$/, '') + '?f=json',
-  },
 
   // Pipelines (HIFLD)
   {
@@ -122,13 +102,20 @@ const sources: Source[] = [
   },
 
   // Truly key-less feature feed — POSTing a tiny query to verify the
-  // interpreter endpoint actually accepts our headers (the `/api/status`
-  // endpoint negotiates content-type differently and is misleading).
+  // interpreter endpoint actually accepts our headers. We supply a
+  // browser-like User-Agent because Overpass mirrors return 406 for the
+  // default Node/undici UA.
   {
     id: 'overpass',
     name: 'OSM Overpass API',
     url: (process.env.OVERPASS_URL ?? 'https://overpass-api.de/api/interpreter') +
       '?data=' + encodeURIComponent('[out:json][timeout:5];node[man_made=mineshaft](38.0,-117.5,38.1,-117.4);out 1;'),
+    init: {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 Subterra/0.1 (+https://github.com/salamndrgaming-lab/subterra)',
+        accept: 'application/json',
+      },
+    },
   },
 
   // Every state oil/gas commission URL the user has configured in .env.
