@@ -5,9 +5,18 @@ import maplibregl, { type Map as MapLibreMap, type GeoJSONSource } from 'maplibr
 import 'maplibre-gl/dist/maplibre-gl.css';
 import '@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css';
 import { useQuery } from '@tanstack/react-query';
-import { DATA_SOURCES } from '@subterra/shared';
+import { DATA_SOURCES, LAYER_DEFINITIONS } from '@subterra/shared';
 import { useMapStore } from '@/stores/map-store';
 import { api } from '@/lib/api';
+
+// Source of truth for each layer's initial visibility. Read once at module
+// scope so every map.addLayer call below uses the same defaults as the
+// sidebar toggles — no race between layer-add and the visibility-sync
+// useEffect can leave a layer visibly off when the user expects it on.
+const INITIAL_VIS: Record<string, 'visible' | 'none'> = Object.fromEntries(
+  LAYER_DEFINITIONS.map((l) => [l.id, l.defaultVisible ? 'visible' : 'none']),
+);
+const vis = (id: string): 'visible' | 'none' => INITIAL_VIS[id] ?? 'none';
 
 // mapbox-gl-draw expects a global `mapboxgl`; satisfy with maplibre-gl so
 // we can reuse the polished Mapbox draw control without paying for Mapbox.
@@ -110,6 +119,14 @@ export function MapView() {
       'bottom-right',
     );
 
+    // Surface any MapLibre runtime error to the dev console so silent
+    // filter rejections / source-load failures don't masquerade as
+    // "no data".
+    map.on('error', (e) => {
+      // eslint-disable-next-line no-console
+      console.warn('[maplibre]', e?.error?.message ?? e);
+    });
+
     map.on('load', () => {
       // USGS PAD-US (Protected Areas Database) — covers federal lands
       // including BLM, USFS, NPS, etc. Cached XYZ tiles via ArcGIS REST.
@@ -167,20 +184,24 @@ export function MapView() {
         layout: { visibility: 'none' },
       });
 
-      // empty geojson sources for app data — populated by the effect below
+      // empty geojson sources for app data — populated by the effect below.
+      // OSM features are split into point + polygon sources so the layer
+      // doesn't need a `['==', ['geometry-type'], ...]` filter (which
+      // MapLibre v5 silently rejects in some configurations).
       map.addSource('wells', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
       map.addSource('claims', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
       map.addSource('mineral-occurrences', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
       map.addSource('well-laterals', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-      map.addSource('osm-mines', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-      map.addSource('osm-oilgas', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      map.addSource('osm-mines-points', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      map.addSource('osm-mines-polygons', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      map.addSource('osm-oilgas-points', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      map.addSource('osm-oilgas-polygons', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
 
       // OSM mining/quarry features — orange-amber points + polygon outlines
       map.addLayer({
         id: 'osm-mines',
         type: 'circle',
-        source: 'osm-mines',
-        filter: ['==', ['geometry-type'], 'Point'],
+        source: 'osm-mines-points',
         minzoom: 5,
         paint: {
           'circle-radius': ['interpolate', ['linear'], ['zoom'], 5, 5, 9, 7, 13, 10],
@@ -189,24 +210,22 @@ export function MapView() {
           'circle-stroke-width': 1,
           'circle-opacity': 0.9,
         },
-        layout: { visibility: 'visible' },
+        layout: { visibility: vis('osm-mines') },
       });
       map.addLayer({
         id: 'osm-mines-polys',
         type: 'fill',
-        source: 'osm-mines',
-        filter: ['==', ['geometry-type'], 'Polygon'],
+        source: 'osm-mines-polygons',
         minzoom: 5,
         paint: { 'fill-color': '#f59e0b', 'fill-opacity': 0.18, 'fill-outline-color': '#f59e0b' },
-        layout: { visibility: 'visible' },
+        layout: { visibility: vis('osm-mines') },
       });
 
       // OSM oil/gas surface infrastructure — emerald points + polygons
       map.addLayer({
         id: 'osm-oilgas',
         type: 'circle',
-        source: 'osm-oilgas',
-        filter: ['==', ['geometry-type'], 'Point'],
+        source: 'osm-oilgas-points',
         minzoom: 5,
         paint: {
           'circle-radius': ['interpolate', ['linear'], ['zoom'], 5, 5, 9, 7, 13, 10],
@@ -215,16 +234,15 @@ export function MapView() {
           'circle-stroke-width': 1,
           'circle-opacity': 0.9,
         },
-        layout: { visibility: 'visible' },
+        layout: { visibility: vis('osm-oilgas') },
       });
       map.addLayer({
         id: 'osm-oilgas-polys',
         type: 'fill',
-        source: 'osm-oilgas',
-        filter: ['==', ['geometry-type'], 'Polygon'],
+        source: 'osm-oilgas-polygons',
         minzoom: 5,
         paint: { 'fill-color': '#10b981', 'fill-opacity': 0.15, 'fill-outline-color': '#10b981' },
-        layout: { visibility: 'visible' },
+        layout: { visibility: vis('osm-oilgas') },
       });
 
       map.addLayer({
@@ -252,6 +270,7 @@ export function MapView() {
           'circle-stroke-color': '#0a0c10',
           'circle-stroke-width': 1,
         },
+        layout: { visibility: vis('wells-active') },
       });
       map.addLayer({
         id: 'wells-plugged',
@@ -264,6 +283,7 @@ export function MapView() {
           'circle-stroke-color': '#0a0c10',
           'circle-stroke-width': 1,
         },
+        layout: { visibility: vis('wells-plugged') },
       });
       map.addLayer({
         id: 'wells-permitted',
@@ -276,6 +296,7 @@ export function MapView() {
           'circle-stroke-color': '#0a0c10',
           'circle-stroke-width': 1,
         },
+        layout: { visibility: vis('wells-permitted') },
       });
 
       // mining claims — fill polygons split by status
@@ -289,6 +310,7 @@ export function MapView() {
           'fill-opacity': 0.18,
           'fill-outline-color': '#f59e0b',
         },
+        layout: { visibility: vis('claims-active') },
       });
       map.addLayer({
         id: 'claims-active-outline',
@@ -296,6 +318,7 @@ export function MapView() {
         source: 'claims',
         filter: ['==', ['get', 'status'], 'active'],
         paint: { 'line-color': '#f59e0b', 'line-width': 1.2 },
+        layout: { visibility: vis('claims-active') },
       });
       map.addLayer({
         id: 'claims-closed',
@@ -303,6 +326,7 @@ export function MapView() {
         source: 'claims',
         filter: ['==', ['get', 'status'], 'closed'],
         paint: { 'fill-color': '#64748b', 'fill-opacity': 0.12, 'fill-outline-color': '#64748b' },
+        layout: { visibility: vis('claims-closed') },
       });
 
       // USGS MRDS occurrences
@@ -317,6 +341,7 @@ export function MapView() {
           'circle-stroke-width': 1,
           'circle-opacity': 0.85,
         },
+        layout: { visibility: vis('mineral-occurrences') },
       });
 
       // hover cursor
@@ -459,10 +484,11 @@ export function MapView() {
     else map.once('load', install);
   }, [rasterCatalog.data]);
 
-  // sync layer visibility
+  // sync layer visibility — guard against running before the map style
+  // is loaded, which would throw silently inside setLayoutProperty.
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !map.isStyleLoaded()) return;
+    if (!map) return;
     const apply = () => {
       for (const [id, visible] of Object.entries(layerVisibility)) {
         if (map.getLayer(id)) {
@@ -480,7 +506,8 @@ export function MapView() {
         }
       }
     };
-    apply();
+    if (map.isStyleLoaded()) apply();
+    else map.once('load', apply);
   }, [layerVisibility]);
 
   // sync data sources
@@ -496,10 +523,20 @@ export function MapView() {
       if (occSrc && occQuery.data) occSrc.setData(occQuery.data as GeoJSON.FeatureCollection);
       const latSrc = map.getSource('well-laterals') as GeoJSONSource | undefined;
       if (latSrc && lateralsQuery.data) latSrc.setData(lateralsQuery.data as GeoJSON.FeatureCollection);
-      const osmMinesSrc = map.getSource('osm-mines') as GeoJSONSource | undefined;
-      if (osmMinesSrc && osmMiningQuery.data) osmMinesSrc.setData(osmMiningQuery.data as GeoJSON.FeatureCollection);
-      const osmOilSrc = map.getSource('osm-oilgas') as GeoJSONSource | undefined;
-      if (osmOilSrc && osmOilGasQuery.data) osmOilSrc.setData(osmOilGasQuery.data as GeoJSON.FeatureCollection);
+      // Split OSM features into point / polygon sources so each layer
+      // can paint without depending on a geometry-type filter expression.
+      if (osmMiningQuery.data) {
+        const pts = map.getSource('osm-mines-points') as GeoJSONSource | undefined;
+        const polys = map.getSource('osm-mines-polygons') as GeoJSONSource | undefined;
+        if (pts) pts.setData(splitByGeometry(osmMiningQuery.data, 'Point') as GeoJSON.FeatureCollection);
+        if (polys) polys.setData(splitByGeometry(osmMiningQuery.data, 'Polygon') as GeoJSON.FeatureCollection);
+      }
+      if (osmOilGasQuery.data) {
+        const pts = map.getSource('osm-oilgas-points') as GeoJSONSource | undefined;
+        const polys = map.getSource('osm-oilgas-polygons') as GeoJSONSource | undefined;
+        if (pts) pts.setData(splitByGeometry(osmOilGasQuery.data, 'Point') as GeoJSON.FeatureCollection);
+        if (polys) polys.setData(splitByGeometry(osmOilGasQuery.data, 'Polygon') as GeoJSON.FeatureCollection);
+      }
     };
     if (map.isStyleLoaded()) update();
     else map.once('load', update);
@@ -514,6 +551,15 @@ export function MapView() {
  */
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] ?? c));
+}
+
+/** Filter a FeatureCollection down to a single geometry type. */
+function splitByGeometry<T extends { features?: Array<{ geometry?: { type?: string } | null }> } | null | undefined>(
+  fc: T,
+  kind: 'Point' | 'Polygon' | 'LineString' | 'MultiPolygon' | 'MultiLineString',
+): { type: 'FeatureCollection'; features: NonNullable<T>['features'] } {
+  const features = (fc?.features ?? []).filter((f) => f?.geometry?.type === kind);
+  return { type: 'FeatureCollection', features: features as NonNullable<T>['features'] };
 }
 
 const drawStyles = [
