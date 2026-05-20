@@ -16,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib
 import json
 import logging
@@ -102,16 +103,37 @@ def run_tippecanoe(results: list[SourceResult]) -> Path:
     return out
 
 
+def sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def write_manifest(results: list[SourceResult], pmtiles_path: Path) -> Path:
-    """Emit out/manifest.json — what the Worker serves at /manifest."""
+    """Emit out/manifest.json — what the Worker serves at /manifest.
+
+    Public URLs are computed from TILES_BASE_URL (set in GitHub Actions
+    env, defaults to the published R2 public-bucket URL). The web app
+    fetches /manifest, then uses these URLs directly — no signed URLs,
+    no auth, just public read-only R2."""
+    tiles_base = os.environ.get(
+        "TILES_BASE_URL", "https://tiles.subterra.app",
+    ).rstrip("/")
+
+    pmtiles_hash = sha256(pmtiles_path) if pmtiles_path.exists() else ""
+    features_db = OUT / "subterra-features.db"
+    features_hash = sha256(features_db) if features_db.exists() else ""
+
     manifest = {
         "version": int(time.time()),
         "publishedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "pmtilesUrl": "https://r2.subterra.app/tiles/subterra.pmtiles",
-        "featuresDbUrl": "https://r2.subterra.app/features/subterra-features.db",
+        "pmtilesUrl": f"{tiles_base}/tiles/subterra.pmtiles",
+        "featuresDbUrl": f"{tiles_base}/features/subterra-features.db",
         "checksums": {
-            "pmtiles": "",      # filled by upload step in CI
-            "featuresDb": "",
+            "pmtiles": pmtiles_hash,
+            "featuresDb": features_hash,
         },
         "counts": {r.layer_id: r.feature_count for r in results},
     }
