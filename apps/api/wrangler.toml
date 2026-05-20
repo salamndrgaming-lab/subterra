@@ -16,7 +16,7 @@ enabled = true
 [[d1_databases]]
 binding = "DB"
 database_name = "subterra"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "5181e327-3a1b-4676-8254-b9d787f391d5"
 
 [[r2_buckets]]
 binding = "TILES"
