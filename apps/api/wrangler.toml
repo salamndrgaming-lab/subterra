@@ -1,0 +1,26 @@
+# Cloudflare Worker config for the Subterra API.
+# The actual D1 database_id + R2 bucket get filled in via env vars in CI
+# (see .github/workflows/deploy.yml). Locally, `wrangler dev` reads the
+# placeholders in [[d1_databases]] / [[r2_buckets]] below — they don't
+# need to be valid for local dev because the dev simulator runs in
+# memory.
+
+name = "subterra-api"
+main = "src/index.ts"
+compatibility_date = "2024-12-20"
+compatibility_flags = ["nodejs_compat"]
+
+[observability]
+enabled = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "subterra"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[[r2_buckets]]
+binding = "TILES"
+bucket_name = "subterra-tiles"
+
+[vars]
+ENVIRONMENT = "production"

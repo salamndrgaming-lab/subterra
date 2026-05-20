@@ -1,4 +1,4 @@
-# dependencies
+# node
 node_modules/
 .pnp
 .pnp.js
@@ -8,7 +8,7 @@ dist/
 build/
 .next/
 .turbo/
-out/
+.vite/
 *.tsbuildinfo
 
 # env
@@ -21,25 +21,45 @@ out/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
 
 # editor
 .vscode/
 .idea/
 .DS_Store
 
-# data / etl artifacts
-data/raw/
-data/cache/
+# python venv + caches
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# etl artifacts (built locally, served from R2 in prod)
+etl/work/
+etl/out/
+*.pmtiles
+*.osm.pbf
+*.gpkg
 *.shp
 *.shx
 *.dbf
 *.zip
-*.las
 
-# misc
+# wrangler
+.wrangler/
+.dev.vars
+worker-configuration.d.ts
+
+# playwright
+test-results/
+playwright-report/
+playwright/.cache/
+
+# coverage
 coverage/
 .nyc_output/
 
-# electron-builder output
-apps/desktop/dist/
-apps/desktop/.cache/
+# misc
+.cache/

@@ -1,0 +1,50 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build:shared
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run test:unit
+      - run: npx playwright install --with-deps chromium
+      - run: npm run build:web
+      - run: npm run test:e2e
+
+  conflict-check:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify no merge conflicts with base branch
+        run: |
+          git fetch origin "${{ github.base_ref }}"
+          MERGE_RESULT=$(git merge-tree "$(git merge-base HEAD "origin/${{ github.base_ref }}")" HEAD "origin/${{ github.base_ref }}")
+          if echo "$MERGE_RESULT" | grep -q "^<<<<<<< "; then
+            echo "::error::Merge conflict with origin/${{ github.base_ref }}"
+            echo "$MERGE_RESULT"
+            exit 1
+          fi
+          echo "No conflicts with base branch."

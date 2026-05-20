@@ -1,6 +1,6 @@
 {
   "name": "@subterra/shared",
-  "version": "0.1.0",
+  "version": "0.0.0",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
@@ -9,23 +9,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    },
-    "./types": {
-      "types": "./dist/types/index.d.ts",
-      "default": "./dist/types/index.js"
-    },
-    "./constants": {
-      "types": "./dist/constants/index.d.ts",
-      "default": "./dist/constants/index.js"
     }
   },
   "files": ["dist", "src"],
   "scripts": {
-    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true});require('fs').rmSync('tsconfig.tsbuildinfo',{force:true})\"",
-    "build": "npm run clean && tsc -p tsconfig.json && node -e \"if(!require('fs').existsSync('dist/index.js'))throw new Error('build failed: dist/index.js not written')\"",
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json && node -e \"if(!require('fs').existsSync('dist/index.js'))throw new Error('build:shared failed: dist/index.js missing')\"",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {
-    "typescript": "^5.6.3"
+    "typescript": "^5.7.2"
   }
 }

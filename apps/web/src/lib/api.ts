@@ -1,179 +1,39 @@
-import type {
-  GeoJSONFeatureCollection,
-  Well,
-  WellProductionSeries,
-  MiningClaim,
-  MineralOccurrence,
-  Parcel,
-  OpportunityScore,
-} from '@subterra/shared';
-import { useAuthStore } from '@/stores/auth-store';
+/**
+ * Thin fetch wrapper for the Subterra Worker API.
+ *
+ * Endpoints implemented in later phases return 501 with a clear body.
+ * This client throws an Error with the server's `message` field so the
+ * UI can show a real explanation, not a generic "failed to load".
+ */
 
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+import type { TileManifest } from '@subterra/shared';
+
+const BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8787';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const token = typeof window !== 'undefined' ? useAuthStore.getState().tokens?.accessToken : null;
-  const res = await fetch(`${BASE_URL}${path}`, {
+  const res = await fetch(`${BASE}${path}`, {
+    credentials: 'include',
     ...init,
     headers: {
+      accept: 'application/json',
       'content-type': 'application/json',
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
       ...(init?.headers ?? {}),
     },
   });
+  const body = await res.text();
+  const parsed = body ? (JSON.parse(body) as unknown) : null;
   if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`API ${res.status}: ${body || res.statusText}`);
+    const msg =
+      (parsed && typeof parsed === 'object' && 'message' in parsed && typeof parsed.message === 'string'
+        ? parsed.message
+        : `${res.status} ${res.statusText}`);
+    throw new Error(msg);
   }
-  return (await res.json()) as T;
-}
-
-export interface LayerQuery {
-  bbox?: [number, number, number, number];
-  state?: string;
-  county?: string;
-  status?: string;
-  commodity?: string;
-  limit?: number;
-}
-
-function qs(params: LayerQuery): string {
-  const search = new URLSearchParams();
-  if (params.bbox) search.set('bbox', params.bbox.join(','));
-  if (params.state) search.set('state', params.state);
-  if (params.county) search.set('county', params.county);
-  if (params.status) search.set('status', params.status);
-  if (params.commodity) search.set('commodity', params.commodity);
-  if (params.limit) search.set('limit', String(params.limit));
-  const s = search.toString();
-  return s ? `?${s}` : '';
+  return parsed as T;
 }
 
 export const api = {
-  layers: {
-    wells: (q: LayerQuery = {}) =>
-      request<GeoJSONFeatureCollection<Well> & { meta: { sources: string[]; unavailableStates: string[] } }>(
-        `/api/layers/wells${qs(q)}`,
-      ),
-    wellLaterals: (q: LayerQuery = {}) =>
-      request<GeoJSONFeatureCollection<{ apiNumber: string | null; wellName: string | null; operator: string | null; state: string; source: string }> & { meta: { sources: string[]; unavailableStates: string[] } }>(
-        `/api/layers/well-laterals${qs(q)}`,
-      ),
-    osmFeatures: (kind: 'mining' | 'oilgas', bbox: [number, number, number, number]) =>
-      request<GeoJSONFeatureCollection<{ osmId: string; osmType: string; kind: string; name: string | null; resource: string | null; operator: string | null }> & { meta?: { unavailable?: string } }>(
-        `/api/layers/osm-features?kind=${kind}&bbox=${bbox.join(',')}`,
-      ),
-    claims: (q: LayerQuery = {}) =>
-      request<GeoJSONFeatureCollection<MiningClaim>>(`/api/layers/claims${qs(q)}`),
-    parcels: (q: LayerQuery = {}) =>
-      request<GeoJSONFeatureCollection<Parcel>>(`/api/layers/parcels${qs(q)}`),
-    mineralOccurrences: (q: LayerQuery = {}) =>
-      request<GeoJSONFeatureCollection<MineralOccurrence>>(`/api/layers/mineral-occurrences${qs(q)}`),
-  },
-  wells: {
-    detail: (id: string) =>
-      request<{ well: Well; production: WellProductionSeries; offsets: Array<{ id: string; wellName: string | null; operator: string | null; status: string | null; spudDate: string | null; lateralLengthFt: number | null }> }>(`/api/wells/${id}`),
-  },
-  claims: {
-    detail: (id: string) =>
-      request<{ claim: MiningClaim; nearbyOccurrences: Array<MineralOccurrence & { distanceKm: number }>; filingHistory: Array<{ event: string; date: string | null; agency: string | null }> }>(`/api/claims/${id}`),
-  },
-  parcels: {
-    detail: (id: string) =>
-      request<{ parcel: Parcel; activity: { nearbyWells: Array<{ id: string; wellName: string | null; operator: string | null; status: string | null; distanceKm: number }>; nearbyClaims: Array<{ id: string; serialNumber: string; claimName: string | null; status: string | null; commodity: string | null; distanceKm: number }> } }>(`/api/parcels/${id}`),
-  },
-  search: (params: { q?: string; state?: string; county?: string; commodity?: string; bbox?: [number, number, number, number]; types?: string }) =>
-    request<{ count: number; results: Array<{ kind: string; id: string; label: string; subtitle?: string; coordinates?: [number, number]; meta?: Record<string, unknown> }> }>(
-      `/api/search?${new URLSearchParams(
-        Object.entries({
-          ...params,
-          bbox: params.bbox?.join(','),
-        }).filter(([, v]) => v !== undefined && v !== null) as [string, string][],
-      ).toString()}`,
-    ),
-  score: (params: { lat: number; lng: number; radiusKm: number; commodity?: string }) =>
-    request<OpportunityScore>(
-      `/api/score?lat=${params.lat}&lng=${params.lng}&radius=${params.radiusKm}${params.commodity ? `&commodity=${params.commodity}` : ''}`,
-    ),
-  aois: {
-    list: (projectId?: string) =>
-      request<{ aois: SavedAoi[] }>(`/api/aois${projectId ? `?projectId=${projectId}` : ''}`),
-    create: (body: { name: string; notes?: string | null; projectId?: string | null; geometry: { type: 'Polygon'; coordinates: number[][][] } }) =>
-      request<{ aoi: SavedAoi }>(`/api/aois`, { method: 'POST', body: JSON.stringify(body) }),
-    remove: (id: string) => request<void>(`/api/aois/${id}`, { method: 'DELETE' }),
-  },
-  sources: {
-    health: () =>
-      request<{ overall: 'ok' | 'degraded'; checkedAt: string; sources: SourceHealth[] }>(`/api/sources/health`),
-    rasters: () =>
-      request<{
-        federalLands: RasterSource[];
-        leases: RasterSource[];
-        pipelines: RasterSource[];
-        base: Record<string, { mapServer: string; attribution: string }>;
-      }>(`/api/sources/rasters`),
-    mode: () =>
-      request<{
-        db: 'ok' | 'unavailable';
-        redis: 'ok' | 'unavailable';
-        demoMode: boolean;
-        capabilities: {
-          publicLayers: boolean; geocoder: boolean; opportunityScoring: boolean;
-          auth: boolean; savedAois: boolean; projects: boolean; alerts: boolean;
-          ingestedProduction: boolean; ingestedParcels: boolean;
-        };
-      }>(`/api/sources/mode`),
-  },
-  staking: {
-    checkConflict: (geometry: { type: 'Polygon'; coordinates: number[][][] }) =>
-      request<{ acreage: number; conflictCount: number; conflicts: Array<{ serialNumber: string; claimName: string | null; owner: string | null; commodity: string | null; acreage: number | null }>; source: string }>(
-        `/api/staking/check-conflict`, { method: 'POST', body: JSON.stringify({ geometry }) },
-      ),
-  },
-  auth: {
-    register: (body: { email: string; password: string; displayName?: string }) =>
-      request<AuthResponse>(`/api/auth/register`, { method: 'POST', body: JSON.stringify(body) }),
-    login: (body: { email: string; password: string }) =>
-      request<AuthResponse>(`/api/auth/login`, { method: 'POST', body: JSON.stringify(body) }),
-    logout: () => request<{ ok: true }>(`/api/auth/logout`, { method: 'POST' }),
-    me: () =>
-      request<{ user: { id: string; email: string; displayName: string | null; role: 'admin' | 'pro' | 'free'; isVerified: boolean } }>(`/api/auth/me`),
-  },
+  health: () =>
+    request<{ status: 'ok' | 'degraded'; components: { db: string; tiles: string } }>(`/health`),
+  manifest: () => request<TileManifest>(`/manifest`),
 };
-
-export interface AuthResponse {
-  user: { id: string; email: string; displayName: string | null; role: 'admin' | 'pro' | 'free' };
-  tokens: { accessToken: string; refreshToken: string; expiresIn: number };
-}
-
-export interface SavedAoi {
-  id: string;
-  userId: string;
-  projectId: string | null;
-  name: string;
-  notes: string | null;
-  areaAcres: number | null;
-  geom: { type: 'MultiPolygon'; coordinates: number[][][][] };
-  centroid: { type: 'Point'; coordinates: [number, number] };
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface SourceHealth {
-  id: string;
-  name: string;
-  url: string;
-  status: 'ok' | 'degraded' | 'down';
-  httpStatus: number | null;
-  latencyMs: number | null;
-  error: string | null;
-}
-
-export interface RasterSource {
-  id: string;
-  label: string;
-  mapServer: string;
-  opacity: number;
-  minZoom: number;
-  attribution: string;
-}

@@ -9,13 +9,10 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true,
     "declaration": true,
-    "declarationMap": false,
-    "sourceMap": false,
-    "incremental": false,
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    "incremental": false
   },
   "include": ["src/**/*"]
 }

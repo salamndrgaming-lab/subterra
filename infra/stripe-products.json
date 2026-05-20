@@ -1,0 +1,52 @@
+{
+  "$comment": "Run scripts/sync-stripe.ts after editing to upsert these products + prices in your Stripe account. Used in Phase 7.",
+  "products": [
+    {
+      "id": "subterra-prospector",
+      "name": "Subterra Prospector",
+      "description": "Save AOIs, draw polygons, 5 alert rules, Notice-of-Location export 3/mo. Built for solo prospectors and small landmen.",
+      "tier": "prospector",
+      "monthly_usd": 29,
+      "annual_usd": 290,
+      "features": [
+        "Unlimited map view + geocoder",
+        "Save up to 25 AOIs",
+        "5 active alert rules",
+        "3 NoL packets per month",
+        "Email support"
+      ]
+    },
+    {
+      "id": "subterra-operator",
+      "name": "Subterra Operator",
+      "description": "Unlimited NoL export, bulk CSV/Shapefile download, opportunity score endpoint, 25 alert rules. Built for junior explorers and small operators.",
+      "tier": "operator",
+      "monthly_usd": 99,
+      "annual_usd": 990,
+      "features": [
+        "Everything in Prospector",
+        "Unlimited NoL packets",
+        "Unlimited AOIs",
+        "25 active alert rules",
+        "Bulk CSV / Shapefile / GeoJSON export",
+        "Opportunity score API",
+        "Priority email support"
+      ]
+    },
+    {
+      "id": "subterra-enterprise",
+      "name": "Subterra Enterprise",
+      "description": "Programmatic API access, custom commodity weighting, white-label embed for landman shops and consultancies.",
+      "tier": "enterprise",
+      "monthly_usd": 499,
+      "annual_usd": 4990,
+      "features": [
+        "Everything in Operator",
+        "REST + webhook API",
+        "Custom commodity weighting",
+        "White-label embed",
+        "Slack / phone support"
+      ]
+    }
+  ]
+}
