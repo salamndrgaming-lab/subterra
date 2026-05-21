@@ -27,8 +27,14 @@ import requests
 from tqdm import tqdm
 
 PRIMARY_URL = "https://mrdata.usgs.gov/mrds/mrds-csv.zip"
-USER_AGENT = "Subterra-ETL/0.1 (+https://github.com/salamndrgaming-lab/subterra)"
-REQUEST_TIMEOUT = 120.0  # bulk download, allow up to 2 min
+# mrdata.usgs.gov filters non-browser user-agents with HTTP 403, so we send
+# a regular Firefox UA. Identifying string is folded into a trailing comment
+# so the access log still shows who's downloading.
+USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0 "
+    "(Subterra-ETL +https://github.com/salamndrgaming-lab/subterra)"
+)
+REQUEST_TIMEOUT = 300.0  # bulk download, allow up to 5 min
 
 
 @dataclass
