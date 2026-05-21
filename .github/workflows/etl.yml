@@ -36,19 +36,34 @@ jobs:
       - name: Run ETL
         env:
           EIA_API_KEY: ${{ secrets.EIA_API_KEY }}
-        run: python etl/refresh.py
+        run: |
+          python etl/refresh.py
+          echo "--- etl/out contents ---"
+          ls -la etl/out
+          test -s etl/out/subterra.pmtiles || { echo "::error::pmtiles missing"; exit 1; }
+          test -s etl/out/manifest.json   || { echo "::error::manifest missing"; exit 1; }
 
-      - name: Upload PMTiles to R2
+      - name: Upload PMTiles + manifest to R2 (remote)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        if: ${{ hashFiles('etl/out/subterra.pmtiles') != '' }}
         run: |
-          npx wrangler r2 object put subterra-tiles/tiles/subterra.pmtiles \
-            --file=etl/out/subterra.pmtiles
-          npx wrangler r2 object put subterra-tiles/manifest.json \
+          set -euo pipefail
+          echo "uploading $(du -h etl/out/subterra.pmtiles | cut -f1) of tiles → R2"
+          npx --yes wrangler@3 r2 object put \
+            subterra-tiles/tiles/subterra.pmtiles \
+            --file=etl/out/subterra.pmtiles \
+            --remote
+          npx --yes wrangler@3 r2 object put \
+            subterra-tiles/manifest.json \
             --file=etl/out/manifest.json \
-            --content-type=application/json
+            --content-type=application/json \
+            --remote
+          echo "--- verifying remote bucket ---"
+          npx --yes wrangler@3 r2 object get \
+            subterra-tiles/manifest.json --remote --pipe \
+            | head -c 400
+          echo
 
       - name: Open issue on failure
         if: failure()

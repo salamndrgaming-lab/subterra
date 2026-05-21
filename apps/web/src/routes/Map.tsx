@@ -3,7 +3,7 @@ import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { LAYERS, LAYER_GROUPS, type LayerDef, type TileManifest } from '@subterra/shared';
+import { LAYERS, LAYER_GROUPS, type LayerDef } from '@subterra/shared';
 import { cn } from '@/lib/cn';
 import { fetchManifest } from '@/lib/manifest';
 import { useLayerVisibility } from '@/stores/layers';
@@ -20,7 +20,7 @@ const BASE_STYLE =
  * Zustand store; the sidebar toggles only ever flip `layout.visibility`
  * on layers that already exist — no add/remove churn at runtime.
  */
-export function MapPage(): JSX.Element {
+export function MapPage() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const [styleLoaded, setStyleLoaded] = useState(false);
@@ -56,7 +56,6 @@ export function MapPage(): JSX.Element {
       'bottom-right',
     );
     map.on('error', (e) => {
-      // eslint-disable-next-line no-console
       console.warn('[maplibre]', e?.error?.message ?? e);
     });
     map.once('load', () => setStyleLoaded(true));
@@ -90,7 +89,8 @@ export function MapPage(): JSX.Element {
     };
     if (map.isStyleLoaded()) install();
     else map.once('load', install);
-  }, [manifestQuery.data]); // visibility tracked separately below
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- visibility is synced by a separate effect below; including it here would cause unnecessary re-installs of every layer on every toggle.
+  }, [manifestQuery.data]);
 
   // 3. Sync visibility — flip `layout.visibility` whenever the user toggles.
   useEffect(() => {
@@ -186,7 +186,7 @@ export function MapPage(): JSX.Element {
 
 // ─── small components ──────────────────────────────────────────────────
 
-function Section({ title, children }: { title: string; children: React.ReactNode }): JSX.Element {
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="mb-4">
       <div className="mb-1.5 px-1 font-mono text-[10px] uppercase tracking-wider text-text-muted">
@@ -209,7 +209,7 @@ function LayerRow({
   visible: boolean;
   count: number;
   onToggle: () => void;
-}): JSX.Element {
+}) {
   return (
     <button
       type="button"
@@ -238,7 +238,7 @@ function LayerRow({
   );
 }
 
-function StatusPill({ label, ok }: { label: string; ok: boolean }): JSX.Element {
+function StatusPill({ label, ok }: { label: string; ok: boolean }) {
   return (
     <span
       data-testid={`pill-${label.split(' ')[0]}`}
@@ -256,7 +256,7 @@ function StatusPill({ label, ok }: { label: string; ok: boolean }): JSX.Element 
   );
 }
 
-function Logo(): JSX.Element {
+function Logo() {
   return (
     <svg width="18" height="18" viewBox="0 0 22 22" fill="none" aria-hidden>
       <path d="M11 2 L20 18 L2 18 Z" stroke="#f59e0b" strokeWidth="1.5" />

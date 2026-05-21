@@ -55,10 +55,10 @@ app.get('/health', async (c) => {
 });
 
 /**
- * Tile manifest pass-through. The web app calls /manifest to discover
- * the current pmtiles + features.db version. This proxies the canonical
- * manifest.json file from R2 so the URL the web app uses is stable even
- * when we rotate R2 buckets or move to a different storage backend.
+ * Tile manifest. Reads the canonical manifest.json from R2 and rewrites
+ * pmtilesUrl / featuresDbUrl to point at this Worker's own /tiles + /features
+ * routes, regardless of what the ETL wrote. Keeps the web app free of any
+ * external-bucket DNS dependency — every URL it sees is same-origin.
  */
 app.get('/manifest', async (c) => {
   const obj = await c.env.TILES.get('manifest.json');
@@ -72,14 +72,69 @@ app.get('/manifest', async (c) => {
       404,
     );
   }
-  const body = await obj.text();
-  return new Response(body, {
+  const raw = await obj.text();
+  let manifest: Record<string, unknown>;
+  try {
+    manifest = JSON.parse(raw);
+  } catch {
+    return c.json({ error: 'manifest_invalid_json' }, 502);
+  }
+  const origin = new URL(c.req.url).origin;
+  manifest.pmtilesUrl = `${origin}/tiles/subterra.pmtiles`;
+  manifest.featuresDbUrl = `${origin}/features/subterra-features.db`;
+  return new Response(JSON.stringify(manifest), {
     headers: {
       'content-type': 'application/json',
       'cache-control': 'public, max-age=60',
     },
   });
 });
+
+/**
+ * Range-aware streaming proxy for tile + feature files in R2. The PMTiles
+ * library issues HTTP Range requests against the pmtiles URL; we honor
+ * them by passing the Range header through to R2.get(..., { range }).
+ */
+type OffsetRange = { offset: number; length?: number };
+
+async function serveR2(c: { env: Env; req: { url: string; header: (n: string) => string | undefined } }, key: string, contentType: string): Promise<Response> {
+  const rangeHeader = c.req.header('range');
+  let range: OffsetRange | undefined;
+  if (rangeHeader) {
+    const m = /^bytes=(\d+)-(\d*)$/.exec(rangeHeader);
+    if (m) {
+      const offset = Number(m[1]);
+      const end = m[2] ? Number(m[2]) : undefined;
+      range = end !== undefined ? { offset, length: end - offset + 1 } : { offset };
+    }
+  }
+  const obj = await c.env.TILES.get(key, range ? { range } : undefined);
+  if (!obj) return new Response('not found', { status: 404 });
+  const total = obj.size;
+  const headers: Record<string, string> = {
+    'content-type': contentType,
+    'cache-control': 'public, max-age=300',
+    'accept-ranges': 'bytes',
+    etag: obj.httpEtag,
+  };
+  if (range) {
+    const start = range.offset;
+    const length = range.length ?? total - start;
+    const end = start + length - 1;
+    headers['content-range'] = `bytes ${start}-${end}/${total}`;
+    headers['content-length'] = String(length);
+    return new Response(obj.body, { status: 206, headers });
+  }
+  headers['content-length'] = String(total);
+  return new Response(obj.body, { status: 200, headers });
+}
+
+app.get('/tiles/subterra.pmtiles', (c) =>
+  serveR2(c, 'tiles/subterra.pmtiles', 'application/octet-stream'),
+);
+app.get('/features/subterra-features.db', (c) =>
+  serveR2(c, 'features/subterra-features.db', 'application/vnd.sqlite3'),
+);
 
 // ─── routes filled in by later phases ───────────────────────────────────
 
@@ -123,7 +178,6 @@ app.notFound((c) =>
 );
 
 app.onError((err, c) => {
-  // eslint-disable-next-line no-console
   console.error('[api] unhandled error', err);
   return c.json({ error: 'internal_error', message: err.message }, 500);
 });
