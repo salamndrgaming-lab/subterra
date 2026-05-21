@@ -49,19 +49,20 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -euo pipefail
+          # wrangler v3 R2 object commands default to the remote bucket;
+          # --local would opt into the dev simulator. Don't pass --remote
+          # (not a recognized flag).
           echo "uploading $(du -h etl/out/subterra.pmtiles | cut -f1) of tiles → R2"
           npx --yes wrangler@3 r2 object put \
             subterra-tiles/tiles/subterra.pmtiles \
-            --file=etl/out/subterra.pmtiles \
-            --remote
+            --file=etl/out/subterra.pmtiles
           npx --yes wrangler@3 r2 object put \
             subterra-tiles/manifest.json \
             --file=etl/out/manifest.json \
-            --content-type=application/json \
-            --remote
-          echo "--- verifying remote bucket ---"
+            --content-type=application/json
+          echo "--- verifying remote bucket (first 400 bytes of manifest) ---"
           npx --yes wrangler@3 r2 object get \
-            subterra-tiles/manifest.json --remote --pipe \
+            subterra-tiles/manifest.json --pipe \
             | head -c 400
           echo
 
