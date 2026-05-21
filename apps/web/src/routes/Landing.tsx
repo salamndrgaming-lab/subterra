@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 
-export function LandingPage(): JSX.Element {
+export function LandingPage() {
   return (
     <div className="relative min-h-full overflow-hidden bg-bg">
       <div
@@ -24,7 +24,7 @@ export function LandingPage(): JSX.Element {
         </div>
 
         <h1 className="mt-6 font-mono text-5xl font-medium tracking-tight text-text md:text-7xl">
-          The map of <span className="text-accent">what's underneath.</span>
+          The map of <span className="text-accent">what&apos;s underneath.</span>
         </h1>
 
         <p className="mt-6 max-w-2xl text-lg leading-relaxed text-text-subtle md:text-xl">
