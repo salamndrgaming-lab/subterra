@@ -53,6 +53,23 @@ function run(args, opts = {}) {
   }
 }
 
+/** Run `npx ...` and tee stdout to the terminal while also capturing it. */
+function runCapture(args, opts = {}) {
+  const printable = ['npx', ...args].join(' ');
+  console.log(`\n▸ ${printable}`);
+  const r = spawnSync(NPX, args, {
+    encoding: 'utf8',
+    shell: isWindows,
+    stdio: ['ignore', 'pipe', 'inherit'],
+    ...opts,
+  });
+  process.stdout.write(r.stdout || '');
+  if (r.status !== 0) {
+    throw new Error(`Command failed (exit ${r.status}): ${printable}`);
+  }
+  return r.stdout || '';
+}
+
 async function findD1Id() {
   // 1. CLI arg
   const argHit = process.argv.find((a) => a.startsWith('--d1-id='));
@@ -107,44 +124,76 @@ function patchToml(id) {
   return before;
 }
 
+function runNpm(args, env = {}) {
+  const NPM = isWindows ? 'npm.cmd' : 'npm';
+  const printable = ['npm', ...args].join(' ');
+  console.log(`\n▸ ${printable}`);
+  const r = spawnSync(NPM, args, {
+    stdio: 'inherit',
+    shell: isWindows,
+    cwd: ROOT,
+    env: { ...process.env, ...env },
+  });
+  if (r.status !== 0) {
+    throw new Error(`\`${printable}\` failed (exit ${r.status}).`);
+  }
+}
+
+function parseWorkerUrl(deployOutput) {
+  // wrangler deploy prints lines like "  https://subterra-api.<acct>.workers.dev"
+  const m = deployOutput.match(/https:\/\/subterra-api\.[A-Za-z0-9-]+\.workers\.dev/);
+  return m ? m[0] : null;
+}
+
 async function main() {
-  // Prompt FIRST (before any spawn touches stdin — that's what broke
-  // the prior version: on Windows, `npm run build && node deploy.mjs`
-  // leaves stdin in a non-blocking state by the time readline tries
-  // to read).
+  // Prompt FIRST so stdin is pristine — no prior spawn has touched it.
   const id = await findD1Id();
 
-  // Build now that we have the id; build steps spawn lots of child
-  // processes but no longer need to read stdin.
-  console.log('\n▸ building (shared → api → web)…');
-  const NPM = isWindows ? 'npm.cmd' : 'npm';
-  const buildSteps = [
-    ['run', 'build:shared'],
-    ['run', 'build:api'],
-    ['run', 'build:web'],
-  ];
-  for (const args of buildSteps) {
-    const r = spawnSync(NPM, args, { stdio: 'inherit', shell: isWindows, cwd: ROOT });
-    if (r.status !== 0) {
-      throw new Error(`Build step \`npm ${args.join(' ')}\` failed (exit ${r.status}).`);
-    }
-  }
+  // Build shared + api (api is just tsc --noEmit, no env vars needed).
+  runNpm(['run', 'build:shared']);
+  runNpm(['run', 'build:api']);
 
+  // Deploy the Worker FIRST so we learn its public URL, which we then
+  // bake into the web bundle as VITE_API_URL before the Pages deploy.
   const original = patchToml(id);
+  let workerUrl;
   try {
-    run(['--yes', 'wrangler@3', 'deploy'], { cwd: resolve(ROOT, 'apps/api') });
+    const deployOut = runCapture(
+      ['--yes', 'wrangler@3', 'deploy'],
+      { cwd: resolve(ROOT, 'apps/api') },
+    );
+    workerUrl = parseWorkerUrl(deployOut);
+    if (!workerUrl) {
+      throw new Error('Could not parse the Worker URL from wrangler deploy output.');
+    }
+    const cache = readCache();
+    writeCache({ ...cache, workerUrl });
+    console.log(`▸ Worker URL: ${workerUrl}`);
+
+    // Build the SPA with VITE_API_URL pointing at the Worker. Without
+    // this the bundle would call http://localhost:8787 in production.
+    runNpm(['run', 'build:web'], { VITE_API_URL: workerUrl });
+
     run([
       '--yes', 'wrangler@3', 'pages', 'deploy', 'apps/web/dist',
-      '--project-name=subterra', '--branch=main',
+      '--project-name=subterra', '--branch=main', '--commit-dirty=true',
     ]);
   } finally {
     writeFileSync(WRANGLER_TOML, original);
     console.log('▸ restored wrangler.toml to committed state');
   }
+
   console.log('');
   console.log('✅ Deploy complete.');
-  console.log('   Map (web):   https://subterra.pages.dev/map');
-  console.log('   API health:  https://subterra-api.<your-account>.workers.dev/health');
+  console.log(`   Worker:      ${workerUrl}`);
+  console.log(`   Worker health: ${workerUrl}/health`);
+  console.log('   Pages (latest deploy alias): https://main.subterra.pages.dev/map');
+  console.log('   Pages (production alias):    https://subterra.pages.dev/map');
+  console.log('');
+  console.log('   If https://subterra.pages.dev still 404s, your Pages project\'s');
+  console.log('   production branch is set to something other than "main".');
+  console.log('   Change it in Cloudflare dashboard → Pages → subterra → Settings');
+  console.log('   → Builds & deployments → Production branch = main.');
 }
 
 main().catch((err) => {

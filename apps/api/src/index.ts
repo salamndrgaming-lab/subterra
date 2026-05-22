@@ -26,8 +26,16 @@ export interface Env {
 const app = new Hono<{ Bindings: Env }>();
 
 app.use('*', logger());
+// Allow localhost dev + every Pages alias subterra.pages.dev publishes
+// (per-deploy hashes like 95c718a4.subterra.pages.dev, branch aliases
+// like main.subterra.pages.dev, and the production root).
+const PAGES_ORIGIN = /^https:\/\/([a-z0-9-]+\.)?subterra\.pages\.dev$/;
 app.use('*', cors({
-  origin: ['http://localhost:5173', 'https://subterra.pages.dev'],
+  origin: (origin) => {
+    if (!origin) return '';
+    if (origin === 'http://localhost:5173') return origin;
+    return PAGES_ORIGIN.test(origin) ? origin : '';
+  },
   credentials: true,
 }));
 
