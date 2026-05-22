@@ -7,9 +7,18 @@ import { LAYERS, LAYER_GROUPS, type LayerDef } from '@subterra/shared';
 import { cn } from '@/lib/cn';
 import { fetchManifest } from '@/lib/manifest';
 import { useLayerVisibility } from '@/stores/layers';
+import { geocode, type GeocodeHit } from '@/lib/geocode';
 
 const BASE_STYLE =
   import.meta.env.VITE_MAP_STYLE_URL ?? 'https://tiles.openfreemap.org/styles/dark';
+
+interface SelectedFeature {
+  layerId: string;
+  layerLabel: string;
+  properties: Record<string, unknown>;
+  lng: number;
+  lat: number;
+}
 
 /**
  * Map page.
@@ -17,13 +26,14 @@ const BASE_STYLE =
  * Boots a MapLibre canvas, fetches the published tile manifest, and
  * lazily wires every layer from the shared registry against the single
  * PMTiles vector source it points at. Layer visibility flows from the
- * Zustand store; the sidebar toggles only ever flip `layout.visibility`
- * on layers that already exist — no add/remove churn at runtime.
+ * Zustand store; clicks on rendered features open a detail drawer; the
+ * header search box flies to OSM-geocoded places.
  */
 export function MapPage() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const [styleLoaded, setStyleLoaded] = useState(false);
+  const [selected, setSelected] = useState<SelectedFeature | null>(null);
   const visibility = useLayerVisibility((s) => s.visibility);
   const toggle = useLayerVisibility((s) => s.toggle);
 
@@ -67,7 +77,8 @@ export function MapPage() {
     };
   }, []);
 
-  // 2. When the manifest lands, add the pmtiles source + all registry layers.
+  // 2. When the manifest lands, add the pmtiles source + all registry layers,
+  //    plus click/hover handlers that open the detail drawer.
   useEffect(() => {
     const map = mapRef.current;
     const manifest = manifestQuery.data;
@@ -85,7 +96,35 @@ export function MapPage() {
         if (map.getLayer(def.id)) continue;
         const layer = buildLayer(def, visibility[def.id] ?? def.defaultVisible);
         map.addLayer(layer);
+        map.on('mouseenter', def.id, () => {
+          map.getCanvas().style.cursor = 'pointer';
+        });
+        map.on('mouseleave', def.id, () => {
+          map.getCanvas().style.cursor = '';
+        });
       }
+
+      map.on('click', (e) => {
+        const liveLayerIds = LAYERS.map((l) => l.id).filter((id) => !!map.getLayer(id));
+        const hits = map.queryRenderedFeatures(e.point, { layers: liveLayerIds });
+        if (hits.length === 0) {
+          setSelected(null);
+          return;
+        }
+        const f = hits[0]!;
+        const def = LAYERS.find((l) => l.id === f.layer.id);
+        const point =
+          f.geometry.type === 'Point'
+            ? (f.geometry.coordinates as [number, number])
+            : ([e.lngLat.lng, e.lngLat.lat] as [number, number]);
+        setSelected({
+          layerId: f.layer.id,
+          layerLabel: def?.label ?? f.layer.id,
+          properties: (f.properties ?? {}) as Record<string, unknown>,
+          lng: point[0],
+          lat: point[1],
+        });
+      });
     };
     if (map.isStyleLoaded()) install();
     else map.once('load', install);
@@ -112,13 +151,31 @@ export function MapPage() {
 
   const claimsLoaded = (manifestQuery.data?.counts.mining_claims ?? 0) > 0;
 
+  function flyTo(hit: GeocodeHit): void {
+    const map = mapRef.current;
+    if (!map) return;
+    if (hit.bbox) {
+      map.fitBounds(
+        [
+          [hit.bbox[0], hit.bbox[1]],
+          [hit.bbox[2], hit.bbox[3]],
+        ],
+        { padding: 60, duration: 1200, maxZoom: 11 },
+      );
+    } else {
+      map.flyTo({ center: [hit.lng, hit.lat], zoom: 10, duration: 1200 });
+    }
+  }
+
   return (
     <div className="grid h-full w-full grid-cols-[280px_minmax(0,1fr)] grid-rows-[48px_minmax(0,1fr)] overflow-hidden bg-bg text-text">
-      <header className="col-span-2 flex h-12 items-center justify-between border-b border-border bg-bg-surface px-3">
+      <header className="col-span-2 flex h-12 items-center justify-between gap-3 border-b border-border bg-bg-surface px-3">
         <Link to="/" className="flex items-center gap-2 px-1.5">
           <Logo />
           <span className="font-mono text-sm tracking-tight text-text">Subterra</span>
         </Link>
+
+        <SearchBox onPick={flyTo} />
 
         <div className="flex items-center gap-3 font-mono text-[10px]">
           <StatusPill label={styleLoaded ? 'basemap loaded' : 'loading basemap…'} ok={styleLoaded} />
@@ -179,6 +236,7 @@ export function MapPage() {
 
       <div className="relative h-full w-full">
         <div ref={containerRef} className="absolute inset-0 h-full w-full" data-testid="map-container" />
+        {selected && <DetailDrawer feature={selected} onClose={() => setSelected(null)} />}
       </div>
     </div>
   );
@@ -262,6 +320,173 @@ function Logo() {
       <path d="M11 2 L20 18 L2 18 Z" stroke="#f59e0b" strokeWidth="1.5" />
       <circle cx="11" cy="11" r="1.2" fill="#f59e0b" />
     </svg>
+  );
+}
+
+// ─── Search box ────────────────────────────────────────────────────────
+
+function SearchBox({ onPick }: { onPick: (h: GeocodeHit) => void }) {
+  const [q, setQ] = useState('');
+  const [hits, setHits] = useState<GeocodeHit[] | null>(null);
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!q.trim()) return;
+    setLoading(true);
+    try {
+      const results = await geocode(q);
+      setHits(results);
+      setOpen(true);
+      if (results.length === 1) {
+        onPick(results[0]!);
+        setOpen(false);
+      }
+    } catch (err) {
+      console.warn('[geocode]', err);
+      setHits([]);
+      setOpen(true);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="relative flex flex-1 max-w-md items-center">
+      <input
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        onFocus={() => hits && setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        placeholder="Search place (e.g. Tonopah, NV)…"
+        data-testid="search-input"
+        className="w-full rounded-md border border-border bg-bg-panel px-3 py-1.5 font-mono text-xs text-text placeholder:text-text-muted focus:border-accent/60 focus:outline-none"
+      />
+      {loading && (
+        <span className="absolute right-2 font-mono text-[10px] text-text-muted">…</span>
+      )}
+      {open && hits && (
+        <ul
+          data-testid="search-results"
+          className="absolute left-0 right-0 top-[calc(100%+4px)] z-20 max-h-80 overflow-y-auto rounded-md border border-border bg-bg-surface shadow-xl"
+        >
+          {hits.length === 0 ? (
+            <li className="px-3 py-2 font-mono text-[11px] text-text-muted">No results.</li>
+          ) : (
+            hits.map((h) => (
+              <li key={`${h.lat},${h.lng}`}>
+                <button
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault(); // keep input focus, avoid blur race
+                    onPick(h);
+                    setOpen(false);
+                  }}
+                  className="block w-full truncate px-3 py-2 text-left font-mono text-[11px] text-text hover:bg-bg-panel"
+                  title={h.display}
+                >
+                  {h.display}
+                </button>
+              </li>
+            ))
+          )}
+        </ul>
+      )}
+    </form>
+  );
+}
+
+// ─── Detail drawer ─────────────────────────────────────────────────────
+
+const PROPERTY_LABELS: Record<string, string> = {
+  mrds_id: 'MRDS ID',
+  name: 'Name',
+  state: 'State',
+  county: 'County',
+  commodity: 'Commodity',
+  deposit_type: 'Deposit type',
+  development_status: 'Development status',
+  discovery_year: 'Discovery year',
+  serial: 'Serial #',
+  claim_type: 'Claim type',
+  status: 'Status',
+  owner: 'Owner',
+  acreage: 'Acreage',
+  located_at: 'Located',
+  recorded_at: 'Recorded',
+};
+
+function DetailDrawer({
+  feature,
+  onClose,
+}: {
+  feature: SelectedFeature;
+  onClose: () => void;
+}) {
+  const entries = Object.entries(feature.properties).filter(
+    ([, v]) => v !== null && v !== '' && v !== undefined,
+  );
+  const headline =
+    (feature.properties.name as string | undefined) ||
+    (feature.properties.serial as string | undefined) ||
+    feature.layerLabel;
+  return (
+    <aside
+      data-testid="detail-drawer"
+      className="absolute right-3 top-3 bottom-3 z-10 flex w-[360px] flex-col rounded-lg border border-border bg-bg-surface/95 shadow-2xl backdrop-blur"
+    >
+      <header className="flex items-start justify-between gap-2 border-b border-border px-4 py-3">
+        <div className="min-w-0">
+          <div className="font-mono text-[10px] uppercase tracking-wider text-text-muted">
+            {feature.layerLabel}
+          </div>
+          <div className="mt-0.5 truncate font-mono text-sm text-text" title={headline}>
+            {headline || '(unnamed)'}
+          </div>
+          <div className="mt-0.5 font-mono text-[10px] text-text-muted">
+            {feature.lat.toFixed(5)}, {feature.lng.toFixed(5)}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close"
+          className="rounded-md border border-border bg-bg-panel px-2 py-1 font-mono text-[10px] text-text-muted hover:text-text"
+        >
+          ✕
+        </button>
+      </header>
+
+      <div className="flex-1 overflow-y-auto px-4 py-3">
+        <dl className="grid grid-cols-[120px_minmax(0,1fr)] gap-y-1 font-mono text-[11px]">
+          {entries.map(([key, value]) => (
+            <Row key={key} label={PROPERTY_LABELS[key] ?? key} value={value} />
+          ))}
+        </dl>
+      </div>
+
+      <footer className="flex items-center justify-between gap-2 border-t border-border px-4 py-2 font-mono text-[10px] text-text-muted">
+        <a
+          href={`https://www.google.com/maps?q=${feature.lat},${feature.lng}`}
+          target="_blank"
+          rel="noreferrer"
+          className="text-accent hover:underline"
+        >
+          Open in Google Maps ↗
+        </a>
+        <span>Click another point to inspect</span>
+      </footer>
+    </aside>
+  );
+}
+
+function Row({ label, value }: { label: string; value: unknown }) {
+  return (
+    <>
+      <dt className="truncate text-text-muted" title={label}>{label}</dt>
+      <dd className="truncate text-text" title={String(value)}>{String(value)}</dd>
+    </>
   );
 }
 
