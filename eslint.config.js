@@ -45,6 +45,10 @@ export default [
         ResponseInit: 'readonly',
         AbortController: 'readonly',
         AbortSignal: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
         // Cloudflare Worker globals.
         Response: 'readonly',
         Request: 'readonly',
@@ -74,6 +78,22 @@ export default [
       'react/jsx-uses-react': 'off',
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
       '@typescript-eslint/no-explicit-any': 'warn',
+    },
+  },
+  {
+    // Node ESM scripts (deploy.mjs etc.) — Node globals.
+    files: ['scripts/**/*.mjs', '**/*.config.mjs'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: {
+        console: 'readonly',
+        process: 'readonly',
+        Buffer: 'readonly',
+        URL: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+      },
     },
   },
   prettier,

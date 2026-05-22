@@ -46,4 +46,37 @@ test.describe('Phase 1 — pmtiles vector source', () => {
     const after = await row.getAttribute('data-visible');
     expect(after).not.toBe(before);
   });
+
+  test('search box exposes a results dropdown', async ({ page }) => {
+    await page.route('**/manifest', (route) =>
+      route.fulfill({ status: 404, body: JSON.stringify({ error: 'no_manifest' }) }),
+    );
+    await page.route('**/nominatim.openstreetmap.org/**', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([
+          {
+            display_name: 'Tonopah, Nye County, Nevada, United States',
+            lon: '-117.22988',
+            lat: '38.06914',
+            boundingbox: ['38.04', '38.10', '-117.26', '-117.20'],
+          },
+          {
+            display_name: 'Tonopah, Maricopa County, Arizona, United States',
+            lon: '-112.93',
+            lat: '33.49',
+            boundingbox: ['33.48', '33.50', '-112.95', '-112.92'],
+          },
+        ]),
+      }),
+    );
+    await page.goto('/map');
+    const search = page.getByTestId('search-input');
+    await search.fill('Tonopah');
+    await search.press('Enter');
+    const results = page.getByTestId('search-results');
+    await expect(results).toBeVisible({ timeout: 5_000 });
+    await expect(results).toContainText('Tonopah, Nye County, Nevada');
+  });
 });
