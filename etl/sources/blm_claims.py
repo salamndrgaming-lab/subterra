@@ -166,7 +166,10 @@ def run(work_dir: Path) -> SourceResult:
             out.write('{"type":"FeatureCollection","features":[')
             first = True
             pbar = tqdm(desc="blm claims", unit="feat", smoothing=0.1)
-            for feat in ijson.items(resp.raw, "features.item"):
+            # use_float=True keeps coordinates as Python floats; otherwise
+            # ijson hands back decimal.Decimal which json.dump refuses to
+            # serialize without a custom default.
+            for feat in ijson.items(resp.raw, "features.item", use_float=True):
                 geom = feat.get("geometry")
                 if not geom:
                     skipped += 1
