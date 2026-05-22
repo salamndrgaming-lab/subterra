@@ -411,10 +411,13 @@ const PROPERTY_LABELS: Record<string, string> = {
   serial: 'Serial #',
   claim_type: 'Claim type',
   status: 'Status',
+  claimant: 'Claimant',
   owner: 'Owner',
   acreage: 'Acreage',
   located_at: 'Located',
   recorded_at: 'Recorded',
+  last_assess_year: 'Last assessment',
+  agency: 'Managing agency',
 };
 
 function DetailDrawer({
@@ -530,12 +533,26 @@ function buildLayer(def: LayerDef, defaultVisible: boolean): maplibregl.LayerSpe
       },
     };
   }
-  // polygon
+
+  // polygon — federal_lands gets color-by-agency so all 4 agencies
+  // are visible together. Everything else uses the group color.
+  const fillColor: maplibregl.DataDrivenPropertyValueSpecification<string> =
+    def.tilesetLayer === 'federal_lands'
+      ? [
+          'match',
+          ['get', 'agency'],
+          'BLM', '#22c55e',
+          'USFS', '#16a34a',
+          'NPS', '#b45309',
+          'BIA', '#9333ea',
+          PAINT_BY_GROUP[def.group].fill,
+        ]
+      : PAINT_BY_GROUP[def.group].fill;
   return {
     ...common,
     type: 'fill',
     paint: {
-      'fill-color': PAINT_BY_GROUP[def.group].fill,
+      'fill-color': fillColor,
       'fill-opacity': 0.22,
       'fill-outline-color': PAINT_BY_GROUP[def.group].line,
     },
