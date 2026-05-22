@@ -27,7 +27,7 @@
     "test": "npm run test:unit && npm run test:e2e",
     "deploy:api": "npm --workspace apps/api run deploy",
     "deploy:web": "npm --workspace apps/web run deploy",
-    "deploy:prod": "npm run build && node scripts/deploy.mjs"
+    "deploy:prod": "node scripts/deploy.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0",

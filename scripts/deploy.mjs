@@ -53,60 +53,49 @@ function run(args, opts = {}) {
   }
 }
 
-function tryWranglerD1List() {
-  // Inherit stdin so wrangler's TTY check sees an interactive shell on
-  // platforms where that's enough to unlock saved OAuth credentials.
-  const r = spawnSync(
-    NPX,
-    ['--yes', 'wrangler@3', 'd1', 'list', '--json'],
-    { encoding: 'utf8', shell: isWindows, stdio: ['inherit', 'pipe', 'pipe'] },
-  );
-  if (r.status !== 0) return null;
-  const trimmed = (r.stdout || '').trim();
-  if (!trimmed.startsWith('[')) return null;
-  try {
-    const list = JSON.parse(trimmed);
-    const hit = list.find((d) => d.name === 'subterra');
-    return hit ? hit.uuid : null;
-  } catch {
-    return null;
+async function findD1Id() {
+  // 1. CLI arg
+  const argHit = process.argv.find((a) => a.startsWith('--d1-id='));
+  if (argHit) {
+    const v = argHit.slice('--d1-id='.length).trim();
+    if (!isUuid(v)) throw new Error(`--d1-id is not a valid UUID: "${v}"`);
+    writeCache({ ...readCache(), d1Id: v });
+    console.log(`▸ D1 id from --d1-id: ${v}`);
+    return v;
   }
-}
-
-async function promptForD1Id() {
+  // 2. Env var (set CLOUDFLARE_D1_DATABASE_ID=…)
+  const envHit = process.env.CLOUDFLARE_D1_DATABASE_ID;
+  if (envHit && isUuid(envHit)) {
+    writeCache({ ...readCache(), d1Id: envHit });
+    console.log(`▸ D1 id from env: ${envHit}`);
+    return envHit;
+  }
+  // 3. Cache from previous run
+  const cache = readCache();
+  if (cache.d1Id && isUuid(cache.d1Id)) {
+    console.log(`▸ D1 id (cached): ${cache.d1Id}`);
+    return cache.d1Id;
+  }
+  // 4. Interactive prompt — run BEFORE any other spawn so stdin is untouched
   console.log('');
-  console.log("Couldn't auto-detect your D1 database id from the wrangler CLI.");
-  console.log('To find it, open another terminal and run:');
+  console.log('Need your D1 database UUID. To find it, in another terminal:');
   console.log('    npx wrangler d1 list');
-  console.log('Look for the row where name = "subterra" and copy its uuid.');
-  console.log('We\'ll cache it in .cf-deploy.json so you only do this once.');
+  console.log('(Look for name = "subterra" and copy the uuid column.)');
+  console.log('Or re-run with:  npm run deploy:prod -- --d1-id=<uuid>');
   console.log('');
   const rl = createInterface({ input: stdin, output: stdout });
   const raw = (await rl.question('subterra D1 uuid: ')).trim();
   rl.close();
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(raw)) {
+  if (!isUuid(raw)) {
     throw new Error(`That doesn't look like a UUID: "${raw}"`);
   }
+  writeCache({ ...cache, d1Id: raw });
+  console.log(`  cached in .cf-deploy.json — won't ask again`);
   return raw;
 }
 
-async function findD1Id() {
-  const cache = readCache();
-  if (cache.d1Id) {
-    console.log(`▸ D1 id (cached): ${cache.d1Id}`);
-    return cache.d1Id;
-  }
-  console.log('▸ resolving D1 database id…');
-  const fromCli = tryWranglerD1List();
-  if (fromCli) {
-    console.log(`  found via wrangler: ${fromCli}`);
-    writeCache({ ...cache, d1Id: fromCli });
-    return fromCli;
-  }
-  const fromPrompt = await promptForD1Id();
-  writeCache({ ...cache, d1Id: fromPrompt });
-  console.log(`  cached for next run → .cf-deploy.json`);
-  return fromPrompt;
+function isUuid(s) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
 }
 
 function patchToml(id) {
@@ -119,7 +108,28 @@ function patchToml(id) {
 }
 
 async function main() {
+  // Prompt FIRST (before any spawn touches stdin — that's what broke
+  // the prior version: on Windows, `npm run build && node deploy.mjs`
+  // leaves stdin in a non-blocking state by the time readline tries
+  // to read).
   const id = await findD1Id();
+
+  // Build now that we have the id; build steps spawn lots of child
+  // processes but no longer need to read stdin.
+  console.log('\n▸ building (shared → api → web)…');
+  const NPM = isWindows ? 'npm.cmd' : 'npm';
+  const buildSteps = [
+    ['run', 'build:shared'],
+    ['run', 'build:api'],
+    ['run', 'build:web'],
+  ];
+  for (const args of buildSteps) {
+    const r = spawnSync(NPM, args, { stdio: 'inherit', shell: isWindows, cwd: ROOT });
+    if (r.status !== 0) {
+      throw new Error(`Build step \`npm ${args.join(' ')}\` failed (exit ${r.status}).`);
+    }
+  }
+
   const original = patchToml(id);
   try {
     run(['--yes', 'wrangler@3', 'deploy'], { cwd: resolve(ROOT, 'apps/api') });
