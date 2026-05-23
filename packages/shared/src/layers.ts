@@ -35,13 +35,13 @@ export const LAYERS: readonly LayerDef[] = [
   // cadastral
   {
     id: 'plss',
-    label: 'PLSS Township/Range/Section',
+    label: 'PLSS Townships',
     group: 'cadastral',
-    defaultVisible: true,
+    defaultVisible: false,
     tilesetLayer: 'plss',
     geometry: 'line',
-    minZoom: 8,
-    color: '#94a3b8', // slate
+    minZoom: 6,
+    color: '#64748b', // slate
   },
 
   // mining

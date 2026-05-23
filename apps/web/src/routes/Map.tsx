@@ -1055,6 +1055,12 @@ const PROPERTY_LABELS: Record<string, string> = {
   effective_at: 'Effective',
   expires_at: 'Expires',
   type: 'Type',
+  plssid: 'PLSS ID',
+  stateabbr: 'State',
+  frstdivid: 'First-division ID',
+  twnshpno: 'Township',
+  rangeno: 'Range',
+  meridian: 'Meridian',
 };
 
 function DetailDrawer({
