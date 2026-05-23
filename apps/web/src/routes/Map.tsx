@@ -1063,6 +1063,10 @@ const PROPERTY_LABELS: Record<string, string> = {
   meridian: 'Meridian',
   operator: 'Operator',
   source: 'Source',
+  api: 'API number',
+  spud_at: 'Spud date',
+  first_prod_at: 'First production',
+  depth_ft: 'Total depth (ft)',
 };
 
 function DetailDrawer({

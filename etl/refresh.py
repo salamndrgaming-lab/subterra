@@ -44,6 +44,7 @@ SOURCES = [
     "federal_lands", # Phase 2 — BLM National SMA (BLM/USFS/NPS/BIA polygons)
     "pipelines_natgas", # Phase 2 — EIA natural-gas trunk pipelines
     "pipelines_crude",  # Phase 2 — EIA crude-oil trunk pipelines
+    "wells",            # Phase 2 — HIFLD wells via NASA NCCS mirror (~1M points)
 ]
 
 
