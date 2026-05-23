@@ -3,7 +3,7 @@ import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { COMMODITIES, LAYERS, LAYER_GROUPS, type LayerDef } from '@subterra/shared';
+import { COMMODITIES, COMMODITY_CATEGORY_COLORS, LAYERS, LAYER_GROUPS, type LayerDef } from '@subterra/shared';
 import { cn } from '@/lib/cn';
 import { fetchManifest } from '@/lib/manifest';
 import { useLayerVisibility } from '@/stores/layers';
@@ -236,6 +236,7 @@ export function MapPage() {
                     key={l.id}
                     id={l.id}
                     label={l.label}
+                    color={l.color ?? '#94a3b8'}
                     visible={visibility[l.id] ?? false}
                     count={manifestQuery.data?.counts[l.tilesetLayer] ?? 0}
                     onToggle={() => toggle(l.id)}
@@ -257,6 +258,7 @@ export function MapPage() {
 
       <div className="relative h-full w-full">
         <div ref={containerRef} className="absolute inset-0 h-full w-full" data-testid="map-container" />
+        <Legend mrdsVisible={visibility['mrds'] ?? true} />
         {selected && <DetailDrawer feature={selected} onClose={() => setSelected(null)} />}
       </div>
     </div>
@@ -279,12 +281,14 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function LayerRow({
   id,
   label,
+  color,
   visible,
   count,
   onToggle,
 }: {
   id: string;
   label: string;
+  color: string;
   visible: boolean;
   count: number;
   onToggle: () => void;
@@ -298,17 +302,19 @@ function LayerRow({
       className={cn(
         'flex w-full items-center justify-between gap-2 rounded-md border px-2.5 py-1.5 text-left font-mono text-xs transition',
         visible
-          ? 'border-accent/40 bg-accent/5 text-text'
+          ? 'bg-bg-panel text-text'
           : 'border-border bg-bg-panel text-text-subtle hover:border-border-strong hover:text-text',
       )}
+      style={visible ? { borderColor: `${color}66` } : undefined}
     >
       <span className="flex min-w-0 items-center gap-2">
         <span
           aria-hidden
-          className={cn(
-            'h-1.5 w-1.5 shrink-0 rounded-full',
-            visible ? 'bg-accent shadow-[0_0_8px_rgba(245,158,11,0.6)]' : 'bg-border-strong',
-          )}
+          className="h-1.5 w-1.5 shrink-0 rounded-full"
+          style={{
+            backgroundColor: visible ? color : 'var(--color-border-strong, #475569)',
+            boxShadow: visible ? `0 0 8px ${color}99` : undefined,
+          }}
         />
         <span className="truncate">{label}</span>
       </span>
@@ -415,6 +421,97 @@ function SearchBox({ onPick }: { onPick: (h: GeocodeHit) => void }) {
         </ul>
       )}
     </form>
+  );
+}
+
+// ─── Legend ────────────────────────────────────────────────────────────
+
+function Legend({ mrdsVisible }: { mrdsVisible: boolean }) {
+  const [collapsed, setCollapsed] = useState(false);
+  if (collapsed) {
+    return (
+      <button
+        type="button"
+        onClick={() => setCollapsed(false)}
+        data-testid="legend-toggle"
+        className="absolute bottom-3 left-3 z-10 rounded-md border border-border bg-bg-surface/90 px-2 py-1 font-mono text-[10px] text-text-muted shadow backdrop-blur hover:text-text"
+      >
+        legend ▾
+      </button>
+    );
+  }
+  return (
+    <div
+      data-testid="legend"
+      className="absolute bottom-3 left-3 z-10 max-w-[220px] rounded-md border border-border bg-bg-surface/90 p-2 font-mono text-[10px] shadow-xl backdrop-blur"
+    >
+      <div className="mb-1 flex items-center justify-between">
+        <span className="uppercase tracking-wider text-text-muted">legend</span>
+        <button
+          type="button"
+          onClick={() => setCollapsed(true)}
+          aria-label="Collapse legend"
+          className="text-text-muted hover:text-text"
+        >
+          ✕
+        </button>
+      </div>
+      <div className="space-y-1">
+        {LAYERS.filter((l) => l.tilesetLayer !== 'mrds').map((l) => (
+          <Swatch key={l.id} color={l.color ?? '#94a3b8'} label={l.label} kind={l.geometry} />
+        ))}
+      </div>
+      {mrdsVisible && (
+        <div className="mt-2 border-t border-border pt-2">
+          <div className="mb-1 uppercase tracking-wider text-text-muted">MRDS by commodity</div>
+          <div className="space-y-1">
+            <Swatch color={COMMODITY_CATEGORY_COLORS.precious!} label="Precious (Au · Ag · Pt · Pd)" kind="point" />
+            <Swatch color={COMMODITY_CATEGORY_COLORS.critical!} label="Critical (Li · Co · Ni · REE)" kind="point" />
+            <Swatch color={COMMODITY_CATEGORY_COLORS.base!} label="Base (Cu · Pb · Zn · Mo)" kind="point" />
+            <Swatch color={COMMODITY_CATEGORY_COLORS.energy!} label="Energy (U · oil · gas · coal)" kind="point" />
+            <Swatch color={COMMODITY_CATEGORY_COLORS.industrial!} label="Industrial" kind="point" />
+          </div>
+        </div>
+      )}
+      <div className="mt-2 border-t border-border pt-2">
+        <div className="mb-1 uppercase tracking-wider text-text-muted">Federal lands by agency</div>
+        <div className="space-y-1">
+          <Swatch color="#22c55e" label="BLM" kind="polygon" />
+          <Swatch color="#16a34a" label="USFS" kind="polygon" />
+          <Swatch color="#b45309" label="NPS" kind="polygon" />
+          <Swatch color="#9333ea" label="BIA" kind="polygon" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Swatch({
+  color,
+  label,
+  kind,
+}: {
+  color: string;
+  label: string;
+  kind: 'point' | 'line' | 'polygon';
+}) {
+  return (
+    <div className="flex items-center gap-2 text-text">
+      <span
+        aria-hidden
+        className={cn(
+          'shrink-0',
+          kind === 'point' && 'h-2 w-2 rounded-full',
+          kind === 'line' && 'h-0.5 w-4',
+          kind === 'polygon' && 'h-2 w-3 rounded-sm border',
+        )}
+        style={{
+          backgroundColor: kind === 'polygon' ? `${color}38` : color,
+          borderColor: kind === 'polygon' ? color : undefined,
+        }}
+      />
+      <span className="truncate text-[10px]" title={label}>{label}</span>
+    </div>
   );
 }
 
@@ -628,6 +725,7 @@ function Row({ label, value }: { label: string; value: unknown }) {
  * decisions live. */
 function buildLayer(def: LayerDef, defaultVisible: boolean): maplibregl.LayerSpecification {
   const visibility = defaultVisible ? 'visible' : 'none';
+  const color = def.color ?? '#94a3b8';
   const common = {
     id: def.id,
     source: 'subterra',
@@ -637,12 +735,17 @@ function buildLayer(def: LayerDef, defaultVisible: boolean): maplibregl.LayerSpe
   };
 
   if (def.geometry === 'point') {
+    // MRDS dots are color-coded by commodity category so the most useful
+    // signal (what mineral) is visible at a glance. Other point layers
+    // just use their registry color.
+    const circleColor: maplibregl.DataDrivenPropertyValueSpecification<string> =
+      def.tilesetLayer === 'mrds' ? mrdsCommodityColorExpr() : color;
     return {
       ...common,
       type: 'circle',
       paint: {
         'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 3, 9, 5, 14, 8],
-        'circle-color': PAINT_BY_GROUP[def.group].point,
+        'circle-color': circleColor,
         'circle-stroke-color': '#0a0c10',
         'circle-stroke-width': 1,
         'circle-opacity': 0.9,
@@ -654,15 +757,15 @@ function buildLayer(def: LayerDef, defaultVisible: boolean): maplibregl.LayerSpe
       ...common,
       type: 'line',
       paint: {
-        'line-color': PAINT_BY_GROUP[def.group].line,
+        'line-color': color,
         'line-width': ['interpolate', ['linear'], ['zoom'], 6, 0.6, 12, 1.6],
         'line-opacity': 0.85,
       },
     };
   }
 
-  // polygon — federal_lands gets color-by-agency so all 4 agencies
-  // are visible together. Everything else uses the group color.
+  // polygon — federal_lands is multi-color by agency; everything else uses
+  // its registry color for both fill and outline.
   const fillColor: maplibregl.DataDrivenPropertyValueSpecification<string> =
     def.tilesetLayer === 'federal_lands'
       ? [
@@ -672,24 +775,40 @@ function buildLayer(def: LayerDef, defaultVisible: boolean): maplibregl.LayerSpe
           'USFS', '#16a34a',
           'NPS', '#b45309',
           'BIA', '#9333ea',
-          PAINT_BY_GROUP[def.group].fill,
+          color,
         ]
-      : PAINT_BY_GROUP[def.group].fill;
+      : color;
   return {
     ...common,
     type: 'fill',
     paint: {
       'fill-color': fillColor,
       'fill-opacity': 0.22,
-      'fill-outline-color': PAINT_BY_GROUP[def.group].line,
+      'fill-outline-color': color,
     },
   };
 }
 
-const PAINT_BY_GROUP: Record<LayerDef['group'], { point: string; line: string; fill: string }> = {
-  federal: { point: '#22c55e', line: '#22c55e', fill: '#22c55e' },
-  cadastral: { point: '#94a3b8', line: '#94a3b8', fill: '#94a3b8' },
-  oilgas: { point: '#10b981', line: '#10b981', fill: '#10b981' },
-  mining: { point: '#f59e0b', line: '#f59e0b', fill: '#f59e0b' },
-  infrastructure: { point: '#3b82f6', line: '#3b82f6', fill: '#3b82f6' },
-};
+/** MapLibre expression that returns the commodity-category color for an
+ * MRDS feature based on the first commodity name it can match in the
+ * `commodity` property string. MRDS often stores multiple commodities
+ * comma-joined ("Gold, Silver, Lead"), so we substring-match against
+ * the full string in priority order: precious > critical > base > energy. */
+function mrdsCommodityColorExpr(): maplibregl.DataDrivenPropertyValueSpecification<string> {
+  const matchAny = (needles: string[]) =>
+    ['any', ...needles.map((n) => ['in', n, ['get', 'commodity']])];
+  return [
+    'case',
+    matchAny(['Gold', 'Silver', 'Platinum', 'Palladium']),
+    COMMODITY_CATEGORY_COLORS.precious!,
+    matchAny(['Lithium', 'Cobalt', 'Nickel', 'Rare Earth', 'Tungsten', 'Tin', 'Antimony']),
+    COMMODITY_CATEGORY_COLORS.critical!,
+    matchAny(['Copper', 'Zinc', 'Lead', 'Molybdenum', 'Iron']),
+    COMMODITY_CATEGORY_COLORS.base!,
+    matchAny(['Coal', 'Uranium', 'Oil', 'Gas', 'Helium']),
+    COMMODITY_CATEGORY_COLORS.energy!,
+    matchAny(['Potash', 'Phosphate', 'Sand', 'Gravel', 'Gypsum', 'Sulfur']),
+    COMMODITY_CATEGORY_COLORS.industrial!,
+    COMMODITY_CATEGORY_COLORS.unknown!,
+  ] as unknown as maplibregl.DataDrivenPropertyValueSpecification<string>;
+}
