@@ -39,9 +39,12 @@ OUT.mkdir(parents=True, exist_ok=True)
 SOURCES = [
     "mrds",          # Phase 1 — USGS Mineral Resources Data System (~310k points)
     "blm_claims",    # Phase 2 — BLM MLRS active mining claims (~550k polygons)
-    # "federal_lands" disabled — BLM Hub Download API 500s on this item
-    # (too large for on-demand generator). Re-enable once we have a paginated
-    # FeatureServer or ScienceBase static download URL that works.
+    "blm_leases",    # Phase 2 — BLM MLRS active oil & gas leases (~24k polygons)
+    "plss",          # Phase 2 — BLM National PLSS township grid (~50k lines)
+    "federal_lands", # Phase 2 — BLM National SMA (BLM/USFS/NPS/BIA polygons)
+    "pipelines_natgas", # Phase 2 — EIA natural-gas trunk pipelines
+    "pipelines_crude",  # Phase 2 — EIA crude-oil trunk pipelines
+    "wells",            # Phase 2 — HIFLD wells via NASA NCCS mirror (~1M points)
 ]
 
 

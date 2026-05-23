@@ -59,6 +59,7 @@ export default [
         R2Object: 'readonly',
         ExecutionContext: 'readonly',
         KVNamespace: 'readonly',
+        GeoJSON: 'readonly',
         // Node globals (for ETL helpers + scripts).
         process: 'readonly',
         Buffer: 'readonly',
