@@ -1061,6 +1061,8 @@ const PROPERTY_LABELS: Record<string, string> = {
   twnshpno: 'Township',
   rangeno: 'Range',
   meridian: 'Meridian',
+  operator: 'Operator',
+  source: 'Source',
 };
 
 function DetailDrawer({

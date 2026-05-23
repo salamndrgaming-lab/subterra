@@ -42,6 +42,8 @@ SOURCES = [
     "blm_leases",    # Phase 2 — BLM MLRS active oil & gas leases (~24k polygons)
     "plss",          # Phase 2 — BLM National PLSS township grid (~50k lines)
     "federal_lands", # Phase 2 — BLM National SMA (BLM/USFS/NPS/BIA polygons)
+    "pipelines_natgas", # Phase 2 — EIA natural-gas trunk pipelines
+    "pipelines_crude",  # Phase 2 — EIA crude-oil trunk pipelines
 ]
 
 
