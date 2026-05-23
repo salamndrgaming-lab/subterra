@@ -37,8 +37,9 @@ OUT.mkdir(parents=True, exist_ok=True)
 # SourceResult` callable. New datasets get added here when their source
 # module is ready.
 SOURCES = [
-    "mrds",         # Phase 1 — USGS Mineral Resources Data System (~310k points)
-    "blm_claims",   # Phase 2 — BLM MLRS active mining claims (~350k polygons)
+    "mrds",          # Phase 1 — USGS Mineral Resources Data System (~310k points)
+    "blm_claims",    # Phase 2 — BLM MLRS active mining claims (~350k polygons)
+    "federal_lands", # Phase 2 — BLM National SMA (~1M polygons, 4 agencies)
 ]
 
 
