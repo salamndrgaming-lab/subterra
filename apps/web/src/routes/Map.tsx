@@ -18,6 +18,10 @@ interface SelectedFeature {
   properties: Record<string, unknown>;
   lng: number;
   lat: number;
+  /** Active BLM mining claims that cover this point (other than the
+   *  feature itself, if a claim was the click target). Empty array means
+   *  the point is open ground for staking purposes. */
+  overlappingClaims: Array<{ serial: string; claimant: string; acreage: string }>;
 }
 
 /**
@@ -118,12 +122,38 @@ export function MapPage() {
           f.geometry.type === 'Point'
             ? (f.geometry.coordinates as [number, number])
             : ([e.lngLat.lng, e.lngLat.lat] as [number, number]);
+
+        // Stake-ability: collect every active claim polygon at this point
+        // other than (if applicable) the one that was clicked. Used in the
+        // detail drawer's "Stake-ability" section.
+        const claimHits = map.getLayer('mining-claims')
+          ? map.queryRenderedFeatures(e.point, { layers: ['mining-claims'] })
+          : [];
+        const selfSerial = f.layer.id === 'mining-claims' ? f.properties?.serial : undefined;
+        const seen = new Set<string>();
+        const overlappingClaims = claimHits
+          .filter((h) => {
+            const s = String(h.properties?.serial ?? '');
+            if (!s) return false;
+            if (selfSerial && s === String(selfSerial)) return false;
+            if (seen.has(s)) return false;
+            seen.add(s);
+            return true;
+          })
+          .slice(0, 8)
+          .map((h) => ({
+            serial: String(h.properties?.serial ?? ''),
+            claimant: String(h.properties?.claimant ?? ''),
+            acreage: String(h.properties?.acreage ?? ''),
+          }));
+
         setSelected({
           layerId: f.layer.id,
           layerLabel: def?.label ?? f.layer.id,
           properties: (f.properties ?? {}) as Record<string, unknown>,
           lng: point[0],
           lat: point[1],
+          overlappingClaims,
         });
       });
     };
@@ -686,7 +716,8 @@ function DetailDrawer({
       </header>
 
       <div className="flex-1 overflow-y-auto px-4 py-3">
-        <dl className="grid grid-cols-[120px_minmax(0,1fr)] gap-y-1 font-mono text-[11px]">
+        <StakeAbility feature={feature} />
+        <dl className="mt-4 grid grid-cols-[120px_minmax(0,1fr)] gap-y-1 font-mono text-[11px]">
           {entries.map(([key, value]) => (
             <Row key={key} label={PROPERTY_LABELS[key] ?? key} value={value} />
           ))}
@@ -705,6 +736,57 @@ function DetailDrawer({
         <span>Click another point to inspect</span>
       </footer>
     </aside>
+  );
+}
+
+function StakeAbility({ feature }: { feature: SelectedFeature }) {
+  // Don't show the section when the user clicked a federal-lands polygon
+  // (the question doesn't apply — they're inspecting agency ownership, not
+  // a deposit). Always show for everything else.
+  if (feature.layerId === 'federal-lands') return null;
+
+  const isMiningClaim = feature.layerId === 'mining-claims';
+  const overlaps = feature.overlappingClaims;
+  const headline = isMiningClaim
+    ? overlaps.length === 0
+      ? 'Active claim — no other overlapping claims here.'
+      : `Active claim — also covered by ${overlaps.length} other claim${overlaps.length === 1 ? '' : 's'}.`
+    : overlaps.length === 0
+      ? 'OPEN — no active mining claim at this point.'
+      : `COVERED — ${overlaps.length} active claim${overlaps.length === 1 ? '' : 's'} at this point.`;
+  const tone =
+    overlaps.length === 0 && !isMiningClaim
+      ? { border: '#a3e635', bg: '#a3e63514', dot: '#a3e635' } // open ground (lime)
+      : overlaps.length === 0 && isMiningClaim
+        ? { border: '#f59e0b', bg: '#f59e0b14', dot: '#f59e0b' } // claim, sole
+        : { border: '#ef4444', bg: '#ef444414', dot: '#ef4444' }; // contested
+  return (
+    <div
+      data-testid="stake-ability"
+      data-overlap-count={overlaps.length}
+      className="rounded-md border px-3 py-2"
+      style={{ borderColor: tone.border, backgroundColor: tone.bg }}
+    >
+      <div className="flex items-center gap-2">
+        <span
+          aria-hidden
+          className="h-1.5 w-1.5 rounded-full"
+          style={{ backgroundColor: tone.dot, boxShadow: `0 0 6px ${tone.dot}99` }}
+        />
+        <span className="font-mono text-[11px] text-text">{headline}</span>
+      </div>
+      {overlaps.length > 0 && (
+        <ul className="mt-2 space-y-0.5 font-mono text-[10px] text-text-muted">
+          {overlaps.map((c) => (
+            <li key={c.serial} className="truncate" title={`${c.serial} — ${c.claimant} — ${c.acreage} acres`}>
+              <span className="text-text">{c.serial}</span>
+              {c.claimant && <span> · {c.claimant}</span>}
+              {c.acreage && <span> · {c.acreage} ac</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
