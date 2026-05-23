@@ -8,6 +8,7 @@ import { cn } from '@/lib/cn';
 import { fetchManifest } from '@/lib/manifest';
 import { useLayerVisibility } from '@/stores/layers';
 import { geocode, type GeocodeHit } from '@/lib/geocode';
+import { pointInPolygon, polygonAreaAcres, ringBbox, type LngLat } from '@/lib/geo';
 
 const BASE_STYLE =
   import.meta.env.VITE_MAP_STYLE_URL ?? 'https://tiles.openfreemap.org/styles/dark';
@@ -39,6 +40,8 @@ export function MapPage() {
   const [styleLoaded, setStyleLoaded] = useState(false);
   const [selected, setSelected] = useState<SelectedFeature | null>(null);
   const [commodityFilter, setCommodityFilter] = useState<Set<string>>(new Set());
+  const [drawMode, setDrawMode] = useState<'off' | 'drawing' | 'done'>('off');
+  const [aoiVertices, setAoiVertices] = useState<LngLat[]>([]);
   const visibility = useLayerVisibility((s) => s.visibility);
   const toggle = useLayerVisibility((s) => s.toggle);
 
@@ -198,6 +201,99 @@ export function MapPage() {
     map.setFilter('mrds', ['any', ...subFilters] as maplibregl.FilterSpecification);
   }, [commodityFilter, manifestQuery.data]);
 
+  // 5. Drawing: maintain temporary GeoJSON sources for vertices, the
+  //    in-progress polyline, and the finished polygon. Wire click + dblclick
+  //    handlers only while drawMode is active so normal clicks pass through.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const ensureAoiLayers = (): void => {
+      if (!map.getSource('aoi')) {
+        map.addSource('aoi', { type: 'geojson', data: emptyFC() });
+        map.addLayer({
+          id: 'aoi-fill',
+          source: 'aoi',
+          type: 'fill',
+          filter: ['==', ['geometry-type'], 'Polygon'],
+          paint: { 'fill-color': '#a3e635', 'fill-opacity': 0.18 },
+        });
+        map.addLayer({
+          id: 'aoi-line',
+          source: 'aoi',
+          type: 'line',
+          filter: ['!=', ['geometry-type'], 'Point'],
+          paint: { 'line-color': '#a3e635', 'line-width': 2 },
+        });
+        map.addLayer({
+          id: 'aoi-vertex',
+          source: 'aoi',
+          type: 'circle',
+          filter: ['==', ['geometry-type'], 'Point'],
+          paint: {
+            'circle-radius': 4,
+            'circle-color': '#a3e635',
+            'circle-stroke-color': '#0a0c10',
+            'circle-stroke-width': 1.5,
+          },
+        });
+      }
+    };
+    if (map.isStyleLoaded()) ensureAoiLayers();
+    else map.once('load', ensureAoiLayers);
+
+    const onClick = (e: maplibregl.MapMouseEvent): void => {
+      if (drawMode !== 'drawing') return;
+      // While drawing, suppress the feature-pick click handler entirely.
+      e.preventDefault?.();
+      setAoiVertices((prev) => [...prev, [e.lngLat.lng, e.lngLat.lat]]);
+    };
+    const onDblClick = (e: maplibregl.MapMouseEvent): void => {
+      if (drawMode !== 'drawing') return;
+      e.preventDefault();
+      if (aoiVertices.length < 3) return; // need a real polygon
+      setDrawMode('done');
+    };
+    const onKey = (e: KeyboardEvent): void => {
+      if (drawMode === 'drawing' && e.key === 'Escape') {
+        setAoiVertices([]);
+        setDrawMode('off');
+      }
+    };
+
+    map.on('click', onClick);
+    map.on('dblclick', onDblClick);
+    document.addEventListener('keydown', onKey);
+
+    // Disable native double-click-zoom while drawing so a final dblclick
+    // finishes the polygon instead of zooming.
+    if (drawMode === 'drawing') map.doubleClickZoom.disable();
+    else map.doubleClickZoom.enable();
+
+    // Cursor cue.
+    map.getCanvas().style.cursor = drawMode === 'drawing' ? 'crosshair' : '';
+
+    return () => {
+      map.off('click', onClick);
+      map.off('dblclick', onDblClick);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [drawMode, aoiVertices.length]);
+
+  // 6. Push the current vertex list into the aoi source on every change.
+  useEffect(() => {
+    const map = mapRef.current;
+    const src = map?.getSource('aoi') as maplibregl.GeoJSONSource | undefined;
+    if (!src) return;
+    src.setData(aoiGeoJson(aoiVertices, drawMode));
+  }, [aoiVertices, drawMode]);
+
+  // AOI summary: compute counts/area whenever the polygon finalizes.
+  const aoiSummary = useMemo(() => {
+    if (drawMode !== 'done' || aoiVertices.length < 3) return null;
+    return computeAoiSummary(mapRef.current, aoiVertices);
+  }, [drawMode, aoiVertices]);
+
   const claimsLoaded = (manifestQuery.data?.counts.mining_claims ?? 0) > 0;
 
   function flyTo(hit: GeocodeHit): void {
@@ -289,7 +385,22 @@ export function MapPage() {
       <div className="relative h-full w-full">
         <div ref={containerRef} className="absolute inset-0 h-full w-full" data-testid="map-container" />
         <Legend mrdsVisible={visibility['mrds'] ?? true} />
-        {selected && <DetailDrawer feature={selected} onClose={() => setSelected(null)} />}
+        <AoiControls
+          mode={drawMode}
+          vertexCount={aoiVertices.length}
+          onStart={() => {
+            setSelected(null);
+            setAoiVertices([]);
+            setDrawMode('drawing');
+          }}
+          onFinish={() => aoiVertices.length >= 3 && setDrawMode('done')}
+          onClear={() => {
+            setAoiVertices([]);
+            setDrawMode('off');
+          }}
+        />
+        {aoiSummary && <AoiPanel summary={aoiSummary} onClose={() => { setAoiVertices([]); setDrawMode('off'); }} />}
+        {selected && !aoiSummary && <DetailDrawer feature={selected} onClose={() => setSelected(null)} />}
       </div>
     </div>
   );
@@ -451,6 +562,274 @@ function SearchBox({ onPick }: { onPick: (h: GeocodeHit) => void }) {
         </ul>
       )}
     </form>
+  );
+}
+
+// ─── AOI drawing ───────────────────────────────────────────────────────
+
+interface AoiSummary {
+  vertices: LngLat[];
+  acres: number;
+  mrdsInside: number;
+  mrdsByCategory: Record<string, number>;
+  claimsInside: number;
+  claimsByClaimant: Array<{ claimant: string; count: number }>;
+}
+
+function emptyFC(): GeoJSON.FeatureCollection {
+  return { type: 'FeatureCollection', features: [] };
+}
+
+/** Render the in-progress vertices, the connecting polyline, and the
+ *  closed polygon as separate features in one FeatureCollection — the
+ *  3 AOI map layers filter by geometry type to pick the right one. */
+function aoiGeoJson(vertices: LngLat[], mode: 'off' | 'drawing' | 'done'): GeoJSON.FeatureCollection {
+  if (vertices.length === 0) return emptyFC();
+  const features: GeoJSON.Feature[] = vertices.map((v) => ({
+    type: 'Feature',
+    geometry: { type: 'Point', coordinates: v },
+    properties: {},
+  }));
+  if (mode === 'drawing' && vertices.length >= 2) {
+    features.push({
+      type: 'Feature',
+      geometry: { type: 'LineString', coordinates: vertices },
+      properties: {},
+    });
+  }
+  if (mode === 'done' && vertices.length >= 3) {
+    features.push({
+      type: 'Feature',
+      geometry: { type: 'Polygon', coordinates: [[...vertices, vertices[0]!]] },
+      properties: {},
+    });
+  }
+  return { type: 'FeatureCollection', features };
+}
+
+function commodityCategoryFor(commodityField: unknown): keyof typeof COMMODITY_CATEGORY_COLORS {
+  const s = String(commodityField ?? '').toLowerCase();
+  const has = (...needles: string[]) => needles.some((n) => s.includes(n.toLowerCase()));
+  if (has('gold', 'silver', 'platinum', 'palladium')) return 'precious';
+  if (has('lithium', 'cobalt', 'nickel', 'rare earth', 'tungsten', 'tin', 'antimony')) return 'critical';
+  if (has('copper', 'zinc', 'lead', 'molybdenum', 'iron')) return 'base';
+  if (has('coal', 'uranium', 'oil', 'gas', 'helium')) return 'energy';
+  if (has('potash', 'phosphate', 'sand', 'gravel', 'gypsum', 'sulfur')) return 'industrial';
+  return 'unknown';
+}
+
+function computeAoiSummary(map: maplibregl.Map | null, vertices: LngLat[]): AoiSummary | null {
+  if (!map || vertices.length < 3) return null;
+  const acres = polygonAreaAcres(vertices);
+  const bbox = ringBbox(vertices);
+
+  // Convert bbox to screen pixel rect for queryRenderedFeatures.
+  const sw = map.project([bbox[0], bbox[1]]);
+  const ne = map.project([bbox[2], bbox[3]]);
+  // queryRenderedFeatures wants two corners in any order.
+  const rect: [maplibregl.PointLike, maplibregl.PointLike] = [
+    [Math.min(sw.x, ne.x), Math.min(sw.y, ne.y)],
+    [Math.max(sw.x, ne.x), Math.max(sw.y, ne.y)],
+  ];
+
+  const mrdsHits = map.getLayer('mrds')
+    ? map.queryRenderedFeatures(rect, { layers: ['mrds'] })
+    : [];
+  const mrdsByCategory: Record<string, number> = {};
+  let mrdsInside = 0;
+  for (const h of mrdsHits) {
+    if (h.geometry.type !== 'Point') continue;
+    const pt = h.geometry.coordinates as LngLat;
+    if (!pointInPolygon(pt, vertices)) continue;
+    mrdsInside++;
+    const cat = commodityCategoryFor(h.properties?.commodity);
+    mrdsByCategory[cat] = (mrdsByCategory[cat] ?? 0) + 1;
+  }
+
+  const claimHits = map.getLayer('mining-claims')
+    ? map.queryRenderedFeatures(rect, { layers: ['mining-claims'] })
+    : [];
+  const seenSerials = new Set<string>();
+  const claimantCounts = new Map<string, number>();
+  for (const h of claimHits) {
+    const serial = String(h.properties?.serial ?? '');
+    if (!serial || seenSerials.has(serial)) continue;
+    seenSerials.add(serial);
+    const claimant = String(h.properties?.claimant ?? '(unknown)');
+    claimantCounts.set(claimant, (claimantCounts.get(claimant) ?? 0) + 1);
+  }
+  const claimsByClaimant = Array.from(claimantCounts.entries())
+    .map(([claimant, count]) => ({ claimant, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 8);
+
+  return {
+    vertices,
+    acres,
+    mrdsInside,
+    mrdsByCategory,
+    claimsInside: seenSerials.size,
+    claimsByClaimant,
+  };
+}
+
+function AoiControls({
+  mode,
+  vertexCount,
+  onStart,
+  onFinish,
+  onClear,
+}: {
+  mode: 'off' | 'drawing' | 'done';
+  vertexCount: number;
+  onStart: () => void;
+  onFinish: () => void;
+  onClear: () => void;
+}) {
+  return (
+    <div
+      data-testid="aoi-controls"
+      className="absolute right-3 top-3 z-10 flex flex-col items-end gap-2"
+    >
+      {mode === 'off' && (
+        <button
+          type="button"
+          onClick={onStart}
+          data-testid="aoi-draw-button"
+          className="rounded-md border border-border bg-bg-surface/95 px-3 py-1.5 font-mono text-[11px] text-text shadow-lg backdrop-blur hover:border-accent/60"
+        >
+          ✎ draw AOI
+        </button>
+      )}
+      {mode === 'drawing' && (
+        <div className="flex flex-col items-end gap-1 rounded-md border border-accent/40 bg-bg-surface/95 px-3 py-2 font-mono text-[10px] text-text shadow-lg backdrop-blur">
+          <div className="text-text-muted">
+            click to add vertices · double-click to finish · esc to cancel
+          </div>
+          <div className="flex items-center gap-2">
+            <span>{vertexCount} vertex{vertexCount === 1 ? '' : 'es'}</span>
+            <button
+              type="button"
+              onClick={onFinish}
+              disabled={vertexCount < 3}
+              className="rounded border border-border bg-bg-panel px-2 py-0.5 disabled:opacity-40"
+            >
+              finish
+            </button>
+            <button
+              type="button"
+              onClick={onClear}
+              className="rounded border border-border bg-bg-panel px-2 py-0.5"
+            >
+              cancel
+            </button>
+          </div>
+        </div>
+      )}
+      {mode === 'done' && (
+        <button
+          type="button"
+          onClick={onClear}
+          className="rounded-md border border-border bg-bg-surface/95 px-3 py-1.5 font-mono text-[11px] text-text-muted shadow-lg backdrop-blur hover:text-text"
+        >
+          new AOI
+        </button>
+      )}
+    </div>
+  );
+}
+
+function AoiPanel({ summary, onClose }: { summary: AoiSummary; onClose: () => void }) {
+  const categoryOrder: Array<keyof typeof COMMODITY_CATEGORY_COLORS> = [
+    'precious',
+    'critical',
+    'base',
+    'energy',
+    'industrial',
+    'unknown',
+  ];
+  const totalCommodityHits =
+    summary.mrdsInside === 0
+      ? 0
+      : Object.values(summary.mrdsByCategory).reduce((a, b) => a + b, 0);
+  return (
+    <aside
+      data-testid="aoi-panel"
+      className="absolute right-3 top-16 bottom-3 z-10 flex w-[360px] flex-col rounded-lg border border-border bg-bg-surface/95 shadow-2xl backdrop-blur"
+    >
+      <header className="flex items-start justify-between gap-2 border-b border-border px-4 py-3">
+        <div className="min-w-0">
+          <div className="font-mono text-[10px] uppercase tracking-wider text-text-muted">Area of Interest</div>
+          <div className="mt-0.5 font-mono text-sm text-text">
+            {summary.acres.toLocaleString(undefined, { maximumFractionDigits: 1 })} acres
+          </div>
+          <div className="mt-0.5 font-mono text-[10px] text-text-muted">{summary.vertices.length} vertices</div>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close AOI"
+          className="rounded-md border border-border bg-bg-panel px-2 py-1 font-mono text-[10px] text-text-muted hover:text-text"
+        >
+          ✕
+        </button>
+      </header>
+
+      <div className="flex-1 overflow-y-auto px-4 py-3 font-mono text-[11px]">
+        <Section title="MRDS deposits inside">
+          {summary.mrdsInside === 0 ? (
+            <div className="text-text-muted">No mineral occurrences in this AOI at the current zoom.</div>
+          ) : (
+            <div className="space-y-1">
+              <div className="text-text">
+                {summary.mrdsInside.toLocaleString()} deposit{summary.mrdsInside === 1 ? '' : 's'}
+              </div>
+              {categoryOrder.map((cat) => {
+                const n = summary.mrdsByCategory[cat] ?? 0;
+                if (n === 0) return null;
+                return (
+                  <div key={cat} className="flex items-center gap-2 text-text">
+                    <span
+                      aria-hidden
+                      className="h-1.5 w-1.5 rounded-full"
+                      style={{ backgroundColor: COMMODITY_CATEGORY_COLORS[cat] }}
+                    />
+                    <span className="capitalize">{cat}</span>
+                    <span className="ml-auto text-text-muted">
+                      {n} ({totalCommodityHits > 0 ? Math.round((100 * n) / totalCommodityHits) : 0}%)
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Section>
+
+        <Section title="Active claims overlapping">
+          {summary.claimsInside === 0 ? (
+            <div className="text-lime-400">
+              No active claims in this AOI — every acre here is open ground subject to surface management and withdrawal status.
+            </div>
+          ) : (
+            <div className="space-y-1">
+              <div className="text-text">
+                {summary.claimsInside.toLocaleString()} claim{summary.claimsInside === 1 ? '' : 's'}, top claimants:
+              </div>
+              {summary.claimsByClaimant.map((c) => (
+                <div key={c.claimant} className="flex items-center gap-2 text-text">
+                  <span className="truncate" title={c.claimant}>{c.claimant}</span>
+                  <span className="ml-auto text-text-muted">{c.count}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </Section>
+
+        <div className="mt-2 rounded-md border border-border bg-bg-panel px-3 py-2 text-[10px] leading-relaxed text-text-muted">
+          AOI counts only include features rendered at the current zoom level. Zoom in or out and re-draw to refresh.
+        </div>
+      </div>
+    </aside>
   );
 }
 
