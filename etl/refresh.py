@@ -102,7 +102,14 @@ def run_sources(only: set[str] | None, skip_set: set[str]) -> list[SourceResult]
 
 
 def run_tippecanoe(results: list[SourceResult]) -> Path:
-    """Merge per-source GeoJSON into a single subterra.pmtiles file."""
+    """Merge per-source GeoJSON into a single subterra.pmtiles file.
+
+    Tile-size flags tuned for the full layer set (mrds + claims + leases +
+    federal_lands + plss sections + wells + pipelines, ~3M features
+    total). Without --maximum-tile-bytes the combined output ran over
+    700 MiB which exceeds wrangler's single-shot upload cap and bogs
+    down client bandwidth. We give tippecanoe a per-tile budget and let
+    it coalesce/drop densest features at low zooms to honor it."""
     if not results:
         raise RuntimeError("No source results to tile — nothing to do.")
     out = OUT / "subterra.pmtiles"
@@ -112,11 +119,13 @@ def run_tippecanoe(results: list[SourceResult]) -> Path:
         "tippecanoe",
         "-o", str(out),
         "--force",
-        "--no-feature-limit",
-        "--no-tile-size-limit",
         "--minimum-zoom=0",
         "--maximum-zoom=12",
-        "--drop-densest-as-needed",
+        "--maximum-tile-bytes=400000",       # 400 KB per-tile budget
+        "--drop-densest-as-needed",          # drop densest features when over budget
+        "--coalesce-densest-as-needed",      # merge dense polygons before dropping
+        "--drop-fraction-as-needed",         # random-sample if still over
+        "--simplification=10",               # aggressive geometry simplification
         "--read-parallel",
     ]
     for r in results:
