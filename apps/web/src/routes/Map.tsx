@@ -10,8 +10,36 @@ import { useLayerVisibility } from '@/stores/layers';
 import { geocode, type GeocodeHit } from '@/lib/geocode';
 import { pointInPolygon, polygonAreaAcres, ringBbox, type LngLat } from '@/lib/geo';
 
-const BASE_STYLE =
+/** Primary vector basemap (OpenFreeMap dark). If this URL ever 403s or
+ *  fails to fetch (CDN outage, blocking, etc.) the map falls back to the
+ *  inline OSM raster style below — never depends on a third-party style
+ *  server staying up. */
+const PRIMARY_STYLE =
   import.meta.env.VITE_MAP_STYLE_URL ?? 'https://tiles.openfreemap.org/styles/dark';
+
+/** Fallback basemap: inline MapLibre style spec backed by OpenStreetMap
+ *  raster tiles. No external style.json fetch. Looks worse than the
+ *  vector style but always renders. */
+const FALLBACK_STYLE: maplibregl.StyleSpecification = {
+  version: 8,
+  sources: {
+    osm: {
+      type: 'raster',
+      tiles: [
+        'https://a.tile.openstreetmap.org/{z}/{x}/{y}.png',
+        'https://b.tile.openstreetmap.org/{z}/{x}/{y}.png',
+        'https://c.tile.openstreetmap.org/{z}/{x}/{y}.png',
+      ],
+      tileSize: 256,
+      attribution: '© OpenStreetMap contributors',
+      maxzoom: 19,
+    },
+  },
+  layers: [
+    { id: 'osm-bg', type: 'background', paint: { 'background-color': '#0a0c10' } },
+    { id: 'osm-tiles', type: 'raster', source: 'osm', paint: { 'raster-opacity': 0.55, 'raster-saturation': -0.5, 'raster-brightness-max': 0.6 } },
+  ],
+};
 
 interface SelectedFeature {
   layerId: string;
@@ -58,11 +86,30 @@ export function MapPage() {
 
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: BASE_STYLE,
+      style: PRIMARY_STYLE,
       center: [-117.06, 38.66],
       zoom: 7.5,
       attributionControl: false,
     });
+
+    // If the primary style fails to fetch (OpenFreeMap CDN outage,
+    // upstream 403, network block, etc.), swap to the inline OSM
+    // raster fallback within a few seconds so the user never sees a
+    // permanent black screen.
+    let primaryLoaded = false;
+    map.once('load', () => {
+      primaryLoaded = true;
+    });
+    setTimeout(() => {
+      if (primaryLoaded) return;
+      console.warn('[basemap] primary style never loaded, falling back to OSM raster');
+      try {
+        map.setStyle(FALLBACK_STYLE);
+        setMapError((prev) => prev ?? 'Primary basemap unreachable — using OSM raster fallback');
+      } catch (err) {
+        console.error('[basemap] fallback setStyle failed', err);
+      }
+    }, 6000);
 
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
     map.addControl(new maplibregl.ScaleControl({ unit: 'imperial' }), 'bottom-left');
@@ -75,13 +122,17 @@ export function MapPage() {
       'bottom-right',
     );
     map.on('error', (e) => {
-      const msg = e?.error?.message ?? String(e);
-      console.warn('[maplibre]', msg);
-      // Surface only "fatal" errors (anything other than per-tile 404s) as
-      // a visible banner — otherwise a single bad layer can produce a
-      // silent black screen.
+      const err = e?.error ?? e;
+      const errAny = err as { message?: string; url?: string; status?: number };
+      const url = errAny.url;
+      const status = errAny.status;
+      const msg = errAny.message ?? String(err);
+      const full = [msg, url && `url=${url}`, status && `status=${status}`]
+        .filter(Boolean)
+        .join(' · ');
+      console.warn('[maplibre]', full);
       if (!/Source image could not be decoded|HTTPError.*404/i.test(msg)) {
-        setMapError((prev) => prev ?? msg);
+        setMapError((prev) => prev ?? full);
       }
     });
     map.once('load', () => setStyleLoaded(true));
