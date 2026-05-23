@@ -51,6 +51,7 @@ def _fetch_page(query_url: str, offset: int) -> dict[str, Any]:
         "f": "geojson",
         "resultRecordCount": str(PAGE_SIZE),
         "resultOffset": str(offset),
+        "orderByFields": "OBJECTID ASC",
     }
     resp = requests.get(
         query_url,

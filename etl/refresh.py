@@ -65,7 +65,12 @@ def configure_logging() -> None:
 
 
 def run_sources(only: set[str] | None, skip_set: set[str]) -> list[SourceResult]:
+    """Run every enabled source module. A failure in one source is logged
+    but doesn't abort the run — tippecanoe builds tiles from whatever
+    succeeded so a single broken upstream doesn't blank the production
+    map. Failures are summarized at the end."""
     results: list[SourceResult] = []
+    failures: list[tuple[str, str]] = []
     for name in SOURCES:
         if only is not None and name not in only:
             continue
@@ -74,14 +79,25 @@ def run_sources(only: set[str] | None, skip_set: set[str]) -> list[SourceResult]
         log = logging.getLogger(f"etl.{name}")
         log.info("starting source")
         t0 = time.monotonic()
-        module = importlib.import_module(f"sources.{name}")
-        result: SourceResult = module.run(WORK)
-        elapsed = time.monotonic() - t0
-        log.info(
-            "done in %.1fs (%d features → %s)",
-            elapsed, result.feature_count, result.geojson_path.name,
+        try:
+            module = importlib.import_module(f"sources.{name}")
+            result: SourceResult = module.run(WORK)
+            elapsed = time.monotonic() - t0
+            log.info(
+                "done in %.1fs (%d features → %s)",
+                elapsed, result.feature_count, result.geojson_path.name,
+            )
+            results.append(result)
+        except Exception as exc:  # noqa: BLE001
+            elapsed = time.monotonic() - t0
+            log.error("FAILED after %.1fs — %s: %s", elapsed, type(exc).__name__, exc)
+            failures.append((name, f"{type(exc).__name__}: {exc}"))
+    if failures:
+        logging.getLogger("etl").warning(
+            "%d source(s) failed: %s",
+            len(failures),
+            ", ".join(n for n, _ in failures),
         )
-        results.append(result)
     return results
 
 
