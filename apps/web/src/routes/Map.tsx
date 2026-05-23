@@ -38,6 +38,7 @@ export function MapPage() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const [styleLoaded, setStyleLoaded] = useState(false);
+  const [mapError, setMapError] = useState<string | null>(null);
   const [selected, setSelected] = useState<SelectedFeature | null>(null);
   const [commodityFilter, setCommodityFilter] = useState<Set<string>>(new Set());
   const [drawMode, setDrawMode] = useState<'off' | 'drawing' | 'done'>('off');
@@ -74,7 +75,14 @@ export function MapPage() {
       'bottom-right',
     );
     map.on('error', (e) => {
-      console.warn('[maplibre]', e?.error?.message ?? e);
+      const msg = e?.error?.message ?? String(e);
+      console.warn('[maplibre]', msg);
+      // Surface only "fatal" errors (anything other than per-tile 404s) as
+      // a visible banner — otherwise a single bad layer can produce a
+      // silent black screen.
+      if (!/Source image could not be decoded|HTTPError.*404/i.test(msg)) {
+        setMapError((prev) => prev ?? msg);
+      }
     });
     map.once('load', () => setStyleLoaded(true));
 
@@ -384,6 +392,22 @@ export function MapPage() {
 
       <div className="relative h-full w-full">
         <div ref={containerRef} className="absolute inset-0 h-full w-full" data-testid="map-container" />
+        {mapError && (
+          <div
+            data-testid="map-error-banner"
+            className="absolute left-1/2 top-3 z-20 max-w-2xl -translate-x-1/2 rounded-md border border-red-500/60 bg-red-500/10 px-3 py-2 font-mono text-[11px] text-red-300 shadow-xl backdrop-blur"
+          >
+            <span className="font-semibold">map error:</span> {mapError}
+            <button
+              type="button"
+              onClick={() => setMapError(null)}
+              className="ml-3 text-text-muted hover:text-text"
+              aria-label="Dismiss"
+            >
+              ✕
+            </button>
+          </div>
+        )}
         <Legend mrdsVisible={visibility['mrds'] ?? true} />
         <AoiControls
           mode={drawMode}
