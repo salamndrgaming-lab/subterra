@@ -1051,6 +1051,10 @@ const PROPERTY_LABELS: Record<string, string> = {
   recorded_at: 'Recorded',
   last_assess_year: 'Last assessment',
   agency: 'Managing agency',
+  lessee: 'Lessee',
+  effective_at: 'Effective',
+  expires_at: 'Expires',
+  type: 'Type',
 };
 
 function DetailDrawer({
