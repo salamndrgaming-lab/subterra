@@ -38,8 +38,10 @@ OUT.mkdir(parents=True, exist_ok=True)
 # module is ready.
 SOURCES = [
     "mrds",          # Phase 1 — USGS Mineral Resources Data System (~310k points)
-    "blm_claims",    # Phase 2 — BLM MLRS active mining claims (~350k polygons)
-    "federal_lands", # Phase 2 — BLM National SMA (~1M polygons, 4 agencies)
+    "blm_claims",    # Phase 2 — BLM MLRS active mining claims (~550k polygons)
+    # "federal_lands" disabled — BLM Hub Download API 500s on this item
+    # (too large for on-demand generator). Re-enable once we have a paginated
+    # FeatureServer or ScienceBase static download URL that works.
 ]
 
 

@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { LAYERS, LAYER_GROUPS, type LayerDef } from '@subterra/shared';
+import { COMMODITIES, LAYERS, LAYER_GROUPS, type LayerDef } from '@subterra/shared';
 import { cn } from '@/lib/cn';
 import { fetchManifest } from '@/lib/manifest';
 import { useLayerVisibility } from '@/stores/layers';
@@ -34,6 +34,7 @@ export function MapPage() {
   const mapRef = useRef<maplibregl.Map | null>(null);
   const [styleLoaded, setStyleLoaded] = useState(false);
   const [selected, setSelected] = useState<SelectedFeature | null>(null);
+  const [commodityFilter, setCommodityFilter] = useState<Set<string>>(new Set());
   const visibility = useLayerVisibility((s) => s.visibility);
   const toggle = useLayerVisibility((s) => s.toggle);
 
@@ -149,6 +150,24 @@ export function MapPage() {
     else map.once('load', apply);
   }, [visibility]);
 
+  // 4. Sync commodity filter — applied as a MapLibre filter on the MRDS
+  //    layer (case-insensitive substring match per selected commodity).
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.getLayer('mrds')) return;
+    if (commodityFilter.size === 0) {
+      map.setFilter('mrds', null);
+      return;
+    }
+    // MapLibre filter: OR across substring matches on the commodity property.
+    const subFilters = Array.from(commodityFilter).map((label) => [
+      'in',
+      label,
+      ['get', 'commodity'],
+    ]);
+    map.setFilter('mrds', ['any', ...subFilters] as maplibregl.FilterSpecification);
+  }, [commodityFilter, manifestQuery.data]);
+
   const claimsLoaded = (manifestQuery.data?.counts.mining_claims ?? 0) > 0;
 
   function flyTo(hit: GeocodeHit): void {
@@ -176,6 +195,8 @@ export function MapPage() {
         </Link>
 
         <SearchBox onPick={flyTo} />
+
+        <CommodityFilter selected={commodityFilter} onChange={setCommodityFilter} />
 
         <div className="flex items-center gap-3 font-mono text-[10px]">
           <StatusPill label={styleLoaded ? 'basemap loaded' : 'loading basemap…'} ok={styleLoaded} />
@@ -394,6 +415,112 @@ function SearchBox({ onPick }: { onPick: (h: GeocodeHit) => void }) {
         </ul>
       )}
     </form>
+  );
+}
+
+// ─── Commodity filter ──────────────────────────────────────────────────
+
+function CommodityFilter({
+  selected,
+  onChange,
+}: {
+  selected: Set<string>;
+  onChange: (s: Set<string>) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const grouped = useMemo(() => {
+    const byCat = new Map<string, typeof COMMODITIES[number][]>();
+    for (const c of COMMODITIES) {
+      const arr = byCat.get(c.category) ?? [];
+      arr.push(c);
+      byCat.set(c.category, arr);
+    }
+    return byCat;
+  }, []);
+  const label =
+    selected.size === 0
+      ? 'all commodities'
+      : selected.size === 1
+        ? Array.from(selected)[0]
+        : `${selected.size} commodities`;
+
+  function toggle(commodityLabel: string) {
+    const next = new Set(selected);
+    if (next.has(commodityLabel)) next.delete(commodityLabel);
+    else next.add(commodityLabel);
+    onChange(next);
+  }
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        data-testid="commodity-filter-button"
+        className={cn(
+          'flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 font-mono text-[11px] transition',
+          selected.size > 0
+            ? 'border-accent/40 bg-accent/5 text-text'
+            : 'border-border bg-bg-panel text-text-subtle hover:text-text',
+        )}
+      >
+        <span
+          aria-hidden
+          className={cn(
+            'h-1.5 w-1.5 rounded-full',
+            selected.size > 0 ? 'bg-accent' : 'bg-border-strong',
+          )}
+        />
+        {label}
+        <span aria-hidden className="text-text-muted">▾</span>
+      </button>
+      {open && (
+        <div
+          data-testid="commodity-filter-menu"
+          className="absolute right-0 top-[calc(100%+4px)] z-20 w-72 rounded-md border border-border bg-bg-surface shadow-xl"
+        >
+          <div className="flex items-center justify-between border-b border-border px-3 py-2 font-mono text-[10px]">
+            <span className="text-text-muted">filter MRDS deposits</span>
+            <button
+              type="button"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                onChange(new Set());
+              }}
+              className="text-accent hover:underline"
+            >
+              clear
+            </button>
+          </div>
+          <div className="max-h-80 overflow-y-auto px-2 py-2">
+            {Array.from(grouped.entries()).map(([cat, items]) => (
+              <div key={cat} className="mb-2 last:mb-0">
+                <div className="px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-text-muted">
+                  {cat}
+                </div>
+                {items.map((c) => (
+                  <label
+                    key={c.id}
+                    className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 font-mono text-[11px] text-text hover:bg-bg-panel"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selected.has(c.label)}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onChange={() => toggle(c.label)}
+                      className="h-3 w-3 accent-accent"
+                    />
+                    <span className="flex-1">{c.label}</span>
+                    <span className="text-text-muted">{c.symbol}</span>
+                  </label>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
