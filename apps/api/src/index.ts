@@ -37,6 +37,12 @@ app.use('*', cors({
     return PAGES_ORIGIN.test(origin) ? origin : '';
   },
   credentials: true,
+  // PMTiles + sql.js issue HTTP Range requests for tile + features.db
+  // reads. Without Range in allowHeaders the browser preflight blocks
+  // every tile fetch and the map renders blank.
+  allowHeaders: ['Range', 'Content-Type', 'Accept'],
+  exposeHeaders: ['Content-Range', 'Content-Length', 'Accept-Ranges', 'ETag'],
+  maxAge: 86400,
 }));
 
 // ─── liveness / manifest ────────────────────────────────────────────────
