@@ -26,17 +26,44 @@ export interface Env {
 const app = new Hono<{ Bindings: Env }>();
 
 app.use('*', logger());
+// Read-only data routes (manifest + tiles + features.db) get a permissive
+// wildcard CORS so PMTiles + sql.js Range requests work from every Pages
+// alias and from localhost dev without origin gymnastics. Mutating /auth,
+// /aois, /alerts, /billing routes get the strict origin-restricted CORS
+// below (those need credentials, which requires an explicit origin).
+app.use('/manifest', cors({
+  origin: '*',
+  allowHeaders: ['Range', 'Content-Type', 'Accept'],
+  exposeHeaders: ['Content-Range', 'Content-Length', 'Accept-Ranges', 'ETag'],
+  maxAge: 86400,
+}));
+app.use('/tiles/*', cors({
+  origin: '*',
+  allowHeaders: ['Range', 'Content-Type', 'Accept'],
+  exposeHeaders: ['Content-Range', 'Content-Length', 'Accept-Ranges', 'ETag'],
+  maxAge: 86400,
+}));
+app.use('/features/*', cors({
+  origin: '*',
+  allowHeaders: ['Range', 'Content-Type', 'Accept'],
+  exposeHeaders: ['Content-Range', 'Content-Length', 'Accept-Ranges', 'ETag'],
+  maxAge: 86400,
+}));
+
 // Allow localhost dev + every Pages alias subterra.pages.dev publishes
 // (per-deploy hashes like 95c718a4.subterra.pages.dev, branch aliases
 // like main.subterra.pages.dev, and the production root).
 const PAGES_ORIGIN = /^https:\/\/([a-z0-9-]+\.)?subterra\.pages\.dev$/;
 app.use('*', cors({
   origin: (origin) => {
-    if (!origin) return '';
+    if (!origin) return null;
     if (origin === 'http://localhost:5173') return origin;
-    return PAGES_ORIGIN.test(origin) ? origin : '';
+    return PAGES_ORIGIN.test(origin) ? origin : null;
   },
   credentials: true,
+  allowHeaders: ['Range', 'Content-Type', 'Accept', 'Authorization'],
+  exposeHeaders: ['Content-Range', 'Content-Length', 'Accept-Ranges', 'ETag'],
+  maxAge: 86400,
 }));
 
 // ─── liveness / manifest ────────────────────────────────────────────────

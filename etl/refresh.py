@@ -65,7 +65,12 @@ def configure_logging() -> None:
 
 
 def run_sources(only: set[str] | None, skip_set: set[str]) -> list[SourceResult]:
+    """Run every enabled source module. A failure in one source is logged
+    but doesn't abort the run — tippecanoe builds tiles from whatever
+    succeeded so a single broken upstream doesn't blank the production
+    map. Failures are summarized at the end."""
     results: list[SourceResult] = []
+    failures: list[tuple[str, str]] = []
     for name in SOURCES:
         if only is not None and name not in only:
             continue
@@ -74,19 +79,37 @@ def run_sources(only: set[str] | None, skip_set: set[str]) -> list[SourceResult]
         log = logging.getLogger(f"etl.{name}")
         log.info("starting source")
         t0 = time.monotonic()
-        module = importlib.import_module(f"sources.{name}")
-        result: SourceResult = module.run(WORK)
-        elapsed = time.monotonic() - t0
-        log.info(
-            "done in %.1fs (%d features → %s)",
-            elapsed, result.feature_count, result.geojson_path.name,
+        try:
+            module = importlib.import_module(f"sources.{name}")
+            result: SourceResult = module.run(WORK)
+            elapsed = time.monotonic() - t0
+            log.info(
+                "done in %.1fs (%d features → %s)",
+                elapsed, result.feature_count, result.geojson_path.name,
+            )
+            results.append(result)
+        except Exception as exc:  # noqa: BLE001
+            elapsed = time.monotonic() - t0
+            log.error("FAILED after %.1fs — %s: %s", elapsed, type(exc).__name__, exc)
+            failures.append((name, f"{type(exc).__name__}: {exc}"))
+    if failures:
+        logging.getLogger("etl").warning(
+            "%d source(s) failed: %s",
+            len(failures),
+            ", ".join(n for n, _ in failures),
         )
-        results.append(result)
     return results
 
 
 def run_tippecanoe(results: list[SourceResult]) -> Path:
-    """Merge per-source GeoJSON into a single subterra.pmtiles file."""
+    """Merge per-source GeoJSON into a single subterra.pmtiles file.
+
+    Tile-size flags tuned for the full layer set (mrds + claims + leases +
+    federal_lands + plss sections + wells + pipelines, ~3M features
+    total). Without --maximum-tile-bytes the combined output ran over
+    700 MiB which exceeds wrangler's single-shot upload cap and bogs
+    down client bandwidth. We give tippecanoe a per-tile budget and let
+    it coalesce/drop densest features at low zooms to honor it."""
     if not results:
         raise RuntimeError("No source results to tile — nothing to do.")
     out = OUT / "subterra.pmtiles"
@@ -96,11 +119,22 @@ def run_tippecanoe(results: list[SourceResult]) -> Path:
         "tippecanoe",
         "-o", str(out),
         "--force",
-        "--no-feature-limit",
-        "--no-tile-size-limit",
-        "--minimum-zoom=0",
+        # Start at zoom 4: the lowest minZoom in shared/layers.ts is 4, so
+        # nothing renders below that. Skipping z0-z3 avoids the degenerate
+        # "tile 0/0/0 can't fit" loop when continent-scale federal-land
+        # polygons land in the single world tile.
+        "--minimum-zoom=4",
         "--maximum-zoom=12",
+        # Default 500 KB per-tile size cap is enough headroom.
+        "--maximum-tile-bytes=500000",
+        # Use ONE reduction strategy — multiple at once thrashes.
         "--drop-densest-as-needed",
+        # Aggressive geometry simplification at every zoom (15 = drop
+        # vertices within 15 pixel-tolerance of the line).
+        "--simplification=15",
+        # Detect shared polygon borders + dedupe — huge win for adjacent
+        # federal-land + PLSS-section polygons that share edges.
+        "--detect-shared-borders",
         "--read-parallel",
     ]
     for r in results:

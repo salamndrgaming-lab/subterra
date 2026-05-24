@@ -50,15 +50,23 @@ class SourceResult:
 def _fetch_page(query_url: str, offset: int) -> dict[str, Any]:
     """One paginated request. ArcGIS returns exceededTransferLimit when
     more pages exist; we stop when that's false AND we got fewer records
-    than the page size."""
+    than the page size.
+
+    The orderByFields param is required for stable pagination on many
+    ArcGIS services — without it, resultOffset-style paging returns
+    HTTP 400 "Failed to execute query" on layers backed by Hosted Tile
+    Layers. outFields=* avoids field-name-mismatch errors across BLM
+    service revisions; tippecanoe will simplify properties later anyway.
+    """
     params = {
         "where": "1=1",
-        "outFields": "PLSSID,STATEABBR,FRSTDIVID,TWNSHPNO,RANGENO,MERIDIAN",
+        "outFields": "*",
         "returnGeometry": "true",
         "outSR": "4326",
         "f": "geojson",
         "resultRecordCount": str(PAGE_SIZE),
         "resultOffset": str(offset),
+        "orderByFields": "OBJECTID ASC",
     }
     resp = requests.get(
         query_url,
