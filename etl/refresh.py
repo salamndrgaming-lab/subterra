@@ -119,13 +119,22 @@ def run_tippecanoe(results: list[SourceResult]) -> Path:
         "tippecanoe",
         "-o", str(out),
         "--force",
-        "--minimum-zoom=0",
+        # Start at zoom 4: the lowest minZoom in shared/layers.ts is 4, so
+        # nothing renders below that. Skipping z0-z3 avoids the degenerate
+        # "tile 0/0/0 can't fit" loop when continent-scale federal-land
+        # polygons land in the single world tile.
+        "--minimum-zoom=4",
         "--maximum-zoom=12",
-        "--maximum-tile-bytes=400000",       # 400 KB per-tile budget
-        "--drop-densest-as-needed",          # drop densest features when over budget
-        "--coalesce-densest-as-needed",      # merge dense polygons before dropping
-        "--drop-fraction-as-needed",         # random-sample if still over
-        "--simplification=10",               # aggressive geometry simplification
+        # Default 500 KB per-tile size cap is enough headroom.
+        "--maximum-tile-bytes=500000",
+        # Use ONE reduction strategy — multiple at once thrashes.
+        "--drop-densest-as-needed",
+        # Aggressive geometry simplification at every zoom (15 = drop
+        # vertices within 15 pixel-tolerance of the line).
+        "--simplification=15",
+        # Detect shared polygon borders + dedupe — huge win for adjacent
+        # federal-land + PLSS-section polygons that share edges.
+        "--detect-shared-borders",
         "--read-parallel",
     ]
     for r in results:
