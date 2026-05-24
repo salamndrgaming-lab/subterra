@@ -17,27 +17,30 @@ import { pointInPolygon, polygonAreaAcres, ringBbox, type LngLat } from '@/lib/g
 const PRIMARY_STYLE =
   import.meta.env.VITE_MAP_STYLE_URL ?? 'https://tiles.openfreemap.org/styles/dark';
 
-/** Fallback basemap: inline MapLibre style spec backed by OpenStreetMap
- *  raster tiles. No external style.json fetch. Looks worse than the
- *  vector style but always renders. */
+/** Fallback basemap: inline MapLibre style spec backed by CartoDB Dark
+ *  Matter raster tiles. Used by 1M+ websites, permissive CORS, no key,
+ *  no rate limit for public use. Looks like a dark-themed map matching
+ *  our color scheme. */
 const FALLBACK_STYLE: maplibregl.StyleSpecification = {
   version: 8,
   sources: {
-    osm: {
+    basemap: {
       type: 'raster',
       tiles: [
-        'https://a.tile.openstreetmap.org/{z}/{x}/{y}.png',
-        'https://b.tile.openstreetmap.org/{z}/{x}/{y}.png',
-        'https://c.tile.openstreetmap.org/{z}/{x}/{y}.png',
+        'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png',
+        'https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png',
+        'https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png',
+        'https://d.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png',
       ],
       tileSize: 256,
-      attribution: '© OpenStreetMap contributors',
+      attribution:
+        '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>',
       maxzoom: 19,
     },
   },
   layers: [
-    { id: 'osm-bg', type: 'background', paint: { 'background-color': '#0a0c10' } },
-    { id: 'osm-tiles', type: 'raster', source: 'osm', paint: { 'raster-opacity': 0.55, 'raster-saturation': -0.5, 'raster-brightness-max': 0.6 } },
+    { id: 'bg', type: 'background', paint: { 'background-color': '#0a0c10' } },
+    { id: 'basemap', type: 'raster', source: 'basemap' },
   ],
 };
 
@@ -98,18 +101,19 @@ export function MapPage() {
     // permanent black screen.
     let primaryLoaded = false;
     map.once('load', () => {
+      console.info('[basemap] primary loaded');
       primaryLoaded = true;
     });
     setTimeout(() => {
       if (primaryLoaded) return;
-      console.warn('[basemap] primary style never loaded, falling back to OSM raster');
+      console.warn('[basemap] primary style timed out, swapping to CartoDB fallback');
       try {
         map.setStyle(FALLBACK_STYLE);
-        setMapError((prev) => prev ?? 'Primary basemap unreachable — using OSM raster fallback');
+        setMapError((prev) => prev ?? 'Primary basemap unreachable — using CartoDB fallback');
       } catch (err) {
         console.error('[basemap] fallback setStyle failed', err);
       }
-    }, 6000);
+    }, 4000);
 
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
     map.addControl(new maplibregl.ScaleControl({ unit: 'imperial' }), 'bottom-left');
