@@ -49,22 +49,23 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -euo pipefail
-          # wrangler v4 (vs v3) supports multipart uploads for R2 objects
-          # larger than 300 MiB. Our pmtiles can grow past that ceiling
-          # once all the data layers are included.
-          # R2 commands default to the remote bucket; --local would opt
-          # into the dev simulator. Don't pass --remote (not a flag).
+          # wrangler v4 INVERTED the v3 default: r2 object commands now
+          # default to the LOCAL dev simulator unless --remote is passed.
+          # (v3 defaulted to remote and refused --remote as unknown.) So
+          # every wrangler@4 R2 op MUST have --remote for production.
           echo "uploading $(du -h etl/out/subterra.pmtiles | cut -f1) of tiles → R2"
           npx --yes wrangler@4 r2 object put \
             subterra-tiles/tiles/subterra.pmtiles \
-            --file=etl/out/subterra.pmtiles
+            --file=etl/out/subterra.pmtiles \
+            --remote
           npx --yes wrangler@4 r2 object put \
             subterra-tiles/manifest.json \
             --file=etl/out/manifest.json \
-            --content-type=application/json
+            --content-type=application/json \
+            --remote
           echo "--- verifying remote bucket (first 400 bytes of manifest) ---"
           npx --yes wrangler@4 r2 object get \
-            subterra-tiles/manifest.json --pipe \
+            subterra-tiles/manifest.json --pipe --remote \
             | head -c 400
           echo
 
