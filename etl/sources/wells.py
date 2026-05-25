@@ -1,13 +1,9 @@
 """
 U.S. Oil and Natural Gas Wells (HIFLD mirror via NASA NCCS).
 
-HIFLD's public open-data portal was deactivated August 26, 2025. NASA
-Center for Climate Simulation maintains a public mirror of the HIFLD
-energy services at maps.nccs.nasa.gov — same data, stable URL, paginated
-ArcGIS MapServer query (same pattern as sources/plss.py).
-
-~1 million wells across CONUS. Pages of 2000 = ~500 requests, ~5-10
-min runtime.
+Uses sources/_arcgis.iter_features_concurrent for parallel paginated
+fetching. ~1 million wells in CONUS; sequential pagination was ~10 min,
+concurrent pulls it down to ~2-3 min.
 
 Source: https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/energy/MapServer/15
 """
@@ -22,17 +18,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import requests
-from tqdm import tqdm
+from sources._arcgis import iter_features_concurrent
 
 SERVICE = "https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/energy/MapServer"
-LAYER_ID = 15  # oil_and_natural_gas_wells
-PAGE_SIZE = 2000
-USER_AGENT = (
-    "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0 "
-    "(Subterra-ETL +https://github.com/salamndrgaming-lab/subterra)"
-)
-REQUEST_TIMEOUT = 180.0
+LAYER_ID = 15
 
 
 @dataclass
@@ -42,33 +31,7 @@ class SourceResult:
     feature_count: int
 
 
-def _fetch_page(query_url: str, offset: int) -> dict[str, Any]:
-    params = {
-        "where": "1=1",
-        "outFields": "*",
-        "returnGeometry": "true",
-        "outSR": "4326",
-        "f": "geojson",
-        "resultRecordCount": str(PAGE_SIZE),
-        "resultOffset": str(offset),
-        "orderByFields": "OBJECTID ASC",
-    }
-    resp = requests.get(
-        query_url,
-        params=params,
-        headers={"User-Agent": USER_AGENT, "accept": "application/geo+json, application/json"},
-        timeout=REQUEST_TIMEOUT,
-    )
-    resp.raise_for_status()
-    body = resp.json()
-    if isinstance(body, dict) and body.get("error"):
-        raise RuntimeError(f"ArcGIS error from {query_url}: {body['error']}")
-    return body
-
-
 def _normalize_props(p: dict[str, Any]) -> dict[str, Any]:
-    """HIFLD wells schema is broad; pluck the fields a prospector actually
-    wants in the click drawer and drop the rest."""
     def first(*keys: str) -> object:
         for k in keys:
             for cased in (k, k.upper(), k.lower()):
@@ -102,54 +65,41 @@ def run(work_dir: Path) -> SourceResult:
 
     base = os.environ.get("WELLS_SERVICE_URL", SERVICE)
     query_url = f"{base}/{LAYER_ID}/query"
-    log.info("querying %s", query_url)
 
     out_path = work_dir / "wells.geojson"
     feature_count = 0
     skipped = 0
-    offset = 0
     started = time.monotonic()
-    no_progress = 0
 
     try:
         with out_path.open("w", encoding="utf-8") as out:
             out.write('{"type":"FeatureCollection","features":[')
-            first = True
-            pbar = tqdm(desc="wells", unit="feat", smoothing=0.1)
-            while True:
-                body = _fetch_page(query_url, offset)
-                features = body.get("features", [])
-                if not features:
-                    break
-                for feat in features:
-                    geom = feat.get("geometry")
-                    if not geom or geom.get("type") != "Point":
-                        skipped += 1
-                        continue
-                    coords = geom.get("coordinates") or []
-                    if len(coords) < 2 or coords[0] is None or coords[1] is None:
-                        skipped += 1
-                        continue
-                    props = _normalize_props(feat.get("properties") or feat.get("attributes") or {})
-                    if not first:
-                        out.write(",")
-                    first = False
-                    json.dump({"type": "Feature", "geometry": geom, "properties": props}, out)
-                    feature_count += 1
-                pbar.update(len(features))
+            first = [True]
 
-                exceeded = body.get("exceededTransferLimit", False)
-                if not exceeded and len(features) < PAGE_SIZE:
-                    break
-                offset += len(features)
-                if len(features) == 0:
-                    no_progress += 1
-                    if no_progress >= 3:
-                        log.warning("no progress for 3 consecutive pages, stopping")
-                        break
-                else:
-                    no_progress = 0
-            pbar.close()
+            def emit(feat: dict[str, Any]) -> None:
+                nonlocal skipped
+                geom = feat.get("geometry")
+                if not geom or geom.get("type") != "Point":
+                    skipped += 1
+                    return
+                coords = geom.get("coordinates") or []
+                if len(coords) < 2 or coords[0] is None or coords[1] is None:
+                    skipped += 1
+                    return
+                props = _normalize_props(feat.get("properties") or feat.get("attributes") or {})
+                if not first[0]:
+                    out.write(",")
+                first[0] = False
+                json.dump({"type": "Feature", "geometry": geom, "properties": props}, out)
+
+            # NASA NCCS hosts a public mirror with relaxed rate limits, so
+            # we can run more workers than against gis.blm.gov.
+            feature_count = iter_features_concurrent(
+                query_url,
+                on_feature=emit,
+                workers=8,
+                progress_label="wells",
+            )
             out.write("]}")
     except Exception:
         if out_path.exists():
