@@ -122,13 +122,19 @@ def run(work_dir: Path) -> SourceResult:
     skipped = 0
     started = time.monotonic()
 
+    raw_path = work_dir / "pipelines_crude.raw.json"
     try:
-        with out_path.open("w", encoding="utf-8") as out, resp:
+        with raw_path.open("wb") as rawf, resp:
             resp.raw.decode_content = True
+            for chunk in iter(lambda: resp.raw.read(1 << 16), b""):
+                rawf.write(chunk)
+        log.info("downloaded %d bytes → %s", raw_path.stat().st_size, raw_path.name)
+
+        with out_path.open("w", encoding="utf-8") as out, raw_path.open("rb") as src:
             out.write('{"type":"FeatureCollection","features":[')
             first = True
             pbar = tqdm(desc="crude pipelines", unit="feat", smoothing=0.1)
-            for feat in ijson.items(resp.raw, "features.item", use_float=True):
+            for feat in ijson.items(src, "features.item", use_float=True):
                 geom = feat.get("geometry")
                 if not geom:
                     skipped += 1
@@ -142,6 +148,14 @@ def run(work_dir: Path) -> SourceResult:
                 pbar.update(1)
             pbar.close()
             out.write("]}")
+
+        if feature_count == 0:
+            with raw_path.open("rb") as src:
+                head = src.read(800)
+            log.error(
+                "ZERO features parsed from EIA response. First 800 bytes:\n%s",
+                head.decode("utf-8", errors="replace"),
+            )
     except Exception:
         if out_path.exists():
             out_path.unlink()

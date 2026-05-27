@@ -87,6 +87,29 @@ def _state_from(props: dict[str, Any]) -> str | None:
     return None
 
 
+def _raw_agency_value(props: dict[str, Any]) -> str | None:
+    """Diagnostic: return the first non-empty value from any candidate
+    agency field, without normalization. Used to discover what field
+    names + values the actual service is returning so we can refine the
+    AGENCY_NORMALIZATION table later."""
+    for key in (
+        "ADMIN_AGENCY_CODE", "admin_agency_code",
+        "ADM_MANAGE", "adm_manage",
+        "AGBUR", "agbur",
+        "AGENCY", "agency",
+        "MANAGER", "manager",
+        "MGMT_AGENCY", "mgmt_agency",
+        "OWNER_NAME", "owner_name",
+        "AGENCY_CODE", "agency_code",
+        "AGENCY_TYP", "agency_typ",
+        "OWN_AGCY", "own_agcy",
+    ):
+        v = props.get(key)
+        if v not in (None, "", " "):
+            return str(v).strip()
+    return None
+
+
 def run(work_dir: Path) -> SourceResult:
     log = logging.getLogger("etl.federal_lands")
     log.info("starting BLM National SMA paginated download")
@@ -97,8 +120,8 @@ def run(work_dir: Path) -> SourceResult:
     out_path = work_dir / "federal_lands.geojson"
     feature_count = 0
     skipped_no_geom = 0
-    skipped_wrong_agency = 0
     per_agency: dict[str, int] = {}
+    seen_raw_agency: dict[str, int] = {}  # diagnostic: count raw values seen
     started = time.monotonic()
 
     try:
@@ -107,16 +130,24 @@ def run(work_dir: Path) -> SourceResult:
             first = [True]
 
             def emit(feat: dict[str, Any]) -> None:
-                nonlocal skipped_no_geom, skipped_wrong_agency
+                nonlocal skipped_no_geom
                 geom = feat.get("geometry")
                 if not geom:
                     skipped_no_geom += 1
                     return
                 raw_props = feat.get("properties") or feat.get("attributes") or {}
+
+                # Try to normalize agency, fall back to raw value verbatim,
+                # final fallback "OTHER". Either way we emit the polygon —
+                # filtering at ETL time before we know the schema was a
+                # mistake; the web layer can color-by-agency with a default
+                # for unknown values.
                 agency = _agency_from(raw_props)
-                if agency is None or agency not in KEEP:
-                    skipped_wrong_agency += 1
-                    return
+                if agency is None:
+                    raw_val = _raw_agency_value(raw_props)
+                    agency = raw_val or "OTHER"
+                    if raw_val:
+                        seen_raw_agency[raw_val] = seen_raw_agency.get(raw_val, 0) + 1
                 props = {
                     "agency": agency,
                     "name": _name_from(raw_props),
@@ -143,8 +174,19 @@ def run(work_dir: Path) -> SourceResult:
 
     elapsed = time.monotonic() - started
     log.info(
-        "wrote %d federal polygons (skipped %d no-geom, %d non-target) in %.1fs — %s",
-        feature_count, skipped_no_geom, skipped_wrong_agency, elapsed, per_agency,
+        "wrote %d federal polygons (skipped %d no-geom) in %.1fs",
+        feature_count, skipped_no_geom, elapsed,
+    )
+    log.info("normalized agency breakdown: %s", per_agency)
+    if seen_raw_agency:
+        # Print up to top 20 raw values so we can refine the normalization
+        # table in a follow-up commit.
+        top = sorted(seen_raw_agency.items(), key=lambda kv: kv[1], reverse=True)[:20]
+        log.info("top unrecognized agency values (raw): %s", dict(top))
+    return SourceResult(
+        layer_id="federal_lands",
+        geojson_path=out_path,
+        feature_count=feature_count,
     )
     return SourceResult(
         layer_id="federal_lands",

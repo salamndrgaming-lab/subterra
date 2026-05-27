@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import requests
+
 from sources._arcgis import iter_features_concurrent
 
 SERVICE = "https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/energy/MapServer"
@@ -57,6 +59,24 @@ def _normalize_props(p: dict[str, Any]) -> dict[str, Any]:
         if v is not None:
             out[label] = v
     return out
+
+
+def _probe_service(base: str, log: logging.Logger) -> None:
+    """Hit /MapServer?f=json once to log the layer table — useful when a
+    run returns zero features so we can see whether the layer ID is right."""
+    try:
+        r = requests.get(
+            base, params={"f": "json"},
+            headers={"User-Agent": USER_AGENT}, timeout=30,
+        )
+        r.raise_for_status()
+        info = r.json()
+        layers = info.get("layers") or []
+        log.info("service has %d layers:", len(layers))
+        for layer in layers[:30]:
+            log.info("  id=%s name=%r geometryType=%s", layer.get("id"), layer.get("name"), layer.get("geometryType"))
+    except Exception as err:  # noqa: BLE001
+        log.warning("could not probe service: %s", err)
 
 
 def run(work_dir: Path) -> SourceResult:
@@ -108,6 +128,11 @@ def run(work_dir: Path) -> SourceResult:
 
     elapsed = time.monotonic() - started
     log.info("wrote %d wells (skipped %d) in %.1fs → %s", feature_count, skipped, elapsed, out_path.name)
+    if feature_count == 0:
+        log.warning(
+            "ZERO wells written — probing service to enumerate available layers"
+        )
+        _probe_service(base, log)
     return SourceResult(
         layer_id="wells",
         geojson_path=out_path,
