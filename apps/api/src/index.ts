@@ -115,12 +115,20 @@ app.get('/manifest', async (c) => {
     return c.json({ error: 'manifest_invalid_json' }, 502);
   }
   const origin = new URL(c.req.url).origin;
-  manifest.pmtilesUrl = `${origin}/tiles/subterra.pmtiles`;
-  manifest.featuresDbUrl = `${origin}/features/subterra-features.db`;
+  // Cache-bust the pmtiles + features.db URLs with the manifest's
+  // version (a unix timestamp set at ETL time). Otherwise protomaps +
+  // sql.js + browsers + Cloudflare's edge can all serve the previous
+  // pmtiles header from cache even after R2 has new content, leaving
+  // the map showing stale data indefinitely.
+  const ver = manifest.version ?? Date.now();
+  manifest.pmtilesUrl = `${origin}/tiles/subterra.pmtiles?v=${ver}`;
+  manifest.featuresDbUrl = `${origin}/features/subterra-features.db?v=${ver}`;
   return new Response(JSON.stringify(manifest), {
     headers: {
       'content-type': 'application/json',
-      'cache-control': 'public, max-age=60',
+      // Browsers always re-validate the manifest; we never want a stale
+      // manifest pinning the map to old data after an ETL refresh.
+      'cache-control': 'no-cache, must-revalidate',
     },
   });
 });
