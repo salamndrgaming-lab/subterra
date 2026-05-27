@@ -1,13 +1,18 @@
 """
 BLM National Surface Management Agency (SMA) — federal land ownership.
 
-Uses sources/_arcgis.iter_features_concurrent for parallel paginated
-fetching from the canonical AGOL FeatureServer. Filters in-stream to
-the four agencies most relevant for prospecting (BLM, USFS, NPS, BIA)
-so the output stays compact.
+Paginated MapServer query against BLM's own pre-simplified national
+SMA service. This is the same source the BLM-EGIS Hub fronts but
+hosted directly by BLM and chunked for tiled rendering, so pagination
+is faster and more reliable than the AGOL hosted feature service —
+the AGOL endpoint at services3.arcgis.com/ZyW3beZDqER6f82o was
+returning nearly-empty pages despite reporting hundreds of thousands
+of features in its count metadata.
 
-Service: https://services3.arcgis.com/ZyW3beZDqER6f82o/ArcGIS/rest/services/SurfaceManagementAgency/FeatureServer/0
-Hub:     https://gbp-blm-egis.hub.arcgis.com/datasets/BLM-EGIS::blm-national-sma-surface-management-agency-area-polygons
+Layer 18 of the LimitedScale MapServer is the combined SMA dataset
+(all agencies in one feature class with a manager-code attribute).
+
+Service: https://gis.blm.gov/arcgis/rest/services/lands/BLM_Natl_SMA_LimitedScale/MapServer/18
 """
 
 from __future__ import annotations
@@ -22,11 +27,8 @@ from typing import Any
 
 from sources._arcgis import iter_features_concurrent
 
-SERVICE = (
-    "https://services3.arcgis.com/ZyW3beZDqER6f82o/ArcGIS/rest/services/"
-    "SurfaceManagementAgency/FeatureServer"
-)
-LAYER_ID = 0
+SERVICE = "https://gis.blm.gov/arcgis/rest/services/lands/BLM_Natl_SMA_LimitedScale/MapServer"
+LAYER_ID = 18
 
 AGENCY_NORMALIZATION: dict[str, str] = {
     "BLM": "BLM",
@@ -52,16 +54,26 @@ class SourceResult:
     feature_count: int
 
 
+_AGENCY_FIELD_CANDIDATES = (
+    # BLM gis.blm.gov SMA schema
+    "ADMIN_AGENCY_CODE", "admin_agency_code",
+    "ADMIN_AGY_DESC", "admin_agy_desc",
+    "AGY_NAME", "agy_name",
+    # AGOL hosted variants
+    "ADM_MANAGE", "adm_manage",
+    "AGBUR", "agbur",
+    "AGENCY", "agency",
+    "MANAGER", "manager",
+    "MGMT_AGENCY", "mgmt_agency",
+    "OWNER_NAME", "owner_name",
+    "AGENCY_CODE", "agency_code",
+    "AGENCY_TYP", "agency_typ",
+    "OWN_AGCY", "own_agcy",
+)
+
+
 def _agency_from(props: dict[str, Any]) -> str | None:
-    for key in (
-        "ADMIN_AGENCY_CODE", "admin_agency_code",
-        "ADM_MANAGE", "adm_manage",
-        "AGBUR", "agbur",
-        "AGENCY", "agency",
-        "MANAGER", "manager",
-        "MGMT_AGENCY", "mgmt_agency",
-        "OWNER_NAME", "owner_name",
-    ):
+    for key in _AGENCY_FIELD_CANDIDATES:
         v = props.get(key)
         if not v:
             continue
@@ -72,7 +84,12 @@ def _agency_from(props: dict[str, Any]) -> str | None:
 
 
 def _name_from(props: dict[str, Any]) -> str | None:
-    for key in ("UNIT_NAME", "unit_name", "NAME", "name", "FEAT_NAME"):
+    for key in (
+        "ADMIN_UNIT_NAME", "admin_unit_name",
+        "ADMIN_BNDRY_NM", "admin_bndry_nm",
+        "UNIT_NAME", "unit_name",
+        "NAME", "name", "FEAT_NAME",
+    ):
         v = props.get(key)
         if v not in (None, "", " "):
             return str(v)
@@ -80,7 +97,11 @@ def _name_from(props: dict[str, Any]) -> str | None:
 
 
 def _state_from(props: dict[str, Any]) -> str | None:
-    for key in ("STATE", "state", "ST_ABBREV", "ST", "STATE_NM"):
+    for key in (
+        "ADMIN_ST", "admin_st",
+        "STATE", "state",
+        "ST_ABBREV", "ST", "STATE_NM",
+    ):
         v = props.get(key)
         if v not in (None, "", " "):
             return str(v)
@@ -92,18 +113,7 @@ def _raw_agency_value(props: dict[str, Any]) -> str | None:
     agency field, without normalization. Used to discover what field
     names + values the actual service is returning so we can refine the
     AGENCY_NORMALIZATION table later."""
-    for key in (
-        "ADMIN_AGENCY_CODE", "admin_agency_code",
-        "ADM_MANAGE", "adm_manage",
-        "AGBUR", "agbur",
-        "AGENCY", "agency",
-        "MANAGER", "manager",
-        "MGMT_AGENCY", "mgmt_agency",
-        "OWNER_NAME", "owner_name",
-        "AGENCY_CODE", "agency_code",
-        "AGENCY_TYP", "agency_typ",
-        "OWN_AGCY", "own_agcy",
-    ):
+    for key in _AGENCY_FIELD_CANDIDATES:
         v = props.get(key)
         if v not in (None, "", " "):
             return str(v).strip()

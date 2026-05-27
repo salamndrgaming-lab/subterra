@@ -188,6 +188,15 @@ def iter_features_concurrent(
                     log.warning("%s: page failed after retries — %s", progress_label, err)
                     continue
                 features = body.get("features", []) or []
+                if not features and feature_count == 0 and total > 0:
+                    # First few pages came back empty despite count metadata
+                    # claiming features exist — log raw body so the broken
+                    # service is debuggable from the workflow log alone.
+                    sample = str(body)[:600]
+                    log.warning(
+                        "%s: page returned 0 features (count=%d). body[:600]=%s",
+                        progress_label, total, sample,
+                    )
                 for feat in features:
                     on_feature(feat)
                     feature_count += 1
