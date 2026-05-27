@@ -29,9 +29,9 @@ USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0 "
     "(Subterra-ETL +https://github.com/salamndrgaming-lab/subterra)"
 )
-REQUEST_TIMEOUT = 300.0
+REQUEST_TIMEOUT = 120.0
 POLL_INTERVAL = 5.0
-POLL_TIMEOUT = 600.0
+POLL_TIMEOUT = 90.0  # If the hub hasn't published in 90s, give up and move on.
 
 
 @dataclass

@@ -144,9 +144,17 @@ def iter_features_concurrent(
     if total == 0:
         return 0
 
+    # Wall-clock cap per source so a single hung future can't block the
+    # entire ETL run. 15 min is well above the expected 2-5 min for
+    # every paginated source at typical worker counts.
+    WALL_CLOCK_CAP = 900.0
+    HEARTBEAT_INTERVAL = 30.0
+
     offsets = list(range(0, total, page_size))
     feature_count = 0
     pbar = tqdm(total=total, desc=progress_label, unit="feat", smoothing=0.1)
+    started = time.monotonic()
+    last_heartbeat = started
     try:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futs = [
@@ -158,7 +166,27 @@ def iter_features_concurrent(
                 for off in offsets
             ]
             for fut in as_completed(futs):
-                body = fut.result()
+                now = time.monotonic()
+                if now - started > WALL_CLOCK_CAP:
+                    log.warning(
+                        "%s: hit %.0fs wall-clock cap at %d/%d features — "
+                        "cancelling remaining pages and continuing with what we have",
+                        progress_label, WALL_CLOCK_CAP, feature_count, total,
+                    )
+                    for f in futs:
+                        f.cancel()
+                    break
+                if now - last_heartbeat > HEARTBEAT_INTERVAL:
+                    log.info(
+                        "%s heartbeat: %d/%d features (%.0fs elapsed)",
+                        progress_label, feature_count, total, now - started,
+                    )
+                    last_heartbeat = now
+                try:
+                    body = fut.result()
+                except Exception as err:  # noqa: BLE001
+                    log.warning("%s: page failed after retries — %s", progress_label, err)
+                    continue
                 features = body.get("features", []) or []
                 for feat in features:
                     on_feature(feat)
