@@ -17,7 +17,13 @@ export type StakeContext =
   /** Overlapping active mining claim. */
   | 'covered'
   /** Active claim was the clicked feature itself. */
-  | 'self-claim';
+  | 'self-claim'
+  /** Surface managing agency forbids new mining claims (NPS, BIA, etc). */
+  | 'restricted';
+
+/** Canonical agency codes that the federal_lands layer emits — matches
+ *  the AGENCY_NORMALIZATION table in etl/sources/federal_lands.py. */
+export type SurfaceAgency = 'BLM' | 'USFS' | 'NPS' | 'BIA' | string;
 
 export interface LineItem {
   label: string;
@@ -82,10 +88,20 @@ export function totalRange(items: LineItem[]): string {
 interface EstimateInput {
   overlapCount: number;
   isMiningClaim: boolean;
-  commodity?: string; // from clicked feature, if MRDS
+  commodity?: string;
+  /** Surface management agency at the click point, if known via
+   *  queryRenderedFeatures on the federal_lands layer. */
+  surfaceAgency?: SurfaceAgency;
 }
 
 export function estimateCosts(input: EstimateInput): CostEstimate {
+  // Agency-restricted ground always wins — even if there's no
+  // overlapping claim, NPS / BIA / military lands aren't open to
+  // mineral location regardless.
+  if (input.surfaceAgency === 'NPS' || input.surfaceAgency === 'BIA') {
+    return restrictedEstimate(input.surfaceAgency);
+  }
+
   const context: StakeContext =
     input.isMiningClaim ? 'self-claim'
       : input.overlapCount > 0 ? 'covered'
@@ -144,7 +160,7 @@ export function estimateCosts(input: EstimateInput): CostEstimate {
       ],
       exploration: explorationCosts(input.commodity),
       production: productionCosts(),
-      notes: claimNotes(input.commodity),
+      notes: claimNotes(input.commodity, input.surfaceAgency),
     };
   }
 
@@ -194,7 +210,29 @@ export function estimateCosts(input: EstimateInput): CostEstimate {
     ],
     exploration: explorationCosts(input.commodity),
     production: productionCosts(),
-    notes: claimNotes(input.commodity),
+    notes: claimNotes(input.commodity, input.surfaceAgency),
+  };
+}
+
+function restrictedEstimate(agency: 'NPS' | 'BIA'): CostEstimate {
+  const which =
+    agency === 'NPS'
+      ? 'National Park Service'
+      : 'Bureau of Indian Affairs / tribal trust';
+  return {
+    context: 'restricted',
+    headline:
+      `${which} land — closed to new mining-claim location under federal law. ` +
+      `Any mineral interest would require explicit agency authorization, not a 1872 Mining Law claim.`,
+    acquisition: [],
+    annual: [],
+    exploration: [],
+    production: [],
+    notes: [
+      'National Park System lands are withdrawn from mineral entry (16 U.S.C. § 1a-7).',
+      'Tribal trust lands are administered by BIA and require tribal approval + lease — claim-staking does not apply.',
+      'Adjacent BLM or USFS parcels may still be stakeable; pan around to find open ground.',
+    ],
   };
 }
 
@@ -238,12 +276,22 @@ function productionCosts(): LineItem[] {
   ];
 }
 
-function claimNotes(commodity?: string): string[] {
+function claimNotes(commodity?: string, surfaceAgency?: SurfaceAgency): string[] {
   const c = (commodity ?? '').toLowerCase();
   const notes: string[] = [
     'Lode claim: 20 acres max (1500×600 ft). Placer claim: up to 20 acres per individual, 160 acres associated.',
-    'Surface management agency (BLM vs USFS) determines permitting path. National parks + most tribal land are NOT open to location.',
   ];
+  if (surfaceAgency === 'USFS') {
+    notes.push(
+      'USFS surface — staking allowed under 1872 Mining Law, but Forest Service permits (notice of intent or plan of operations) are required before any mechanized work. Permit timeline often 6-18 months.',
+    );
+  } else if (surfaceAgency === 'BLM') {
+    notes.push('BLM surface — standard staking workflow applies.');
+  } else if (!surfaceAgency) {
+    notes.push(
+      'Surface agency unknown at this point — confirm with BLM LR2000 before filing. Private + state land is NOT open to federal location.',
+    );
+  }
   if (c.includes('gold') || c.includes('silver')) {
     notes.push('Precious-metal lode claims usually require diamond core drilling to verify continuity — budget $50–150/ft.');
   }

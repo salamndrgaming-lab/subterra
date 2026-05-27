@@ -56,6 +56,10 @@ interface SelectedFeature {
    *  feature itself, if a claim was the click target). Empty array means
    *  the point is open ground for staking purposes. */
   overlappingClaims: Array<{ serial: string; claimant: string; acreage: string }>;
+  /** Surface management agency at the click point, if the federal_lands
+   *  layer is loaded and a polygon covers it. Drives the cost panel's
+   *  restricted-vs-stakeable logic. */
+  surfaceAgency?: string;
 }
 
 /**
@@ -200,6 +204,21 @@ export function MapPage() {
         const claimHits = map.getLayer('mining-claims')
           ? map.queryRenderedFeatures(e.point, { layers: ['mining-claims'] })
           : [];
+
+        // Surface managing agency — drives the cost panel's restricted
+        // (NPS/BIA) vs stakeable (BLM/USFS) branching. Read from
+        // federal-lands first, fall back to open-blm-land (same source).
+        const federalHits =
+          (map.getLayer('federal-lands')
+            ? map.queryRenderedFeatures(e.point, { layers: ['federal-lands'] })
+            : []) ||
+          (map.getLayer('open-blm-land')
+            ? map.queryRenderedFeatures(e.point, { layers: ['open-blm-land'] })
+            : []);
+        const surfaceAgency =
+          federalHits.length > 0
+            ? (federalHits[0]!.properties?.agency as string | undefined)
+            : undefined;
         const f = hits[0];
         const selfSerial = f?.layer.id === 'mining-claims' ? f.properties?.serial : undefined;
         const seen = new Set<string>();
@@ -235,6 +254,7 @@ export function MapPage() {
             lng: point[0],
             lat: point[1],
             overlappingClaims,
+            surfaceAgency,
           });
         } else {
           setSelected({
@@ -244,6 +264,7 @@ export function MapPage() {
             lng: e.lngLat.lng,
             lat: e.lngLat.lat,
             overlappingClaims,
+            surfaceAgency,
           });
         }
       });
@@ -686,6 +707,14 @@ interface AoiSummary {
   mrdsByCategory: Record<string, number>;
   claimsInside: number;
   claimsByClaimant: Array<{ claimant: string; count: number }>;
+  /** Estimated lode claims to cover the AOI (20 ac each). */
+  lodeClaims: number;
+  /** Year-1 acquisition cost across all claims (low end). */
+  year1CostLow: number;
+  /** Year-1 acquisition cost across all claims (high end). */
+  year1CostHigh: number;
+  /** Annual maintenance fee total. */
+  annualCost: number;
 }
 
 function emptyFC(): GeoJSON.FeatureCollection {
@@ -775,6 +804,15 @@ function computeAoiSummary(map: maplibregl.Map | null, vertices: LngLat[]): AoiS
     .sort((a, b) => b.count - a.count)
     .slice(0, 8);
 
+  // Lode-claim sizing: 20 acres per claim. Round up — partial claims
+  // still cost the full filing fee.
+  const lodeClaims = Math.max(1, Math.ceil(acres / 20));
+  // Per-claim ranges from cost-estimate.ts: low ~$225 (40+20+15+50+100),
+  // high ~$810 (40+20+50+200+500). Annual maintenance: $165/claim.
+  const year1CostLow = lodeClaims * 225;
+  const year1CostHigh = lodeClaims * 810;
+  const annualCost = lodeClaims * 165;
+
   return {
     vertices,
     acres,
@@ -782,6 +820,10 @@ function computeAoiSummary(map: maplibregl.Map | null, vertices: LngLat[]): AoiS
     mrdsByCategory,
     claimsInside: seenSerials.size,
     claimsByClaimant,
+    lodeClaims,
+    year1CostLow,
+    year1CostHigh,
+    annualCost,
   };
 }
 
@@ -937,8 +979,32 @@ function AoiPanel({ summary, onClose }: { summary: AoiSummary; onClose: () => vo
           )}
         </Section>
 
+        <Section title="Staking cost to cover this AOI">
+          <div className="space-y-1 text-text">
+            <div className="flex justify-between">
+              <span>Claims needed</span>
+              <span>{summary.lodeClaims.toLocaleString()} × 20-acre lode</span>
+            </div>
+            <div className="flex justify-between">
+              <span>Year-1 acquisition</span>
+              <span>
+                ${summary.year1CostLow.toLocaleString()}–${summary.year1CostHigh.toLocaleString()}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span>Annual maintenance</span>
+              <span>${summary.annualCost.toLocaleString()}/yr</span>
+            </div>
+            {summary.claimsInside > 0 && (
+              <div className="mt-1 text-text-muted">
+                {Math.round((100 * summary.claimsInside) / summary.lodeClaims)}% of the AOI is already covered by existing claims — you&apos;d be staking only the gaps (or buying out current claimants).
+              </div>
+            )}
+          </div>
+        </Section>
+
         <div className="mt-2 rounded-md border border-border bg-bg-panel px-3 py-2 text-[10px] leading-relaxed text-text-muted">
-          AOI counts only include features rendered at the current zoom level. Zoom in or out and re-draw to refresh.
+          AOI counts only include features rendered at the current zoom level. Zoom in or out and re-draw to refresh. Cost estimates per 43 CFR 3833 + industry standard ranges.
         </div>
       </div>
     </aside>
@@ -1330,8 +1396,9 @@ function CostPanel({ feature }: { feature: SelectedFeature }) {
         overlapCount: feature.overlappingClaims.length,
         isMiningClaim: feature.layerId === 'mining-claims',
         commodity,
+        surfaceAgency: feature.surfaceAgency,
       }),
-    [feature.layerId, feature.overlappingClaims.length, commodity],
+    [feature.layerId, feature.overlappingClaims.length, commodity, feature.surfaceAgency],
   );
 
   return (
