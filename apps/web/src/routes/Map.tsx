@@ -9,6 +9,7 @@ import { fetchManifest } from '@/lib/manifest';
 import { useLayerVisibility } from '@/stores/layers';
 import { geocode, type GeocodeHit } from '@/lib/geocode';
 import { pointInPolygon, polygonAreaAcres, ringBbox, type LngLat } from '@/lib/geo';
+import { columnImageUrl, fetchGeology, type GeologyAtPoint } from '@/lib/macrostrat';
 
 /** Primary vector basemap (OpenFreeMap dark). If this URL ever 403s or
  *  fails to fetch (CDN outage, blocking, etc.) the map falls back to the
@@ -81,6 +82,20 @@ export function MapPage() {
     queryKey: ['manifest'],
     queryFn: fetchManifest,
     staleTime: 5 * 60_000,
+  });
+
+  // Subsurface geology lookup for the currently-selected point. Keyed by
+  // ~3-decimal lat/lng so adjacent clicks share the cached response.
+  const geologyKey =
+    selected
+      ? `${selected.lng.toFixed(3)},${selected.lat.toFixed(3)}`
+      : null;
+  const geologyQuery = useQuery({
+    queryKey: ['geology', geologyKey],
+    queryFn: () => fetchGeology(selected!.lng, selected!.lat),
+    enabled: !!selected,
+    staleTime: 60 * 60_000, // bedrock geology is forever
+    retry: 1,
   });
 
   // 1. Mount the map exactly once.
@@ -178,24 +193,14 @@ export function MapPage() {
       map.on('click', (e) => {
         const liveLayerIds = LAYERS.map((l) => l.id).filter((id) => !!map.getLayer(id));
         const hits = map.queryRenderedFeatures(e.point, { layers: liveLayerIds });
-        if (hits.length === 0) {
-          setSelected(null);
-          return;
-        }
-        const f = hits[0]!;
-        const def = LAYERS.find((l) => l.id === f.layer.id);
-        const point =
-          f.geometry.type === 'Point'
-            ? (f.geometry.coordinates as [number, number])
-            : ([e.lngLat.lng, e.lngLat.lat] as [number, number]);
 
-        // Stake-ability: collect every active claim polygon at this point
-        // other than (if applicable) the one that was clicked. Used in the
-        // detail drawer's "Stake-ability" section.
+        // Stake-ability check works whether or not a specific feature was
+        // clicked — we collect overlapping active claims at the click pixel.
         const claimHits = map.getLayer('mining-claims')
           ? map.queryRenderedFeatures(e.point, { layers: ['mining-claims'] })
           : [];
-        const selfSerial = f.layer.id === 'mining-claims' ? f.properties?.serial : undefined;
+        const f = hits[0];
+        const selfSerial = f?.layer.id === 'mining-claims' ? f.properties?.serial : undefined;
         const seen = new Set<string>();
         const overlappingClaims = claimHits
           .filter((h) => {
@@ -213,14 +218,33 @@ export function MapPage() {
             acreage: String(h.properties?.acreage ?? ''),
           }));
 
-        setSelected({
-          layerId: f.layer.id,
-          layerLabel: def?.label ?? f.layer.id,
-          properties: (f.properties ?? {}) as Record<string, unknown>,
-          lng: point[0],
-          lat: point[1],
-          overlappingClaims,
-        });
+        // If a specific feature was clicked, use its centroid + properties.
+        // Otherwise this is an empty-map click — still open the drawer at
+        // that lat/lng so the user can see the subsurface geology there.
+        if (f) {
+          const def = LAYERS.find((l) => l.id === f.layer.id);
+          const point =
+            f.geometry.type === 'Point'
+              ? (f.geometry.coordinates as [number, number])
+              : ([e.lngLat.lng, e.lngLat.lat] as [number, number]);
+          setSelected({
+            layerId: f.layer.id,
+            layerLabel: def?.label ?? f.layer.id,
+            properties: (f.properties ?? {}) as Record<string, unknown>,
+            lng: point[0],
+            lat: point[1],
+            overlappingClaims,
+          });
+        } else {
+          setSelected({
+            layerId: '__point__',
+            layerLabel: 'Point inspection',
+            properties: {},
+            lng: e.lngLat.lng,
+            lat: e.lngLat.lat,
+            overlappingClaims,
+          });
+        }
       });
     };
     if (map.isStyleLoaded()) install();
@@ -479,7 +503,15 @@ export function MapPage() {
           }}
         />
         {aoiSummary && <AoiPanel summary={aoiSummary} onClose={() => { setAoiVertices([]); setDrawMode('off'); }} />}
-        {selected && !aoiSummary && <DetailDrawer feature={selected} onClose={() => setSelected(null)} />}
+        {selected && !aoiSummary && (
+          <DetailDrawer
+            feature={selected}
+            geology={geologyQuery.data}
+            geologyLoading={geologyQuery.isFetching}
+            geologyError={geologyQuery.error ? String(geologyQuery.error) : null}
+            onClose={() => setSelected(null)}
+          />
+        )}
       </div>
     </div>
   );
@@ -1150,9 +1182,15 @@ const PROPERTY_LABELS: Record<string, string> = {
 
 function DetailDrawer({
   feature,
+  geology,
+  geologyLoading,
+  geologyError,
   onClose,
 }: {
   feature: SelectedFeature;
+  geology: GeologyAtPoint | undefined;
+  geologyLoading: boolean;
+  geologyError: string | null;
   onClose: () => void;
 }) {
   const entries = Object.entries(feature.properties).filter(
@@ -1191,11 +1229,18 @@ function DetailDrawer({
 
       <div className="flex-1 overflow-y-auto px-4 py-3">
         <StakeAbility feature={feature} />
-        <dl className="mt-4 grid grid-cols-[120px_minmax(0,1fr)] gap-y-1 font-mono text-[11px]">
-          {entries.map(([key, value]) => (
-            <Row key={key} label={PROPERTY_LABELS[key] ?? key} value={value} />
-          ))}
-        </dl>
+        {entries.length > 0 && (
+          <dl className="mt-4 grid grid-cols-[120px_minmax(0,1fr)] gap-y-1 font-mono text-[11px]">
+            {entries.map(([key, value]) => (
+              <Row key={key} label={PROPERTY_LABELS[key] ?? key} value={value} />
+            ))}
+          </dl>
+        )}
+        <SubsurfaceGeology
+          geology={geology}
+          loading={geologyLoading}
+          error={geologyError}
+        />
       </div>
 
       <footer className="flex items-center justify-between gap-2 border-t border-border px-4 py-2 font-mono text-[10px] text-text-muted">
@@ -1270,6 +1315,101 @@ function Row({ label, value }: { label: string; value: unknown }) {
       <dt className="truncate text-text-muted" title={label}>{label}</dt>
       <dd className="truncate text-text" title={String(value)}>{String(value)}</dd>
     </>
+  );
+}
+
+function SubsurfaceGeology({
+  geology,
+  loading,
+  error,
+}: {
+  geology: GeologyAtPoint | undefined;
+  loading: boolean;
+  error: string | null;
+}) {
+  return (
+    <section className="mt-5">
+      <div className="mb-1.5 flex items-center justify-between">
+        <h3 className="font-mono text-[10px] uppercase tracking-wider text-text-muted">
+          Subsurface geology
+        </h3>
+        {geology?.macrostratUrl && (
+          <a
+            href={geology.macrostratUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="font-mono text-[10px] text-accent hover:underline"
+          >
+            Macrostrat ↗
+          </a>
+        )}
+      </div>
+      {loading && !geology && (
+        <div className="font-mono text-[10px] text-text-muted">looking up bedrock units…</div>
+      )}
+      {error && !geology && (
+        <div className="font-mono text-[10px] text-text-muted">
+          (geology lookup unavailable — Macrostrat returned an error)
+        </div>
+      )}
+      {geology && geology.units.length === 0 && (
+        <div className="font-mono text-[10px] text-text-muted">
+          No mapped bedrock units at this point. Likely offshore or a gap in the geologic map coverage.
+        </div>
+      )}
+      {geology && geology.units.length > 0 && (
+        <div className="flex gap-3">
+          {geology.columnId !== undefined && (
+            <img
+              src={columnImageUrl(geology.columnId)}
+              alt="Stratigraphic column"
+              width={120}
+              loading="lazy"
+              className="shrink-0 rounded border border-border bg-bg-panel"
+              onError={(e) => {
+                (e.target as HTMLElement).style.display = 'none';
+              }}
+            />
+          )}
+          <ul className="min-w-0 flex-1 space-y-2 font-mono text-[11px]">
+            {geology.units.slice(0, 6).map((u, i) => (
+              <li key={i} className="flex gap-2">
+                <span
+                  aria-hidden
+                  className="mt-1 h-3 w-3 shrink-0 rounded-sm border border-border"
+                  style={{ backgroundColor: u.color ?? '#444' }}
+                />
+                <div className="min-w-0">
+                  <div className="truncate text-text" title={u.name}>{u.name}</div>
+                  <div className="text-text-muted">{u.age}</div>
+                  {u.lithology && (
+                    <div className="truncate text-text-subtle" title={u.lithology}>
+                      {u.lithology}
+                    </div>
+                  )}
+                  {u.sourceUrl && (
+                    <a
+                      href={u.sourceUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-[10px] text-accent hover:underline"
+                      title={u.sourceCitation}
+                    >
+                      source ↗
+                    </a>
+                  )}
+                </div>
+              </li>
+            ))}
+            {geology.units.length > 6 && (
+              <li className="text-text-muted">
+                +{geology.units.length - 6} more units (open Macrostrat for full list)
+              </li>
+            )}
+          </ul>
+        </div>
+      )}
+    </section>
   );
 }
 
