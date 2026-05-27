@@ -10,6 +10,7 @@ import { useLayerVisibility } from '@/stores/layers';
 import { geocode, type GeocodeHit } from '@/lib/geocode';
 import { pointInPolygon, polygonAreaAcres, ringBbox, type LngLat } from '@/lib/geo';
 import { columnImageUrl, fetchGeology, type GeologyAtPoint } from '@/lib/macrostrat';
+import { estimateCosts, formatAmount, totalRange, type LineItem } from '@/lib/cost-estimate';
 
 /** Primary vector basemap (OpenFreeMap dark). If this URL ever 403s or
  *  fails to fetch (CDN outage, blocking, etc.) the map falls back to the
@@ -1236,6 +1237,7 @@ function DetailDrawer({
             ))}
           </dl>
         )}
+        <CostPanel feature={feature} />
         <SubsurfaceGeology
           geology={geology}
           loading={geologyLoading}
@@ -1315,6 +1317,92 @@ function Row({ label, value }: { label: string; value: unknown }) {
       <dt className="truncate text-text-muted" title={label}>{label}</dt>
       <dd className="truncate text-text" title={String(value)}>{String(value)}</dd>
     </>
+  );
+}
+
+function CostPanel({ feature }: { feature: SelectedFeature }) {
+  const commodity =
+    (feature.properties.commodity as string | undefined) ||
+    (feature.properties.commod1 as string | undefined);
+  const estimate = useMemo(
+    () =>
+      estimateCosts({
+        overlapCount: feature.overlappingClaims.length,
+        isMiningClaim: feature.layerId === 'mining-claims',
+        commodity,
+      }),
+    [feature.layerId, feature.overlappingClaims.length, commodity],
+  );
+
+  return (
+    <section className="mt-5 rounded-md border border-border bg-bg-panel/40 p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <h3 className="font-mono text-[10px] uppercase tracking-wider text-text-muted">
+          Acquisition + operating costs (estimate)
+        </h3>
+      </div>
+      <p className="mb-3 font-mono text-[11px] leading-snug text-text">{estimate.headline}</p>
+
+      <CostGroup title="Year-1 acquisition" items={estimate.acquisition} />
+      <CostGroup title="Annual (per claim)" items={estimate.annual} suffix="/yr" />
+      <CostGroup title="Exploration phase" items={estimate.exploration} collapsedByDefault />
+      <CostGroup title="Production phase" items={estimate.production} collapsedByDefault />
+
+      {estimate.notes.length > 0 && (
+        <ul className="mt-3 list-disc space-y-1 pl-4 font-mono text-[10px] leading-relaxed text-text-muted">
+          {estimate.notes.map((n, i) => <li key={i}>{n}</li>)}
+        </ul>
+      )}
+      <p className="mt-3 font-mono text-[9px] uppercase tracking-wider text-text-muted">
+        Estimates only · BLM fees per 43 CFR 3833 · operation ranges are industry standard, not site-specific
+      </p>
+    </section>
+  );
+}
+
+function CostGroup({
+  title,
+  items,
+  suffix,
+  collapsedByDefault,
+}: {
+  title: string;
+  items: LineItem[];
+  suffix?: string;
+  collapsedByDefault?: boolean;
+}) {
+  const [open, setOpen] = useState(!collapsedByDefault);
+  if (items.length === 0) return null;
+  return (
+    <div className="mb-3 last:mb-0">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="mb-1 flex w-full items-center justify-between font-mono text-[10px] uppercase tracking-wider text-text-muted hover:text-text"
+      >
+        <span>
+          {title} <span className="text-text-subtle normal-case">— {totalRange(items)}{suffix ?? ''}</span>
+        </span>
+        <span aria-hidden>{open ? '▾' : '▸'}</span>
+      </button>
+      {open && (
+        <ul className="space-y-1.5 font-mono text-[11px]">
+          {items.map((it, i) => (
+            <li key={i} className="flex flex-col gap-0.5">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="truncate text-text" title={it.label}>{it.label}</span>
+                <span className="shrink-0 text-text">
+                  {formatAmount(it.amount)}{suffix ?? ''}
+                </span>
+              </div>
+              {it.note && (
+                <div className="text-[10px] leading-snug text-text-muted">{it.note}</div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -1428,6 +1516,11 @@ function buildLayer(def: LayerDef, defaultVisible: boolean): maplibregl.LayerSpe
     'source-layer': def.tilesetLayer,
     minzoom: def.minZoom,
     layout: { visibility } as { visibility: 'visible' | 'none' },
+    // Optional filter expression. Cast widens readonly tuple to
+    // maplibre's broad FilterSpecification union.
+    ...(def.filter
+      ? { filter: def.filter as unknown as maplibregl.FilterSpecification }
+      : {}),
   };
 
   if (def.geometry === 'point') {
@@ -1460,10 +1553,12 @@ function buildLayer(def: LayerDef, defaultVisible: boolean): maplibregl.LayerSpe
     };
   }
 
-  // polygon — federal_lands is multi-color by agency; everything else uses
-  // its registry color for both fill and outline.
+  // polygon — only the main federal-lands layer paints multi-color by
+  // agency. Other layers sharing the federal_lands source-layer (e.g.
+  // open-blm-land filtered to BLM) use their flat registry color so they
+  // stand out as a distinct visual signal.
   const fillColor: maplibregl.DataDrivenPropertyValueSpecification<string> =
-    def.tilesetLayer === 'federal_lands'
+    def.id === 'federal-lands'
       ? [
           'match',
           ['get', 'agency'],
@@ -1474,12 +1569,15 @@ function buildLayer(def: LayerDef, defaultVisible: boolean): maplibregl.LayerSpe
           color,
         ]
       : color;
+  // Open BLM Land gets stronger fill + thicker outline so the "stakeable
+  // candidate" signal is visually unmistakable when toggled on.
+  const isStakeableLayer = def.id === 'open-blm-land';
   return {
     ...common,
     type: 'fill',
     paint: {
       'fill-color': fillColor,
-      'fill-opacity': 0.22,
+      'fill-opacity': isStakeableLayer ? 0.32 : 0.22,
       'fill-outline-color': color,
     },
   };

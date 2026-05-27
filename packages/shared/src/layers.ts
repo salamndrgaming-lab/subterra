@@ -16,6 +16,11 @@ export interface LayerDef {
   minZoom: number;
   /** Layer-specific paint color (overrides the group default). Hex like #f59e0b. */
   color?: string;
+  /** Optional MapLibre filter expression. Lets multiple layers share one
+   *  tilesetLayer with different filters (e.g. open-blm-land is just
+   *  federal_lands filtered to agency=BLM). Type is `unknown[]` because
+   *  the maplibre Filter type isn't available in @subterra/shared. */
+  filter?: readonly unknown[];
 }
 
 export const LAYERS: readonly LayerDef[] = [
@@ -72,7 +77,13 @@ export const LAYERS: readonly LayerDef[] = [
     label: 'Open BLM Land (stake-able)',
     group: 'mining',
     defaultVisible: false,
-    tilesetLayer: 'open_blm_land',
+    // Shares the federal_lands source-layer + filters to BLM-only. Real
+    // "open" stakeability (subtracting active claims) is checked at click
+    // time via map.queryRenderedFeatures + the stake-ability indicator
+    // in the detail drawer — spatial subtraction over 550k+ claim polygons
+    // is too expensive to precompute as a polygon layer.
+    tilesetLayer: 'federal_lands',
+    filter: ['==', ['get', 'agency'], 'BLM'] as const,
     geometry: 'polygon',
     minZoom: 6,
     color: '#a3e635', // lime — the staking target
