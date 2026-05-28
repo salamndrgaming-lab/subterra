@@ -9,7 +9,8 @@ import { fetchManifest } from '@/lib/manifest';
 import { useLayerVisibility } from '@/stores/layers';
 import { geocode, type GeocodeHit } from '@/lib/geocode';
 import { pointInPolygon, polygonAreaAcres, ringBbox, type LngLat } from '@/lib/geo';
-import { columnImageUrl, fetchGeology, type GeologyAtPoint } from '@/lib/macrostrat';
+import { columnImageUrl, fetchGeology, type GeologyAtPoint, type StratUnit } from '@/lib/macrostrat';
+import { fetchElevation, type ElevationResult } from '@/lib/elevation';
 import { estimateCosts, formatAmount, totalRange, type LineItem } from '@/lib/cost-estimate';
 
 /** Primary vector basemap (OpenFreeMap dark). If this URL ever 403s or
@@ -100,6 +101,15 @@ export function MapPage() {
     queryFn: () => fetchGeology(selected!.lng, selected!.lat),
     enabled: !!selected,
     staleTime: 60 * 60_000, // bedrock geology is forever
+    retry: 1,
+  });
+  // Surface elevation at the clicked point. USGS EPQS is fast (~200 ms)
+  // and the answer is location-stable, so cache aggressively too.
+  const elevationQuery = useQuery({
+    queryKey: ['elevation', geologyKey],
+    queryFn: () => fetchElevation(selected!.lng, selected!.lat),
+    enabled: !!selected,
+    staleTime: 60 * 60_000,
     retry: 1,
   });
 
@@ -531,6 +541,7 @@ export function MapPage() {
             geology={geologyQuery.data}
             geologyLoading={geologyQuery.isFetching}
             geologyError={geologyQuery.error ? String(geologyQuery.error) : null}
+            elevation={elevationQuery.data ?? null}
             onClose={() => setSelected(null)}
           />
         )}
@@ -1252,12 +1263,14 @@ function DetailDrawer({
   geology,
   geologyLoading,
   geologyError,
+  elevation,
   onClose,
 }: {
   feature: SelectedFeature;
   geology: GeologyAtPoint | undefined;
   geologyLoading: boolean;
   geologyError: string | null;
+  elevation: ElevationResult | null;
   onClose: () => void;
 }) {
   const entries = Object.entries(feature.properties).filter(
@@ -1308,6 +1321,7 @@ function DetailDrawer({
           geology={geology}
           loading={geologyLoading}
           error={geologyError}
+          elevation={elevation}
         />
       </div>
 
@@ -1477,10 +1491,12 @@ function SubsurfaceGeology({
   geology,
   loading,
   error,
+  elevation,
 }: {
   geology: GeologyAtPoint | undefined;
   loading: boolean;
   error: string | null;
+  elevation: ElevationResult | null;
 }) {
   return (
     <section className="mt-5">
@@ -1488,17 +1504,43 @@ function SubsurfaceGeology({
         <h3 className="font-mono text-[10px] uppercase tracking-wider text-text-muted">
           Subsurface geology
         </h3>
-        {geology?.macrostratUrl && (
-          <a
-            href={geology.macrostratUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="font-mono text-[10px] text-accent hover:underline"
-          >
-            Macrostrat ↗
-          </a>
-        )}
+        <div className="flex gap-2 font-mono text-[10px]">
+          {geology?.ngmdbUrl && (
+            <a
+              href={geology.ngmdbUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="text-accent hover:underline"
+              title="USGS National Geologic Map Database viewer at this point"
+            >
+              NGMDB ↗
+            </a>
+          )}
+          {geology?.macrostratUrl && (
+            <a
+              href={geology.macrostratUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="text-accent hover:underline"
+              title="Macrostrat interactive geologic map at this point"
+            >
+              Macrostrat ↗
+            </a>
+          )}
+        </div>
       </div>
+
+      {/* Elevation + topographic context */}
+      {elevation && (
+        <div className="mb-2 flex items-baseline gap-3 font-mono text-[11px]">
+          <span className="text-text-muted">Surface elevation:</span>
+          <span className="text-text">
+            {Math.round(elevation.meters).toLocaleString()} m
+            <span className="text-text-muted"> ({Math.round(elevation.feet).toLocaleString()} ft)</span>
+          </span>
+        </div>
+      )}
+
       {loading && !geology && (
         <div className="font-mono text-[10px] text-text-muted">looking up bedrock units…</div>
       )}
@@ -1512,6 +1554,8 @@ function SubsurfaceGeology({
           No mapped bedrock units at this point. Likely offshore or a gap in the geologic map coverage.
         </div>
       )}
+
+      {/* Geologic-map units (what's exposed at the surface) */}
       {geology && geology.units.length > 0 && (
         <div className="flex gap-3">
           {geology.columnId !== undefined && (
@@ -1564,7 +1608,83 @@ function SubsurfaceGeology({
           </ul>
         </div>
       )}
+
+      {/* Vertical strat column — the "visual log" */}
+      {geology && geology.strat.length > 0 && (
+        <StratLog strat={geology.strat} />
+      )}
     </section>
+  );
+}
+
+/**
+ * Visual stratigraphic log — every formation in the nearest Macrostrat
+ * column rendered as a stacked vertical bar, sized proportional to
+ * thickness (meters), colored by lithology. This is the closest free
+ * analogue to a well log for the prospecting workflow: shows what
+ * you'd drill through and how thick each unit is.
+ */
+function StratLog({ strat }: { strat: StratUnit[] }) {
+  const withThickness = strat.filter((u) => u.thicknessM && u.thicknessM > 0);
+  if (withThickness.length === 0) return null;
+  const totalThickness = withThickness.reduce((s, u) => s + (u.thicknessM ?? 0), 0);
+  const totalThicknessFt = totalThickness * 3.28084;
+
+  return (
+    <div className="mt-4 rounded-md border border-border bg-bg-panel/40 p-3">
+      <div className="mb-2 flex items-baseline justify-between">
+        <h4 className="font-mono text-[10px] uppercase tracking-wider text-text-muted">
+          Stratigraphic log ({withThickness.length} units)
+        </h4>
+        <span className="font-mono text-[10px] text-text-muted">
+          {Math.round(totalThickness).toLocaleString()} m total
+          {' '}({Math.round(totalThicknessFt).toLocaleString()} ft)
+        </span>
+      </div>
+      <div className="flex gap-3">
+        {/* Vertical scaled bar */}
+        <div
+          className="relative flex w-12 shrink-0 flex-col overflow-hidden rounded border border-border bg-bg-panel"
+          style={{ height: '320px' }}
+        >
+          {withThickness.map((u, i) => {
+            const heightPct = ((u.thicknessM ?? 0) / totalThickness) * 100;
+            return (
+              <div
+                key={i}
+                title={`${u.name}: ${Math.round(u.thicknessM ?? 0)} m`}
+                style={{
+                  height: `${heightPct}%`,
+                  backgroundColor: u.color ?? '#666',
+                  borderBottom: '1px solid rgba(0,0,0,0.3)',
+                }}
+              />
+            );
+          })}
+        </div>
+        {/* Unit list */}
+        <ul className="min-w-0 flex-1 space-y-1 overflow-y-auto font-mono text-[10px]" style={{ maxHeight: '320px' }}>
+          {withThickness.map((u, i) => (
+            <li key={i} className="flex items-baseline gap-2">
+              <span
+                aria-hidden
+                className="h-2 w-2 shrink-0 rounded-sm border border-border"
+                style={{ backgroundColor: u.color ?? '#666' }}
+              />
+              <span className="min-w-0 flex-1 truncate text-text" title={u.name}>
+                {u.name}
+              </span>
+              <span className="shrink-0 text-text-muted">
+                {Math.round(u.thicknessM ?? 0)} m
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+      <div className="mt-2 font-mono text-[9px] uppercase tracking-wider text-text-muted">
+        Thickness from Macrostrat units API · proportional rendering
+      </div>
+    </div>
   );
 }
 

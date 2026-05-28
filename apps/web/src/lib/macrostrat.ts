@@ -16,6 +16,7 @@
 
 const MAP_ENDPOINT = 'https://macrostrat.org/api/v2/geologic_units/map';
 const COLUMNS_ENDPOINT = 'https://macrostrat.org/api/v2/columns';
+const UNITS_ENDPOINT = 'https://macrostrat.org/api/v2/units';
 
 export interface GeologyUnit {
   /** Formal stratigraphic name (e.g. "Eureka Quartzite"). */
@@ -34,13 +35,35 @@ export interface GeologyUnit {
   sourceCitation?: string;
 }
 
+/** A single stratigraphic unit at the column — full vertical detail.
+ *  Used to render the visual log (thickness bars). */
+export interface StratUnit {
+  name: string;
+  age: string;
+  /** Maximum reported thickness in meters. Null if unknown. */
+  thicknessM?: number;
+  /** Numerical age range start/end (Ma — millions of years ago).
+   *  bAge = older bound, tAge = younger bound. */
+  bAge?: number;
+  tAge?: number;
+  color?: string;
+  lithology?: string;
+  environment?: string;
+}
+
 export interface GeologyAtPoint {
   units: GeologyUnit[];
   /** Macrostrat column id at this point, if one is nearby. Used to build
    *  the burwell stratigraphic-column image URL. */
   columnId?: number;
+  /** Full vertical stratigraphic units at the column. Rendered as a
+   *  thickness-bar visual log in the drawer. */
+  strat: StratUnit[];
   /** External link to the same point on Macrostrat's interactive map. */
   macrostratUrl: string;
+  /** Link to the USGS National Geologic Map Database viewer at this
+   *  point — shows the published geologic map sheets covering it. */
+  ngmdbUrl: string;
 }
 
 interface MacrostratMapResponse {
@@ -73,8 +96,13 @@ export async function fetchGeology(lng: number, lat: number): Promise<GeologyAtP
     fetchMapUnits(lng, lat),
     fetchNearestColumn(lng, lat).catch(() => undefined),
   ]);
+  // Fetch full unit detail only if we have a column to query against.
+  const strat = columnId !== undefined
+    ? await fetchColumnUnits(columnId).catch(() => [])
+    : [];
   const macrostratUrl = `https://macrostrat.org/map/dev#x=${lng.toFixed(4)}&y=${lat.toFixed(4)}&z=10`;
-  return { units: mapUnits, columnId, macrostratUrl };
+  const ngmdbUrl = `https://ngmdb.usgs.gov/mapview/?center=${lng.toFixed(4)},${lat.toFixed(4)}&zoom=11`;
+  return { units: mapUnits, columnId, strat, macrostratUrl, ngmdbUrl };
 }
 
 async function fetchMapUnits(lng: number, lat: number): Promise<GeologyUnit[]> {
@@ -119,6 +147,53 @@ async function fetchNearestColumn(lng: number, lat: number): Promise<number | un
   const body = (await res.json()) as MacrostratColumnsResponse;
   const first = body.success?.data?.[0];
   return first?.col_id;
+}
+
+/** Detailed stratigraphic units at one Macrostrat column.
+ *  This is the "visual log" data: every formation with thickness,
+ *  age range, lithology, and depositional environment. */
+async function fetchColumnUnits(columnId: number): Promise<StratUnit[]> {
+  const url = new URL(UNITS_ENDPOINT);
+  url.searchParams.set('col_id', String(columnId));
+  url.searchParams.set('response', 'long');
+  const res = await fetch(url.toString(), {
+    headers: { accept: 'application/json' },
+  });
+  if (!res.ok) throw new Error(`Macrostrat units ${res.status}`);
+  const body = (await res.json()) as {
+    success?: {
+      data?: Array<{
+        strat_name?: string;
+        unit_name?: string;
+        name?: string;
+        age?: string;
+        b_age?: number;
+        t_age?: number;
+        b_int_name?: string;
+        t_int_name?: string;
+        max_thick?: number;
+        min_thick?: number;
+        color?: string;
+        lith?: string;
+        environ?: string;
+      }>;
+    };
+  };
+  const data = body.success?.data ?? [];
+  return data.map<StratUnit>((d) => ({
+    name: d.strat_name || d.unit_name || d.name || '(unnamed)',
+    age:
+      d.age ??
+      (d.b_int_name && d.t_int_name && d.b_int_name !== d.t_int_name
+        ? `${d.t_int_name}–${d.b_int_name}`
+        : (d.t_int_name ?? d.b_int_name ?? '')),
+    thicknessM: d.max_thick ?? d.min_thick,
+    bAge: d.b_age,
+    tAge: d.t_age,
+    color: d.color,
+    lithology: d.lith,
+    environment: d.environ,
+  }));
 }
 
 /** URL for the burwell stratigraphic-column image at this column id.
