@@ -112,12 +112,15 @@ def run(work_dir: Path) -> SourceResult:
                 first[0] = False
                 json.dump({"type": "Feature", "geometry": geom, "properties": props}, out)
 
-            # NASA NCCS hosts a public mirror with relaxed rate limits, so
-            # we can run more workers than against gis.blm.gov.
+            # NASA NCCS returns 503 under load — earlier runs at 8
+            # workers consistently failed. Conservative 3 workers + the
+            # _arcgis helper's exponential-backoff retry keeps us under
+            # whatever threshold trips their rate limiter.
             feature_count = iter_features_concurrent(
                 query_url,
                 on_feature=emit,
-                workers=8,
+                workers=3,
+                retries=5,
                 progress_label="wells",
             )
             out.write("]}")

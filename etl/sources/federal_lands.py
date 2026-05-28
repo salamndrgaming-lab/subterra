@@ -2,17 +2,12 @@
 BLM National Surface Management Agency (SMA) — federal land ownership.
 
 Paginated MapServer query against BLM's own pre-simplified national
-SMA service. This is the same source the BLM-EGIS Hub fronts but
-hosted directly by BLM and chunked for tiled rendering, so pagination
-is faster and more reliable than the AGOL hosted feature service —
-the AGOL endpoint at services3.arcgis.com/ZyW3beZDqER6f82o was
-returning nearly-empty pages despite reporting hundreds of thousands
-of features in its count metadata.
+SMA service. The layer that contains the combined SMA polygons varies
+by service revision, so on startup we probe MapServer?f=json and pick
+whichever layer name looks like the combined SMA dataset (falls back
+to layer 0 if nothing matches).
 
-Layer 18 of the LimitedScale MapServer is the combined SMA dataset
-(all agencies in one feature class with a manager-code attribute).
-
-Service: https://gis.blm.gov/arcgis/rest/services/lands/BLM_Natl_SMA_LimitedScale/MapServer/18
+Service: https://gis.blm.gov/arcgis/rest/services/lands/BLM_Natl_SMA_LimitedScale/MapServer
 """
 
 from __future__ import annotations
@@ -25,10 +20,52 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import requests
+
 from sources._arcgis import iter_features_concurrent
 
 SERVICE = "https://gis.blm.gov/arcgis/rest/services/lands/BLM_Natl_SMA_LimitedScale/MapServer"
-LAYER_ID = 18
+USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0 "
+    "(Subterra-ETL +https://github.com/salamndrgaming-lab/subterra)"
+)
+
+
+def _discover_layer_id(base: str, log: logging.Logger) -> int:
+    """Pick the combined SMA layer dynamically by inspecting the service
+    metadata. Layer naming has varied across BLM revisions (sometimes
+    layer 18 is combined, sometimes layer 0). Falls back to 0 if no
+    obvious match is found."""
+    try:
+        r = requests.get(
+            base, params={"f": "json"},
+            headers={"User-Agent": USER_AGENT}, timeout=30,
+        )
+        r.raise_for_status()
+        layers = r.json().get("layers") or []
+        log.info("service has %d layers — probing for combined SMA", len(layers))
+        # Score each layer: prefer ones named like the combined SMA dataset.
+        scored: list[tuple[int, int]] = []
+        for layer in layers:
+            name = str(layer.get("name", "")).lower()
+            score = 0
+            if "surface management" in name and "agency" in name:
+                score += 10
+            if "all" in name or "combined" in name or "national" in name:
+                score += 5
+            if "agency" in name and "_state" not in name:
+                score += 2
+            if score > 0:
+                scored.append((score, int(layer["id"])))
+                log.info("  candidate: id=%s name=%r (score=%d)", layer["id"], name, score)
+        if scored:
+            scored.sort(reverse=True)
+            chosen = scored[0][1]
+            log.info("selected layer id %d", chosen)
+            return chosen
+    except Exception as err:  # noqa: BLE001
+        log.warning("could not probe service: %s — falling back to layer 0", err)
+    return 0
 
 AGENCY_NORMALIZATION: dict[str, str] = {
     "BLM": "BLM",
@@ -125,7 +162,10 @@ def run(work_dir: Path) -> SourceResult:
     log.info("starting BLM National SMA paginated download")
 
     base = os.environ.get("FEDERAL_LANDS_SERVICE_URL", SERVICE)
-    query_url = f"{base}/{LAYER_ID}/query"
+    # Allow overriding layer id via env (escape hatch), otherwise discover.
+    env_layer = os.environ.get("FEDERAL_LANDS_LAYER_ID")
+    layer_id = int(env_layer) if env_layer else _discover_layer_id(base, log)
+    query_url = f"{base}/{layer_id}/query"
 
     out_path = work_dir / "federal_lands.geojson"
     feature_count = 0
