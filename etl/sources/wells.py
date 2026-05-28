@@ -1,29 +1,59 @@
 """
-U.S. Oil and Natural Gas Wells (HIFLD mirror via NASA NCCS).
+Multi-state oil & gas wells.
 
-Uses sources/_arcgis.iter_features_concurrent for parallel paginated
-fetching. ~1 million wells in CONUS; sequential pagination was ~10 min,
-concurrent pulls it down to ~2-3 min.
+State commissions publish wellbore data via ArcGIS REST endpoints.
+Fetches the major-state services in sequence; per-state failures are
+caught so one broken endpoint doesn't drop the whole layer.
 
-Source: https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/energy/MapServer/15
+States covered:
+  - CO  Colorado ECMC (DJ Basin + Piceance), via dnrgis.state.co.us
+  - ND  North Dakota DMR (Bakken / Williston), via gis.dmr.nd.gov
+  - WY  Wyoming WOGCC (Powder River + Green River), via gis.deq.wyoming.gov
+
+The previous NASA NCCS HIFLD mirror was consistently returning 503
+under our query load. State commissions are the authoritative source
+anyway and have stable per-state ArcGIS REST endpoints that better
+support paginated bulk fetches.
+
+TX (RRC) is the largest US oil/gas producer but doesn't publish a
+clean public statewide ArcGIS endpoint — could be added later via
+their wellbore data-pull CSV or a per-county aggregation.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import requests
-
 from sources._arcgis import iter_features_concurrent
 
-SERVICE = "https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/energy/MapServer"
-LAYER_ID = 15
+STATE_SOURCES: list[dict[str, Any]] = [
+    {
+        "code": "CO",
+        "name": "Colorado ECMC",
+        "service": "https://data.dnrgis.state.co.us/arcgis/rest/services/DNR_Public/OGCC_Wells/FeatureServer",
+        "layer": 0,
+        "workers": 4,
+    },
+    {
+        "code": "ND",
+        "name": "North Dakota DMR",
+        "service": "https://gis.dmr.nd.gov/dmrpublicservices/rest/services/OilGasPublicMapDataVectorTiles/Wells/FeatureServer",
+        "layer": 0,
+        "workers": 4,
+    },
+    {
+        "code": "WY",
+        "name": "Wyoming WOGCC",
+        "service": "https://gis.deq.wyoming.gov/arcgis_443/rest/services/WOGCC_WELLS/MapServer",
+        "layer": 0,
+        "workers": 3,
+    },
+]
 
 
 @dataclass
@@ -33,7 +63,8 @@ class SourceResult:
     feature_count: int
 
 
-def _normalize_props(p: dict[str, Any]) -> dict[str, Any]:
+def _normalize_props(p: dict[str, Any], state_code: str) -> dict[str, Any]:
+    """Each state uses different field names; coalesce to a stable shape."""
     def first(*keys: str) -> object:
         for k in keys:
             for cased in (k, k.upper(), k.lower()):
@@ -42,87 +73,74 @@ def _normalize_props(p: dict[str, Any]) -> dict[str, Any]:
                     return v
         return None
 
-    out: dict[str, Any] = {}
-    for label, candidates in [
-        ("api", ["api", "API", "API_NUM", "API_WELL"]),
-        ("name", ["NAME", "WELL_NAME", "name"]),
-        ("operator", ["OPERATOR", "CURRENT_OP", "operator"]),
-        ("commodity", ["TYPE", "WELL_TYPE", "PROD_TYPE", "type"]),
-        ("status", ["STATUS", "WELL_STATU", "STATE", "status"]),
-        ("state", ["STATE_NAME", "STATE", "ST_ABBREV"]),
-        ("county", ["COUNTY", "county"]),
-        ("spud_at", ["SPUD_DATE", "SPUDDATE", "SPUD_DT"]),
-        ("first_prod_at", ["FIRST_PROD", "FIRSTPROD", "F_PROD_DT"]),
-        ("depth_ft", ["TOTAL_DEPT", "TD", "TOTAL_DEPTH"]),
-    ]:
-        v = first(*candidates)
-        if v is not None:
-            out[label] = v
-    return out
-
-
-def _probe_service(base: str, log: logging.Logger) -> None:
-    """Hit /MapServer?f=json once to log the layer table — useful when a
-    run returns zero features so we can see whether the layer ID is right."""
-    try:
-        r = requests.get(
-            base, params={"f": "json"},
-            headers={"User-Agent": USER_AGENT}, timeout=30,
-        )
-        r.raise_for_status()
-        info = r.json()
-        layers = info.get("layers") or []
-        log.info("service has %d layers:", len(layers))
-        for layer in layers[:30]:
-            log.info("  id=%s name=%r geometryType=%s", layer.get("id"), layer.get("name"), layer.get("geometryType"))
-    except Exception as err:  # noqa: BLE001
-        log.warning("could not probe service: %s", err)
+    raw = {
+        "api": first("api", "API", "API_NUM", "API_LABEL", "API10", "API14", "FileNumber", "FILE_NUMBER"),
+        "name": first("WELL_NAME", "well_name", "NAME", "Name", "WellName", "well_name_t"),
+        "operator": first(
+            "OPERATOR", "OPERATOR_NAME", "OPER_NAME", "COMPANY", "Operator",
+            "CURRENT_OP", "CurrentOperator", "ApiOperatorName",
+        ),
+        "status": first("STATUS", "WELL_STATUS", "WellStatus", "FAC_STATUS", "well_status"),
+        "type": first("WELL_TYPE", "TYPE", "PROD_TYPE", "well_type", "FAC_TYPE", "facility_type"),
+        "state": state_code,
+        "county": first("COUNTY", "County", "COUNTY_NAME"),
+        "spud_at": first("SPUD_DATE", "SPUDDATE", "SPUD_DT", "spud_date"),
+        "depth_ft": first("TOTAL_DEPTH", "TOTAL_DEPT", "TD", "td", "MeasuredDepth"),
+    }
+    return {k: v for k, v in raw.items() if v is not None}
 
 
 def run(work_dir: Path) -> SourceResult:
     log = logging.getLogger("etl.wells")
-    log.info("starting HIFLD oil & gas wells download (NASA NCCS mirror)")
-
-    base = os.environ.get("WELLS_SERVICE_URL", SERVICE)
-    query_url = f"{base}/{LAYER_ID}/query"
+    log.info("starting multi-state oil & gas wells download")
 
     out_path = work_dir / "wells.geojson"
-    feature_count = 0
-    skipped = 0
+    total_count = 0
     started = time.monotonic()
+    first = [True]
+    per_state: dict[str, int] = {}
 
     try:
         with out_path.open("w", encoding="utf-8") as out:
             out.write('{"type":"FeatureCollection","features":[')
-            first = [True]
 
-            def emit(feat: dict[str, Any]) -> None:
-                nonlocal skipped
-                geom = feat.get("geometry")
-                if not geom or geom.get("type") != "Point":
-                    skipped += 1
-                    return
-                coords = geom.get("coordinates") or []
-                if len(coords) < 2 or coords[0] is None or coords[1] is None:
-                    skipped += 1
-                    return
-                props = _normalize_props(feat.get("properties") or feat.get("attributes") or {})
-                if not first[0]:
-                    out.write(",")
-                first[0] = False
-                json.dump({"type": "Feature", "geometry": geom, "properties": props}, out)
+            for state in STATE_SOURCES:
+                state_count = [0]
 
-            # NASA NCCS returns 503 under load — earlier runs at 8
-            # workers consistently failed. Conservative 3 workers + the
-            # _arcgis helper's exponential-backoff retry keeps us under
-            # whatever threshold trips their rate limiter.
-            feature_count = iter_features_concurrent(
-                query_url,
-                on_feature=emit,
-                workers=3,
-                retries=5,
-                progress_label="wells",
-            )
+                def emit(feat: dict[str, Any], _state=state) -> None:
+                    geom = feat.get("geometry")
+                    if not geom or geom.get("type") != "Point":
+                        return
+                    coords = geom.get("coordinates") or []
+                    if len(coords) < 2 or coords[0] is None or coords[1] is None:
+                        return
+                    props = _normalize_props(
+                        feat.get("properties") or feat.get("attributes") or {},
+                        _state["code"],
+                    )
+                    if not first[0]:
+                        out.write(",")
+                    first[0] = False
+                    json.dump({"type": "Feature", "geometry": geom, "properties": props}, out)
+                    state_count[0] += 1
+
+                query_url = f"{state['service']}/{state['layer']}/query"
+                log.info("fetching %s (%s)", state["name"], query_url)
+                try:
+                    iter_features_concurrent(
+                        query_url,
+                        on_feature=emit,
+                        workers=state["workers"],
+                        retries=4,
+                        progress_label=f"wells-{state['code']}",
+                    )
+                    log.info("  %s: %d wells", state["name"], state_count[0])
+                    per_state[state["code"]] = state_count[0]
+                    total_count += state_count[0]
+                except Exception as err:  # noqa: BLE001
+                    log.warning("  %s FAILED — %s: %s", state["name"], type(err).__name__, err)
+                    continue
+
             out.write("]}")
     except Exception:
         if out_path.exists():
@@ -130,14 +148,9 @@ def run(work_dir: Path) -> SourceResult:
         raise
 
     elapsed = time.monotonic() - started
-    log.info("wrote %d wells (skipped %d) in %.1fs → %s", feature_count, skipped, elapsed, out_path.name)
-    if feature_count == 0:
-        log.warning(
-            "ZERO wells written — probing service to enumerate available layers"
-        )
-        _probe_service(base, log)
+    log.info("wrote %d wells across %d states in %.1fs — %s", total_count, len(per_state), elapsed, per_state)
     return SourceResult(
         layer_id="wells",
         geojson_path=out_path,
-        feature_count=feature_count,
+        feature_count=total_count,
     )
