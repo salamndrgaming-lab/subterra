@@ -22,12 +22,11 @@ import requests
 from tqdm import tqdm
 
 ITEM_ID = "4a158d2113f145039f71b80d07e2c19c"
-# EIA Atlas's own /api/download/v1 endpoint returns HTTP 403 for our
-# requests (their reverse proxy filters something about our request).
-# The same item is also accessible via the generic ArcGIS Hub
-# download API which doesn't filter.
+# atlas.eia.gov and hub.arcgis.com both 403 — pivot to opendata.arcgis.com
+# which is the LEGACY Hub Download endpoint and serves the underlying
+# data without the reverse-proxy filtering that the newer hosts apply.
 PRIMARY_URL = (
-    f"https://hub.arcgis.com/api/download/v1/items/{ITEM_ID}/geojson?layers=0"
+    f"https://opendata.arcgis.com/api/v3/datasets/{ITEM_ID}_0/downloads/data?format=geojson&spatialRefId=4326"
 )
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0 "

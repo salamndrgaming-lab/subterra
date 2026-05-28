@@ -22,10 +22,10 @@ import requests
 from tqdm import tqdm
 
 ITEM_ID = "ae809a7e79354d31ab37da8df6352f84"
-# EIA Atlas's /api/download/v1 endpoint returns HTTP 403 — pivot to the
-# generic ArcGIS Hub download API which serves the same item.
+# atlas.eia.gov and hub.arcgis.com both 403 — pivot to the legacy
+# opendata.arcgis.com Hub Download endpoint.
 PRIMARY_URL = (
-    f"https://hub.arcgis.com/api/download/v1/items/{ITEM_ID}/geojson?layers=0"
+    f"https://opendata.arcgis.com/api/v3/datasets/{ITEM_ID}_0/downloads/data?format=geojson&spatialRefId=4326"
 )
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0 "
