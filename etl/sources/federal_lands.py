@@ -1,21 +1,21 @@
 """
-BLM National Surface Management Agency (SMA) — federal land ownership.
+BLM Surface Management Agency — per-state datasets.
 
-After multiple attempts against the BLM gis.blm.gov MapServer (paginated
-queries returned 400 on layer 18, and other layer ids weren't queryable),
-pivoting to the same Hub Downloads API pattern that works reliably for
-sources/blm_claims.py and sources/blm_leases.py. The SMA dataset is
-fronted on the same BLM-EGIS Hub.
+The national SMA dataset on BLM-EGIS Hub returns 500 consistently
+(file too large for their on-demand generator). The same hub publishes
+per-state SMA datasets which are smaller and pre-cached, so they
+actually respond. Combining the 11 PLSS-state datasets gives the same
+coverage as the national file for prospecting purposes.
 
-Source: https://gbp-blm-egis.hub.arcgis.com/datasets/BLM-EGIS::blm-national-sma-surface-management-agency-area-polygons
-Item id: 6bf2e737c59d4111be92420ee5ab0b46
+For each state we try the slug-based legacy Hub Download URL — same
+shape that the official BLM dataset cards link to. Per-state try/except
+so a single missing state doesn't drop the whole layer.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,18 +25,43 @@ import ijson
 import requests
 from tqdm import tqdm
 
-ITEM_ID = "6bf2e737c59d4111be92420ee5ab0b46"
-PRIMARY_URL = (
-    f"https://gbp-blm-egis.hub.arcgis.com/api/download/v1/items/{ITEM_ID}/geojson?layers=0"
-)
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0 "
     "(Subterra-ETL +https://github.com/salamndrgaming-lab/subterra)"
 )
-REQUEST_TIMEOUT = 1800.0  # SMA file is ~1-2 GB GeoJSON, 30 min ceiling
-POLL_INTERVAL = 10.0
-POLL_TIMEOUT = 1200.0  # 20 min — Hub on-demand generation can take a while
+REQUEST_TIMEOUT = 600.0
 
+# Per-state slug variants — BLM doesn't use a consistent naming scheme so
+# we try each candidate slug for a state in order until one returns a
+# real GeoJSON.
+STATE_SLUGS: dict[str, list[str]] = {
+    "AZ": ["blm-az-surface-management-agency-polygon"],
+    "CA": [
+        "blm-ca-land-status-surface-management-agency",
+        "blm-ca-surface-management-agency-polygon",
+    ],
+    "CO": [
+        "blm-co-land-status-surface-management-agency-polygon",
+        "blm-co-surface-management-agency-polygon",
+    ],
+    "ID": ["blm-id-surface-management-agency-polygon"],
+    "MT": [
+        "blm-mt-sma-surface-ownership-polygon",
+        "blm-mt-surface-management-agency-polygon",
+    ],
+    "NM": [
+        "blm-nm-lands-surface-management-agency",
+        "blm-nm-surface-management-agency-polygon",
+    ],
+    "NV": [
+        "blm-nv-surface-management-agency-polygon",
+        "blm-nevada-surface-management-agency",
+    ],
+    "OR": ["blm-or-surface-management-agency-polygon"],
+    "UT": ["blm-ut-surface-management-agency-polygon"],
+    "WA": ["blm-wa-surface-management-agency-polygon"],
+    "WY": ["blm-wy-surface-management-agency"],
+}
 
 AGENCY_NORMALIZATION: dict[str, str] = {
     "BLM": "BLM",
@@ -51,6 +76,16 @@ AGENCY_NORMALIZATION: dict[str, str] = {
     "BUREAU OF INDIAN AFFAIRS": "BIA",
     "INDIAN": "BIA",
     "TRIBAL": "BIA",
+    "FWS": "FWS",
+    "FISH AND WILDLIFE SERVICE": "FWS",
+    "DOD": "DOD",
+    "DEPARTMENT OF DEFENSE": "DOD",
+    "BOR": "BOR",
+    "BUREAU OF RECLAMATION": "BOR",
+    "DOE": "DOE",
+    "PRIVATE": "PRIVATE",
+    "STATE": "STATE",
+    "OTHER": "OTHER",
 }
 
 
@@ -59,55 +94,6 @@ class SourceResult:
     layer_id: str
     geojson_path: Path
     feature_count: int
-
-
-def _resolve_data_url(url: str) -> requests.Response:
-    """Identical pattern to sources/blm_claims._resolve_data_url. Returns
-    a streaming response on the GeoJSON body, polling/redirecting through
-    any job-status envelope the Hub returns."""
-    log = logging.getLogger("etl.federal_lands")
-    deadline = time.monotonic() + POLL_TIMEOUT
-
-    def fetch(u: str) -> requests.Response:
-        return requests.get(
-            u,
-            headers={
-                "User-Agent": USER_AGENT,
-                "accept": "application/geo+json, application/json, */*",
-            },
-            stream=True,
-            timeout=REQUEST_TIMEOUT,
-            allow_redirects=True,
-        )
-
-    current = url
-    while True:
-        resp = fetch(current)
-        resp.raise_for_status()
-        ct = resp.headers.get("content-type", "").lower()
-        cl = resp.headers.get("content-length", "0")
-        try:
-            cl_n = int(cl)
-        except ValueError:
-            cl_n = 0
-        if "geo+json" in ct or cl_n > 4096:
-            log.info("download stream ready (ct=%s, content-length=%s)", ct, cl)
-            return resp
-        body = resp.text
-        resp.close()
-        try:
-            status = json.loads(body)
-        except Exception as err:
-            raise RuntimeError(f"Unexpected hub response: ct={ct} body[:200]={body[:200]!r}") from err
-        next_url = status.get("url") or status.get("downloadUrl")
-        if next_url and next_url != current:
-            log.info("hub redirected to %s", next_url)
-            current = next_url
-            continue
-        if time.monotonic() > deadline:
-            raise RuntimeError(f"Hub timed out generating download for item {ITEM_ID}")
-        log.info("hub job not ready, sleeping %.0fs (status=%s)", POLL_INTERVAL, status.get("status"))
-        time.sleep(POLL_INTERVAL)
 
 
 def _agency_from(props: dict[str, Any]) -> str | None:
@@ -121,6 +107,7 @@ def _agency_from(props: dict[str, Any]) -> str | None:
         "MANAGER", "manager",
         "MGMT_AGENCY", "mgmt_agency",
         "OWNER_NAME", "owner_name",
+        "OWNERSHIP", "ownership",
     ):
         v = props.get(key)
         if not v:
@@ -144,69 +131,102 @@ def _name_from(props: dict[str, Any]) -> str | None:
     return None
 
 
-def _state_from(props: dict[str, Any]) -> str | None:
-    for key in (
-        "ADMIN_ST", "admin_st",
-        "STATE", "state",
-        "ST_ABBREV", "ST", "STATE_NM",
-    ):
-        v = props.get(key)
-        if v not in (None, "", " "):
-            return str(v)
-    return None
+def _try_download(slug: str, log: logging.Logger) -> requests.Response | None:
+    """Hit the slug-based Hub download URL. Return streaming Response on
+    success, None on any failure (caller tries the next slug variant)."""
+    url = f"https://gbp-blm-egis.hub.arcgis.com/datasets/BLM-EGIS::{slug}.geojson?outSR=4326"
+    try:
+        resp = requests.get(
+            url,
+            headers={
+                "User-Agent": USER_AGENT,
+                "accept": "application/geo+json, application/json, */*",
+            },
+            stream=True,
+            timeout=REQUEST_TIMEOUT,
+            allow_redirects=True,
+        )
+        if resp.status_code != 200:
+            log.info("    HTTP %d — skip", resp.status_code)
+            resp.close()
+            return None
+        ct = resp.headers.get("content-type", "").lower()
+        # Direct GeoJSON or JSON streaming — anything else (HTML error page
+        # etc.) we treat as failure.
+        if "json" not in ct and "geo+json" not in ct:
+            log.info("    unexpected content-type %r — skip", ct)
+            resp.close()
+            return None
+        return resp
+    except Exception as err:  # noqa: BLE001
+        log.info("    request error %s — skip", err)
+        return None
 
 
 def run(work_dir: Path) -> SourceResult:
     log = logging.getLogger("etl.federal_lands")
-    log.info("starting BLM National SMA download via Hub API")
-
-    url = os.environ.get("FEDERAL_LANDS_URL", PRIMARY_URL)
-    resp = _resolve_data_url(url)
+    log.info("starting per-state BLM SMA download (%d states)", len(STATE_SLUGS))
 
     out_path = work_dir / "federal_lands.geojson"
-    feature_count = 0
-    skipped_no_geom = 0
+    total_count = 0
+    per_state: dict[str, int] = {}
     per_agency: dict[str, int] = {}
-    seen_raw_agency: dict[str, int] = {}
     started = time.monotonic()
+    first = [True]
 
     try:
-        with out_path.open("w", encoding="utf-8") as out, resp:
-            resp.raw.decode_content = True
+        with out_path.open("w", encoding="utf-8") as out:
             out.write('{"type":"FeatureCollection","features":[')
-            first = True
-            pbar = tqdm(desc="federal lands", unit="feat", smoothing=0.1)
-            for feat in ijson.items(resp.raw, "features.item", use_float=True):
-                geom = feat.get("geometry")
-                if not geom:
-                    skipped_no_geom += 1
+
+            for state_code, slugs in STATE_SLUGS.items():
+                log.info("%s: trying %d slug variants…", state_code, len(slugs))
+                state_count = 0
+                resp: requests.Response | None = None
+                for slug in slugs:
+                    log.info("  %s", slug)
+                    resp = _try_download(slug, log)
+                    if resp is not None:
+                        break
+                if resp is None:
+                    log.warning("  %s: no slug variant succeeded", state_code)
                     continue
-                raw_props = feat.get("properties") or {}
-                agency = _agency_from(raw_props)
-                if agency is None:
-                    raw_val = next(
-                        (str(raw_props.get(k)).strip() for k in raw_props
-                         if "agency" in k.lower() or "agbur" in k.lower() or "manage" in k.lower()
-                         if raw_props.get(k) not in (None, "", " ")),
-                        None,
-                    )
-                    agency = raw_val or "OTHER"
-                    if raw_val:
-                        seen_raw_agency[raw_val] = seen_raw_agency.get(raw_val, 0) + 1
-                props = {
-                    "agency": agency,
-                    "name": _name_from(raw_props),
-                    "state": _state_from(raw_props),
-                }
-                props = {k: v for k, v in props.items() if v is not None}
-                if not first:
-                    out.write(",")
-                first = False
-                json.dump({"type": "Feature", "geometry": geom, "properties": props}, out)
-                feature_count += 1
-                per_agency[agency] = per_agency.get(agency, 0) + 1
-                pbar.update(1)
-            pbar.close()
+
+                pbar = tqdm(desc=f"federal_lands-{state_code}", unit="feat", smoothing=0.1)
+                try:
+                    with resp:
+                        resp.raw.decode_content = True
+                        for feat in ijson.items(resp.raw, "features.item", use_float=True):
+                            geom = feat.get("geometry")
+                            if not geom:
+                                continue
+                            raw_props = feat.get("properties") or {}
+                            agency = _agency_from(raw_props) or "OTHER"
+                            props = {
+                                "agency": agency,
+                                "name": _name_from(raw_props),
+                                "state": state_code,
+                            }
+                            props = {k: v for k, v in props.items() if v is not None}
+                            if not first[0]:
+                                out.write(",")
+                            first[0] = False
+                            json.dump(
+                                {"type": "Feature", "geometry": geom, "properties": props},
+                                out,
+                            )
+                            state_count += 1
+                            per_agency[agency] = per_agency.get(agency, 0) + 1
+                            pbar.update(1)
+                except Exception as err:  # noqa: BLE001
+                    log.warning("  %s stream parse failed after %d feat: %s", state_code, state_count, err)
+                finally:
+                    pbar.close()
+
+                if state_count > 0:
+                    per_state[state_code] = state_count
+                    total_count += state_count
+                    log.info("  %s: %d polygons", state_code, state_count)
+
             out.write("]}")
     except Exception:
         if out_path.exists():
@@ -215,15 +235,13 @@ def run(work_dir: Path) -> SourceResult:
 
     elapsed = time.monotonic() - started
     log.info(
-        "wrote %d federal polygons (skipped %d no-geom) in %.1fs",
-        feature_count, skipped_no_geom, elapsed,
+        "wrote %d federal polygons across %d states in %.1fs",
+        total_count, len(per_state), elapsed,
     )
-    log.info("normalized agency breakdown: %s", per_agency)
-    if seen_raw_agency:
-        top = sorted(seen_raw_agency.items(), key=lambda kv: kv[1], reverse=True)[:20]
-        log.info("top unrecognized agency values (raw): %s", dict(top))
+    log.info("per state: %s", per_state)
+    log.info("per agency: %s", per_agency)
     return SourceResult(
         layer_id="federal_lands",
         geojson_path=out_path,
-        feature_count=feature_count,
+        feature_count=total_count,
     )
