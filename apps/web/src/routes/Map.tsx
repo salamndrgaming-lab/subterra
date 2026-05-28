@@ -195,8 +195,11 @@ export function MapPage() {
       }
       for (const def of LAYERS) {
         if (map.getLayer(def.id)) continue;
-        const layer = buildLayer(def, visibility[def.id] ?? def.defaultVisible);
-        map.addLayer(layer);
+        // buildLayer returns one or two specs — fill polygons emit a
+        // paired outline line layer. Click + hover only target the
+        // main (def.id) layer; the outline is non-interactive.
+        const specs = buildLayer(def, visibility[def.id] ?? def.defaultVisible);
+        for (const spec of specs) map.addLayer(spec);
         map.on('mouseenter', def.id, () => {
           map.getCanvas().style.cursor = 'pointer';
         });
@@ -290,12 +293,14 @@ export function MapPage() {
     if (!map) return;
     const apply = (): void => {
       for (const def of LAYERS) {
-        if (!map.getLayer(def.id)) continue;
-        map.setLayoutProperty(
-          def.id,
-          'visibility',
-          visibility[def.id] ? 'visible' : 'none',
-        );
+        const vis = visibility[def.id] ? 'visible' : 'none';
+        // Main layer + paired outline (polygons + hotspots) flip in
+        // lockstep. getLayer() guards against the outline not being
+        // present (e.g. point + line layers don't emit one).
+        for (const id of [def.id, def.id + OUTLINE_SUFFIX]) {
+          if (!map.getLayer(id)) continue;
+          map.setLayoutProperty(id, 'visibility', vis);
+        }
       }
     };
     if (map.isStyleLoaded()) apply();
@@ -1912,11 +1917,31 @@ function StratLog({ strat }: { strat: StratUnit[] }) {
 
 // ─── MapLibre layer factory ────────────────────────────────────────────
 
-/** Build the MapLibre layer spec for a registry entry. One source-layer
- * inside the pmtiles per LayerDef.tilesetLayer. Paint is determined by
- * geometry kind + group — keeps the layer registry the only place styling
- * decisions live. */
-function buildLayer(def: LayerDef, defaultVisible: boolean): maplibregl.LayerSpecification {
+/** Suffix appended to the registry id for the paired outline line layer
+ *  that accompanies every polygon fill. Stays out of click-detection
+ *  (only the fill layer is queried) but participates in visibility sync. */
+const OUTLINE_SUFFIX = '__outline';
+
+/** Federal-land agency → outline color. Brighter than the fill so the
+ *  border reads even when adjacent polygons of different agencies meet. */
+const FEDERAL_OUTLINE_BY_AGENCY: maplibregl.ExpressionSpecification = [
+  'match',
+  ['get', 'agency'],
+  'BLM', '#86efac',   // green-300
+  'USFS', '#4ade80',  // green-400
+  'NPS', '#fbbf24',   // amber-400 (parks contrast warm-on-cool)
+  'BIA', '#d8b4fe',   // purple-300
+  '#cbd5e1',          // slate-300 fallback
+];
+
+/** Build the MapLibre layer specs for a registry entry. Polygon defs
+ *  return TWO layers — a fill plus a paired outline line layer — so the
+ *  border stays crisp regardless of fill opacity. Points + lines return
+ *  one. The first entry is always the click-interactive one. */
+function buildLayer(
+  def: LayerDef,
+  defaultVisible: boolean,
+): maplibregl.LayerSpecification[] {
   const visibility = defaultVisible ? 'visible' : 'none';
   const color = def.color ?? '#94a3b8';
   const common = {
@@ -1938,43 +1963,67 @@ function buildLayer(def: LayerDef, defaultVisible: boolean): maplibregl.LayerSpe
     // just use their registry color.
     const circleColor: maplibregl.DataDrivenPropertyValueSpecification<string> =
       def.tilesetLayer === 'mrds' ? mrdsCommodityColorExpr() : color;
-    return {
+    return [{
       ...common,
       type: 'circle',
       paint: {
-        'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 3, 9, 5, 14, 8],
+        // Bigger radii at LOW zoom so country-scale views still show the
+        // points. Previous ramp was 3px at z4 — invisible against the
+        // dark federal-lands fill. New ramp keeps points readable from
+        // continent zoom (3.5px @ z4) up to street zoom (10px @ z14).
+        'circle-radius': [
+          'interpolate', ['linear'], ['zoom'],
+          4, 3.5,
+          6, 4.5,
+          9, 6,
+          14, 10,
+        ],
         'circle-color': circleColor,
-        'circle-stroke-color': '#0a0c10',
-        'circle-stroke-width': 1,
-        'circle-opacity': 0.9,
+        // Light stroke for contrast against any underlay (dark map,
+        // green federal fill, red hotspot heatmap). A 0.6px white-ish
+        // stroke is enough to halo each dot without making the layer
+        // feel fuzzy at high zoom.
+        'circle-stroke-color': 'rgba(248, 250, 252, 0.85)',
+        'circle-stroke-width': [
+          'interpolate', ['linear'], ['zoom'],
+          4, 0.6,
+          10, 1.0,
+          14, 1.4,
+        ],
+        'circle-opacity': 0.95,
       },
-    };
+    }];
   }
   if (def.geometry === 'line') {
-    return {
+    // PLSS is a cadastral grid — keep it thin enough not to dominate.
+    // Pipelines + well laterals are infrastructure and should be the
+    // most prominent linear feature when toggled.
+    const isCadastral = def.tilesetLayer === 'plss';
+    const widthExpr: maplibregl.DataDrivenPropertyValueSpecification<number> = isCadastral
+      ? ['interpolate', ['linear'], ['zoom'], 6, 0.4, 12, 1.2]
+      : ['interpolate', ['linear'], ['zoom'], 5, 1.2, 9, 2.0, 14, 3.5];
+    return [{
       ...common,
       type: 'line',
       paint: {
         'line-color': color,
-        'line-width': ['interpolate', ['linear'], ['zoom'], 6, 0.6, 12, 1.6],
-        'line-opacity': 0.85,
+        'line-width': widthExpr,
+        'line-opacity': isCadastral ? 0.55 : 0.9,
       },
-    };
+    }];
   }
 
   // polygon — federal_lands paints multi-color by agency; hotspots
   // paints a 0-100 score heatmap; everything else uses the registry color.
   if (def.id === 'hotspots') {
-    return {
+    const fill: maplibregl.LayerSpecification = {
       ...common,
       type: 'fill',
       paint: {
         // Cold → hot ramp: gray → yellow → orange → red. Steps match
         // the same break points used in the sidebar Top Hotspots list.
         'fill-color': [
-          'interpolate',
-          ['linear'],
-          ['get', 'score'],
+          'interpolate', ['linear'], ['get', 'score'],
           0, '#475569',   // slate-600 — barely visible
           20, '#facc15',  // yellow-400
           45, '#f97316',  // orange-500
@@ -1982,40 +2031,75 @@ function buildLayer(def: LayerDef, defaultVisible: boolean): maplibregl.LayerSpe
           90, '#7f1d1d',  // red-900 — hottest
         ],
         'fill-opacity': [
-          'interpolate',
-          ['linear'],
-          ['get', 'score'],
-          0, 0.08,
+          'interpolate', ['linear'], ['get', 'score'],
+          0, 0.10,
           100, 0.55,
         ],
-        'fill-outline-color': '#0f172a',
       },
     };
+    // Outline lets the cell grid stay visible even when the fill is at
+    // 10% opacity (low-score cells). Uses a dark slate so the heatmap
+    // reads as discrete cells, not a smeared cloud.
+    const outline: maplibregl.LayerSpecification = {
+      ...common,
+      id: def.id + OUTLINE_SUFFIX,
+      type: 'line',
+      paint: {
+        'line-color': '#0f172a',
+        'line-width': 0.4,
+        'line-opacity': 0.5,
+      },
+    };
+    return [fill, outline];
   }
+
   const fillColor: maplibregl.DataDrivenPropertyValueSpecification<string> =
-    def.id === 'federal-lands'
-      ? [
-          'match',
-          ['get', 'agency'],
-          'BLM', '#22c55e',
-          'USFS', '#16a34a',
-          'NPS', '#b45309',
-          'BIA', '#9333ea',
-          color,
-        ]
-      : color;
-  // Open BLM Land gets stronger fill + thicker outline so the "stakeable
-  // candidate" signal is visually unmistakable when toggled on.
-  const isStakeableLayer = def.id === 'open-blm-land';
-  return {
+    def.id === 'federal-lands' ? [
+      'match',
+      ['get', 'agency'],
+      'BLM', '#22c55e',
+      'USFS', '#16a34a',
+      'NPS', '#b45309',
+      'BIA', '#9333ea',
+      color,
+    ] : color;
+  // Open BLM Land gets a stronger fill so the "stakeable candidate"
+  // signal is visually unmistakable when toggled on; mining claims also
+  // get extra emphasis since they're the most actionable layer.
+  const isStakeable = def.id === 'open-blm-land';
+  const isClaims = def.id === 'mining-claims';
+  const fillOpacity = isStakeable ? 0.35 : isClaims ? 0.28 : 0.18;
+
+  const fill: maplibregl.LayerSpecification = {
     ...common,
     type: 'fill',
     paint: {
       'fill-color': fillColor,
-      'fill-opacity': isStakeableLayer ? 0.32 : 0.22,
-      'fill-outline-color': color,
+      'fill-opacity': fillOpacity,
     },
   };
+
+  // Paired outline. Crisp 1-1.5px border survives even very low fill
+  // opacity, which is critical when stacking 3-4 polygon layers (the
+  // old fill-outline-color sub-pixel border vanished into the mud).
+  // Outline color: federal-lands uses per-agency expression; everything
+  // else uses a brightened-up version of the registry color.
+  const outlineColor: maplibregl.DataDrivenPropertyValueSpecification<string> =
+    def.id === 'federal-lands' ? FEDERAL_OUTLINE_BY_AGENCY : color;
+  const outlineWidth: maplibregl.DataDrivenPropertyValueSpecification<number> = isStakeable || isClaims
+    ? ['interpolate', ['linear'], ['zoom'], 5, 0.8, 9, 1.4, 14, 2.0]
+    : ['interpolate', ['linear'], ['zoom'], 5, 0.4, 9, 0.9, 14, 1.4];
+  const outline: maplibregl.LayerSpecification = {
+    ...common,
+    id: def.id + OUTLINE_SUFFIX,
+    type: 'line',
+    paint: {
+      'line-color': outlineColor,
+      'line-width': outlineWidth,
+      'line-opacity': 0.85,
+    },
+  };
+  return [fill, outline];
 }
 
 /** MapLibre expression that returns the commodity-category color for an

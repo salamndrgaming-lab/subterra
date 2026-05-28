@@ -98,7 +98,9 @@ export const LAYERS: readonly LayerDef[] = [
     tilesetLayer: 'wells',
     geometry: 'point',
     minZoom: 6,
-    color: '#10b981', // emerald
+    // orange — eliminates the wells-on-green-federal-land collision the
+    // old emerald color caused. Pairs visually with well-laterals amber.
+    color: '#fb923c',
   },
   {
     id: 'well-laterals',
@@ -108,7 +110,7 @@ export const LAYERS: readonly LayerDef[] = [
     tilesetLayer: 'well_laterals',
     geometry: 'line',
     minZoom: 9,
-    color: '#14b8a6', // teal
+    color: '#fbbf24', // amber — pairs with the orange wells
   },
   {
     id: 'leases',
@@ -118,7 +120,8 @@ export const LAYERS: readonly LayerDef[] = [
     tilesetLayer: 'leases',
     geometry: 'polygon',
     minZoom: 6,
-    color: '#06b6d4', // cyan
+    color: '#0e7490', // cyan-700 — deeper than the old cyan so the lease
+                     // fill stands apart from the sky-blue gas pipelines
   },
 
   // infrastructure
