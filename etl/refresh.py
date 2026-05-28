@@ -45,6 +45,10 @@ SOURCES = [
     "pipelines_natgas", # Phase 2 — EIA natural-gas trunk pipelines
     "pipelines_crude",  # Phase 2 — EIA crude-oil trunk pipelines
     "wells",            # Phase 2 — HIFLD wells via NASA NCCS mirror (~1M points)
+    # hotspots reads other sources' GeoJSON from work_dir to score
+    # cell-binned prospecting opportunity — MUST stay last so the
+    # inputs are guaranteed to exist when it runs.
+    "hotspots",
 ]
 
 
@@ -167,6 +171,35 @@ def write_manifest(results: list[SourceResult], pmtiles_path: Path) -> Path:
     features_db = OUT / "subterra-features.db"
     features_hash = sha256(features_db) if features_db.exists() else ""
 
+    # Hotspots: ship the top-20 directly in the manifest so the sidebar
+    # widget renders without an extra fetch. The PMTiles layer can't be
+    # queried globally (only per-tile), so embedding the ranked list
+    # here is the cleanest way to make "Top Hotspots" discoverable.
+    top_hotspots: list[dict] = []
+    for r in results:
+        if r.layer_id != "hotspots" or not r.geojson_path.exists():
+            continue
+        try:
+            with r.geojson_path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            for feat in (data.get("features") or [])[:20]:
+                props = feat.get("properties") or {}
+                top_hotspots.append({
+                    "score": props.get("score"),
+                    "deposits": props.get("deposits"),
+                    "claims": props.get("claims"),
+                    "blmPolys": props.get("blm_polys"),
+                    "topCommodities": props.get("top_commodities"),
+                    "costLow": props.get("cost_low"),
+                    "costHigh": props.get("cost_high"),
+                    "revenueLow": props.get("revenue_low"),
+                    "revenueHigh": props.get("revenue_high"),
+                    "lng": props.get("lng"),
+                    "lat": props.get("lat"),
+                })
+        except Exception:  # noqa: BLE001 — manifest must never fail to write
+            pass
+
     manifest = {
         "version": int(time.time()),
         "publishedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -177,6 +210,7 @@ def write_manifest(results: list[SourceResult], pmtiles_path: Path) -> Path:
             "featuresDb": features_hash,
         },
         "counts": {r.layer_id: r.feature_count for r in results},
+        "topHotspots": top_hotspots,
     }
     path = OUT / "manifest.json"
     path.write_text(json.dumps(manifest, indent=2))

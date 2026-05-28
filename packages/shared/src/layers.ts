@@ -6,7 +6,7 @@
 export interface LayerDef {
   id: string;
   label: string;
-  group: 'federal' | 'cadastral' | 'oilgas' | 'mining' | 'infrastructure';
+  group: 'federal' | 'cadastral' | 'oilgas' | 'mining' | 'infrastructure' | 'analysis';
   defaultVisible: boolean;
   /** Tippecanoe layer id inside the PMTiles file. */
   tilesetLayer: string;
@@ -142,6 +142,20 @@ export const LAYERS: readonly LayerDef[] = [
     minZoom: 5,
     color: '#dc2626', // red
   },
+
+  // analysis — precomputed prospecting overlays. Score-driven, click for
+  // cost/revenue heuristics. Painted in Map.tsx with a graduated fill
+  // expression keyed off the `score` property.
+  {
+    id: 'hotspots',
+    label: 'Resource Hotspots (heatmap)',
+    group: 'analysis',
+    defaultVisible: false,
+    tilesetLayer: 'hotspots',
+    geometry: 'polygon',
+    minZoom: 4,
+    color: '#ef4444', // fallback only — Map.tsx paints score-graduated
+  },
 ] as const;
 
 export const LAYER_GROUPS: Record<LayerDef['group'], string> = {
@@ -150,6 +164,7 @@ export const LAYER_GROUPS: Record<LayerDef['group'], string> = {
   oilgas: 'Oil & Gas',
   mining: 'Mining',
   infrastructure: 'Infrastructure',
+  analysis: 'Analysis',
 };
 
 /** Commodity-category colors used by MRDS (matched at render time). */

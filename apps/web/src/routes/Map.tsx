@@ -490,6 +490,72 @@ export function MapPage() {
               </Section>
             );
           })}
+
+          {/* Top resource hotspots, precomputed by the ETL and shipped
+              in the manifest. Click flies the map + opens the drawer
+              with cost/revenue heuristics for that cell. */}
+          {manifestQuery.data?.topHotspots && manifestQuery.data.topHotspots.length > 0 && (
+            <Section title="Top Hotspots">
+              <p className="mb-2 font-mono text-[10px] leading-snug text-text-muted">
+                Precomputed prospecting candidates — ranked by deposit density,
+                open federal land, and claim competition.
+              </p>
+              <ol className="space-y-1">
+                {manifestQuery.data.topHotspots.slice(0, 10).map((h, i) => (
+                  <li key={`${h.lng},${h.lat}`}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const map = mapRef.current;
+                        if (!map) return;
+                        map.flyTo({ center: [h.lng, h.lat], zoom: 8, speed: 1.4 });
+                        // Open the layer if it's not visible so user can see what
+                        // they just flew to.
+                        if (!visibility['hotspots']) toggle('hotspots');
+                        setSelected({
+                          layerId: 'hotspots',
+                          layerLabel: `Hotspot #${i + 1}`,
+                          properties: {
+                            score: h.score,
+                            deposits: h.deposits,
+                            claims: h.claims,
+                            blm_polys: h.blmPolys,
+                            top_commodities: h.topCommodities,
+                            cost_low: h.costLow,
+                            cost_high: h.costHigh,
+                            revenue_low: h.revenueLow,
+                            revenue_high: h.revenueHigh,
+                          },
+                          lng: h.lng,
+                          lat: h.lat,
+                          overlappingClaims: [],
+                          surfaceAgency: undefined,
+                        });
+                      }}
+                      className="flex w-full items-center gap-2 rounded border border-border bg-bg-panel/40 px-2 py-1.5 text-left font-mono text-[10px] hover:border-accent hover:bg-bg-panel"
+                    >
+                      <span
+                        aria-hidden
+                        className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-[9px] font-bold text-white"
+                        style={{ backgroundColor: hotspotScoreColor(h.score) }}
+                      >
+                        {Math.round(h.score)}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-text">
+                          {h.topCommodities || `${h.deposits} deposits`}
+                        </span>
+                        <span className="block text-text-muted">
+                          {h.lat.toFixed(2)}°, {h.lng.toFixed(2)}° · {h.deposits} sites
+                        </span>
+                      </span>
+                      <span className="shrink-0 text-text-muted">→</span>
+                    </button>
+                  </li>
+                ))}
+              </ol>
+            </Section>
+          )}
         </div>
 
         {!manifestQuery.data && !manifestQuery.isLoading && (
@@ -1309,7 +1375,8 @@ function DetailDrawer({
 
       <div className="flex-1 overflow-y-auto px-4 py-3">
         <StakeAbility feature={feature} />
-        {entries.length > 0 && (
+        {feature.layerId === 'hotspots' && <HotspotPanel feature={feature} />}
+        {entries.length > 0 && feature.layerId !== 'hotspots' && (
           <dl className="mt-4 grid grid-cols-[120px_minmax(0,1fr)] gap-y-1 font-mono text-[11px]">
             {entries.map(([key, value]) => (
               <Row key={key} label={PROPERTY_LABELS[key] ?? key} value={value} />
@@ -1484,6 +1551,161 @@ function CostGroup({
         </ul>
       )}
     </div>
+  );
+}
+
+/** Color ramp matching the hotspots layer paint expression. Used in both
+ *  the sidebar Top-Hotspots list and the score chip in the drawer panel
+ *  so the visual signal stays consistent across the UI. */
+function hotspotScoreColor(score: number): string {
+  if (score >= 90) return '#7f1d1d'; // red-900
+  if (score >= 70) return '#dc2626'; // red-600
+  if (score >= 45) return '#f97316'; // orange-500
+  if (score >= 20) return '#facc15'; // yellow-400
+  return '#475569'; // slate-600
+}
+
+/** Format a dollar amount as $1.2M / $850K / $42 etc. */
+function fmtMoney(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '—';
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `$${(n / 1_000).toFixed(0)}K`;
+  return `$${Math.round(n)}`;
+}
+
+/**
+ * Drawer panel that surfaces the hotspot cell's score breakdown,
+ * predicted staking cost, and rough revenue potential.
+ *
+ * Three things to keep honest about:
+ * - The score is composed of public-data signals (deposit density,
+ *   open-BLM coverage, claim competition), not a real economic model.
+ * - Cost is the BLM fee schedule applied to a 5-claim, 5-year prospect.
+ *   Real costs balloon with permitting, drilling, assays, etc.
+ * - Revenue is a back-of-envelope sum of per-commodity base values ×
+ *   deposit count. It says "this cell has the geology for $X of
+ *   potential", NOT "$X of guaranteed return."
+ *
+ * The UI labels all three as heuristic estimates so users don't read
+ * them as expert valuations.
+ */
+function HotspotPanel({ feature }: { feature: SelectedFeature }) {
+  const score = Number(feature.properties.score ?? 0);
+  const deposits = Number(feature.properties.deposits ?? 0);
+  const claims = Number(feature.properties.claims ?? 0);
+  const blmPolys = Number(feature.properties.blm_polys ?? 0);
+  const topCommoditiesRaw = String(feature.properties.top_commodities ?? '');
+  const costLow = Number(feature.properties.cost_low ?? 0);
+  const costHigh = Number(feature.properties.cost_high ?? 0);
+  const revLow = Number(feature.properties.revenue_low ?? 0);
+  const revHigh = Number(feature.properties.revenue_high ?? 0);
+  // Profit margin = midpoint(revenue) − midpoint(cost). Negative means the
+  // cell's commodities don't carry enough value to justify the stake at
+  // the heuristic level.
+  const revMid = (revLow + revHigh) / 2;
+  const costMid = (costLow + costHigh) / 2;
+  const margin = revMid - costMid;
+  const commodityList = topCommoditiesRaw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  return (
+    <section className="mt-4 rounded-md border border-border bg-bg-panel/40 p-3">
+      <div className="mb-3 flex items-center gap-3">
+        <div
+          className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md font-mono text-base font-bold text-white"
+          style={{ backgroundColor: hotspotScoreColor(score) }}
+          aria-label={`Hotspot score ${score} out of 100`}
+        >
+          {Math.round(score)}
+        </div>
+        <div className="min-w-0">
+          <div className="font-mono text-[10px] uppercase tracking-wider text-text-muted">
+            Hotspot score
+          </div>
+          <div className="font-mono text-[11px] text-text">
+            {score >= 70 ? 'Strong candidate' : score >= 45 ? 'Worth investigating' : score >= 20 ? 'Light signal' : 'Marginal'}
+          </div>
+          <div className="font-mono text-[10px] text-text-muted">
+            heuristic — see disclaimer below
+          </div>
+        </div>
+      </div>
+
+      {/* Signal breakdown */}
+      <dl className="mb-3 grid grid-cols-3 gap-2 font-mono text-[10px]">
+        <div className="rounded border border-border bg-bg-panel px-2 py-1.5">
+          <div className="text-text-muted">Deposits</div>
+          <div className="text-text">{deposits}</div>
+        </div>
+        <div className="rounded border border-border bg-bg-panel px-2 py-1.5">
+          <div className="text-text-muted">BLM coverage</div>
+          <div className="text-text">{blmPolys} polys</div>
+        </div>
+        <div className="rounded border border-border bg-bg-panel px-2 py-1.5">
+          <div className="text-text-muted">Claims (compete)</div>
+          <div className="text-text">{claims}</div>
+        </div>
+      </dl>
+
+      {/* Top commodities */}
+      {commodityList.length > 0 && (
+        <div className="mb-3">
+          <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-text-muted">
+            Top commodities
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {commodityList.map((c) => (
+              <span
+                key={c}
+                className="rounded border border-border bg-bg-panel px-1.5 py-0.5 font-mono text-[10px] text-text"
+              >
+                {c}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Cost vs revenue projection */}
+      <div className="mb-2">
+        <div className="mb-1 flex items-baseline justify-between">
+          <span className="font-mono text-[10px] uppercase tracking-wider text-text-muted">
+            Cost to stake (5 claims · 5 yr)
+          </span>
+          <span className="font-mono text-[10px] text-text">
+            {fmtMoney(costLow)} – {fmtMoney(costHigh)}
+          </span>
+        </div>
+        <div className="mb-1 flex items-baseline justify-between">
+          <span className="font-mono text-[10px] uppercase tracking-wider text-text-muted">
+            Revenue potential
+          </span>
+          <span className="font-mono text-[10px] text-text">
+            {fmtMoney(revLow)} – {fmtMoney(revHigh)}
+          </span>
+        </div>
+        <div className="mt-2 flex items-baseline justify-between border-t border-border pt-2">
+          <span className="font-mono text-[10px] uppercase tracking-wider text-text-muted">
+            Net margin (midpoint)
+          </span>
+          <span
+            className="font-mono text-[11px] font-bold"
+            style={{ color: margin >= 0 ? '#22c55e' : '#ef4444' }}
+          >
+            {margin >= 0 ? '+' : '−'}{fmtMoney(Math.abs(margin))}
+          </span>
+        </div>
+      </div>
+
+      <div className="mt-2 rounded border border-border/60 bg-bg/40 p-2 font-mono text-[9px] leading-snug text-text-muted">
+        <span className="text-text">Heuristic only.</span> Cost = BLM fee schedule
+        ($212 location + $165/yr × 5 yr per claim). Revenue = Σ commodity_base_value ×
+        deposit_count, where base values are rough small-mine 10-yr ballparks. Not
+        an economic study. Use as a relative ranking signal between cells.
+      </div>
+    </section>
   );
 }
 
@@ -1740,10 +1962,36 @@ function buildLayer(def: LayerDef, defaultVisible: boolean): maplibregl.LayerSpe
     };
   }
 
-  // polygon — only the main federal-lands layer paints multi-color by
-  // agency. Other layers sharing the federal_lands source-layer (e.g.
-  // open-blm-land filtered to BLM) use their flat registry color so they
-  // stand out as a distinct visual signal.
+  // polygon — federal_lands paints multi-color by agency; hotspots
+  // paints a 0-100 score heatmap; everything else uses the registry color.
+  if (def.id === 'hotspots') {
+    return {
+      ...common,
+      type: 'fill',
+      paint: {
+        // Cold → hot ramp: gray → yellow → orange → red. Steps match
+        // the same break points used in the sidebar Top Hotspots list.
+        'fill-color': [
+          'interpolate',
+          ['linear'],
+          ['get', 'score'],
+          0, '#475569',   // slate-600 — barely visible
+          20, '#facc15',  // yellow-400
+          45, '#f97316',  // orange-500
+          70, '#dc2626',  // red-600
+          90, '#7f1d1d',  // red-900 — hottest
+        ],
+        'fill-opacity': [
+          'interpolate',
+          ['linear'],
+          ['get', 'score'],
+          0, 0.08,
+          100, 0.55,
+        ],
+        'fill-outline-color': '#0f172a',
+      },
+    };
+  }
   const fillColor: maplibregl.DataDrivenPropertyValueSpecification<string> =
     def.id === 'federal-lands'
       ? [
