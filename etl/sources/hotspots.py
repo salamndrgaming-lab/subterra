@@ -140,7 +140,7 @@ def _in_bbox(x: float, y: float) -> bool:
 
 def _bin_mrds(path: Path, cells: dict, log: logging.Logger) -> int:
     if not path.exists():
-        log.warning("mineral_sites.geojson missing — hotspot deposit signal will be empty")
+        log.warning("%s missing — hotspot deposit signal will be empty", path.name)
         return 0
     n = 0
     with path.open("rb") as f:
