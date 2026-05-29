@@ -45,6 +45,8 @@ SOURCES = [
     "pipelines_natgas", # Phase 2 — EIA natural-gas trunk pipelines
     "pipelines_crude",  # Phase 2 — EIA crude-oil trunk pipelines
     "wells",            # Phase 2 — HIFLD wells via NASA NCCS mirror (~1M points)
+    "geochemistry",  # Phase 9 — USGS NGDB stream-sediment/soil samples (~1.5M points)
+    "geophysics",    # Phase 9 — USGS Earth MRI airborne survey footprints
     # hotspots reads other sources' GeoJSON from work_dir to score
     # cell-binned prospecting opportunity — MUST stay last so the
     # inputs are guaranteed to exist when it runs.
@@ -189,6 +191,7 @@ def write_manifest(results: list[SourceResult], pmtiles_path: Path) -> Path:
                     "deposits": props.get("deposits"),
                     "claims": props.get("claims"),
                     "blmPolys": props.get("blm_polys"),
+                    "geochemAnom": props.get("geochem_anom"),
                     "topCommodities": props.get("top_commodities"),
                     "costLow": props.get("cost_low"),
                     "costHigh": props.get("cost_high"),
@@ -199,6 +202,16 @@ def write_manifest(results: list[SourceResult], pmtiles_path: Path) -> Path:
                 })
         except Exception:  # noqa: BLE001 — manifest must never fail to write
             pass
+
+    # Live commodity spot prices — advisory figures the client uses to
+    # show market-tracking dollar values. Never fails the manifest: the
+    # fetcher returns a static fallback table if every feed is down.
+    try:
+        from sources.commodity_prices import fetch_prices
+        commodity_prices = fetch_prices()
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger("etl").warning("commodity price fetch failed: %s", exc)
+        commodity_prices = None
 
     manifest = {
         "version": int(time.time()),
@@ -211,6 +224,7 @@ def write_manifest(results: list[SourceResult], pmtiles_path: Path) -> Path:
         },
         "counts": {r.layer_id: r.feature_count for r in results},
         "topHotspots": top_hotspots,
+        "commodityPrices": commodity_prices,
     }
     path = OUT / "manifest.json"
     path.write_text(json.dumps(manifest, indent=2))

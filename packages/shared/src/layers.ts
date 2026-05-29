@@ -6,7 +6,7 @@
 export interface LayerDef {
   id: string;
   label: string;
-  group: 'federal' | 'cadastral' | 'oilgas' | 'mining' | 'infrastructure' | 'analysis';
+  group: 'federal' | 'cadastral' | 'oilgas' | 'mining' | 'infrastructure' | 'analysis' | 'exploration';
   defaultVisible: boolean;
   /** Tippecanoe layer id inside the PMTiles file. */
   tilesetLayer: string;
@@ -146,6 +146,30 @@ export const LAYERS: readonly LayerDef[] = [
     color: '#dc2626', // red
   },
 
+  // exploration — raw science datasets the pros vector targets from.
+  // Geochemistry is painted graduated-by-element in Map.tsx; geophysics
+  // is a coverage footprint overlay.
+  {
+    id: 'geochemistry',
+    label: 'Geochemistry (NGDB samples)',
+    group: 'exploration',
+    defaultVisible: false,
+    tilesetLayer: 'geochemistry',
+    geometry: 'point',
+    minZoom: 6,
+    color: '#a78bfa', // violet — Map.tsx overrides with element-graduated ramp
+  },
+  {
+    id: 'geophysics',
+    label: 'Geophysical Survey Coverage',
+    group: 'exploration',
+    defaultVisible: false,
+    tilesetLayer: 'geophysics',
+    geometry: 'polygon',
+    minZoom: 4,
+    color: '#2dd4bf', // teal — airborne survey footprints
+  },
+
   // analysis — precomputed prospecting overlays. Score-driven, click for
   // cost/revenue heuristics. Painted in Map.tsx with a graduated fill
   // expression keyed off the `score` property.
@@ -167,6 +191,7 @@ export const LAYER_GROUPS: Record<LayerDef['group'], string> = {
   oilgas: 'Oil & Gas',
   mining: 'Mining',
   infrastructure: 'Infrastructure',
+  exploration: 'Exploration Data',
   analysis: 'Analysis',
 };
 

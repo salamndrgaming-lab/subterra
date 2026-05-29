@@ -23,6 +23,24 @@ export interface TileManifest {
    * queried globally (only per-tile), so the ranked list has to
    * travel with the version manifest. Absent in old manifests. */
   topHotspots?: TopHotspot[];
+  /** Live commodity spot prices fetched at ETL time. Advisory — the
+   * client shows them as "spot as of <date>". Absent in old manifests. */
+  commodityPrices?: CommodityPrices;
+}
+
+/** Live (or static-fallback) commodity spot prices carried in the
+ *  manifest. Drives the market-tracking dollar figures in the UI. */
+export interface CommodityPrices {
+  /** Provider name, e.g. "metals.dev" or "static_fallback". */
+  source: string;
+  /** ISO timestamp the prices were fetched. */
+  fetchedAt: string;
+  /** False when every live feed was unreachable and the static table
+   *  was used — the UI surfaces this so users know it's not live. */
+  live: boolean;
+  /** Symbol → price. Precious metals priced per troy-oz, base/battery
+   *  metals per tonne (see `unit`). */
+  prices: Record<string, { usd: number; unit: string }>;
 }
 
 /** One pre-scored resource hotspot. Coordinates are the cell centroid
@@ -37,6 +55,10 @@ export interface TopHotspot {
   claims: number;
   /** Count of BLM-admin federal polygons overlapping this cell. */
   blmPolys: number;
+  /** Geochemically anomalous NGDB samples in this cell — a strong
+   *  leading target signal. Absent in manifests from before geochem
+   *  was added to the pipeline. */
+  geochemAnom?: number;
   /** Comma-joined "COMMODITY:count" string of the top-3 commodities
    *  by deposit count, e.g. "AU:12,AG:7,CU:3". */
   topCommodities: string;

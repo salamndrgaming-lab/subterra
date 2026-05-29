@@ -10,6 +10,7 @@ import {
   LAYER_GROUPS,
   type LayerDef,
   type TopHotspot,
+  type CommodityPrices,
 } from '@subterra/shared';
 import { cn } from '@/lib/cn';
 import { fetchManifest } from '@/lib/manifest';
@@ -546,6 +547,10 @@ export function MapPage() {
             />
           )}
         </div>
+
+        {manifestQuery.data?.commodityPrices && (
+          <PriceTicker prices={manifestQuery.data.commodityPrices} />
+        )}
       </header>
 
       <aside className="flex h-full min-h-0 flex-col border-r border-border bg-bg-surface">
@@ -604,6 +609,7 @@ export function MapPage() {
                             deposits: h.deposits,
                             claims: h.claims,
                             blm_polys: h.blmPolys,
+                            geochem_anom: h.geochemAnom ?? 0,
                             top_commodities: h.topCommodities,
                             cost_low: h.costLow,
                             cost_high: h.costHigh,
@@ -1011,6 +1017,53 @@ function computeAoiSummary(map: maplibregl.Map | null, vertices: LngLat[]): AoiS
     year1CostHigh,
     annualCost,
   };
+}
+
+// ─── Live commodity price ticker ───────────────────────────────────────
+
+/** Compact spot-price strip under the header. Shows the headline metals
+ *  with a live/stale indicator. Prices come from the manifest (fetched at
+ *  ETL time), so they refresh on each ETL run, not continuously. */
+function PriceTicker({ prices }: { prices: CommodityPrices }) {
+  // Display order — the commodities prospectors care about most first.
+  const order = ['AU', 'AG', 'CU', 'LI', 'NI', 'ZN', 'PB', 'U', 'MO', 'PT', 'PD'];
+  const items = order
+    .filter((sym) => prices.prices[sym])
+    .map((sym) => ({ sym, ...prices.prices[sym]! }));
+  if (items.length === 0) return null;
+
+  const fmt = (usd: number, unit: string): string => {
+    if (unit === 'oz') return `$${usd.toLocaleString(undefined, { maximumFractionDigits: 0 })}/oz`;
+    if (usd >= 1000) return `$${(usd / 1000).toFixed(1)}k/t`;
+    return `$${usd.toFixed(0)}/t`;
+  };
+  const date = prices.fetchedAt.slice(0, 10);
+
+  return (
+    <div className="flex items-center gap-1 overflow-x-auto border-t border-border bg-bg/40 px-4 py-1.5">
+      <span
+        className="shrink-0 font-mono text-[9px] uppercase tracking-wider"
+        style={{ color: prices.live ? '#22c55e' : '#f59e0b' }}
+        title={
+          prices.live
+            ? `Live spot prices via ${prices.source}, ${date}`
+            : `Static fallback (no live feed reachable), ${date}`
+        }
+      >
+        {prices.live ? '● spot' : '○ est'}
+      </span>
+      {items.map((it) => (
+        <span
+          key={it.sym}
+          className="shrink-0 rounded border border-border bg-bg-panel px-1.5 py-0.5 font-mono text-[10px]"
+          title={`${it.sym} — ${prices.live ? 'live' : 'estimated'} ${date}`}
+        >
+          <span className="text-text-muted">{it.sym}</span>{' '}
+          <span className="text-text">{fmt(it.usd, it.unit)}</span>
+        </span>
+      ))}
+    </div>
+  );
 }
 
 // ─── Optimal Acre wizard + recommendation drawer ──────────────────────
@@ -1997,6 +2050,7 @@ function HotspotPanel({ feature }: { feature: SelectedFeature }) {
   const deposits = Number(feature.properties.deposits ?? 0);
   const claims = Number(feature.properties.claims ?? 0);
   const blmPolys = Number(feature.properties.blm_polys ?? 0);
+  const geochemAnom = Number(feature.properties.geochem_anom ?? 0);
   const topCommoditiesRaw = String(feature.properties.top_commodities ?? '');
   const costLow = Number(feature.properties.cost_low ?? 0);
   const costHigh = Number(feature.properties.cost_high ?? 0);
@@ -2037,10 +2091,14 @@ function HotspotPanel({ feature }: { feature: SelectedFeature }) {
       </div>
 
       {/* Signal breakdown */}
-      <dl className="mb-3 grid grid-cols-3 gap-2 font-mono text-[10px]">
+      <dl className="mb-3 grid grid-cols-2 gap-2 font-mono text-[10px]">
         <div className="rounded border border-border bg-bg-panel px-2 py-1.5">
           <div className="text-text-muted">Deposits</div>
           <div className="text-text">{deposits}</div>
+        </div>
+        <div className="rounded border border-border bg-bg-panel px-2 py-1.5">
+          <div className="text-text-muted">Geochem anomalies</div>
+          <div className="text-text">{geochemAnom}</div>
         </div>
         <div className="rounded border border-border bg-bg-panel px-2 py-1.5">
           <div className="text-text-muted">BLM coverage</div>
@@ -2357,10 +2415,15 @@ function buildLayer(
 
   if (def.geometry === 'point') {
     // MRDS dots are color-coded by commodity category so the most useful
-    // signal (what mineral) is visible at a glance. Other point layers
-    // just use their registry color.
+    // signal (what mineral) is visible at a glance. Geochemistry samples
+    // are graduated by a pathfinder element (As — classic gold vectoring)
+    // so anomalies pop. Other point layers just use their registry color.
     const circleColor: maplibregl.DataDrivenPropertyValueSpecification<string> =
-      def.tilesetLayer === 'mrds' ? mrdsCommodityColorExpr() : color;
+      def.tilesetLayer === 'mrds'
+        ? mrdsCommodityColorExpr()
+        : def.tilesetLayer === 'geochemistry'
+          ? geochemColorExpr()
+          : color;
     return [{
       ...common,
       type: 'circle',
@@ -2409,6 +2472,29 @@ function buildLayer(
         'line-opacity': isCadastral ? 0.55 : 0.9,
       },
     }];
+  }
+
+  // Geophysics survey footprints — low-fill coverage overlay with a
+  // prominent dashed-feel outline. The point is to show WHERE modern
+  // subsurface data exists, so a light teal wash + crisp border reads as
+  // "this ground has been flown" without obscuring what's underneath.
+  if (def.id === 'geophysics') {
+    const fill: maplibregl.LayerSpecification = {
+      ...common,
+      type: 'fill',
+      paint: { 'fill-color': color, 'fill-opacity': 0.12 },
+    };
+    const outline: maplibregl.LayerSpecification = {
+      ...common,
+      id: def.id + OUTLINE_SUFFIX,
+      type: 'line',
+      paint: {
+        'line-color': color,
+        'line-width': ['interpolate', ['linear'], ['zoom'], 4, 0.8, 9, 1.6, 14, 2.4],
+        'line-opacity': 0.9,
+      },
+    };
+    return [fill, outline];
   }
 
   // polygon — federal_lands paints multi-color by agency; hotspots
@@ -2521,5 +2607,26 @@ function mrdsCommodityColorExpr(): maplibregl.DataDrivenPropertyValueSpecificati
     matchAny(['Potash', 'Phosphate', 'Sand', 'Gravel', 'Gypsum', 'Sulfur']),
     COMMODITY_CATEGORY_COLORS.industrial!,
     COMMODITY_CATEGORY_COLORS.unknown!,
+  ] as unknown as maplibregl.DataDrivenPropertyValueSpecification<string>;
+}
+
+/** Graduated color for a geochemistry sample by its arsenic concentration
+ *  (ppm). As is the classic gold pathfinder — high values vector toward
+ *  buried mineralization. Cool→hot ramp surfaces anomalies. Samples with
+ *  no As reading fall back to the registry violet so they're still
+ *  visible as "sampled here, no anomaly". */
+function geochemColorExpr(): maplibregl.DataDrivenPropertyValueSpecification<string> {
+  return [
+    'case',
+    ['has', 'as_ppm'],
+    [
+      'interpolate', ['linear'], ['to-number', ['get', 'as_ppm'], 0],
+      0, '#1e3a8a',    // blue-900 background
+      10, '#0891b2',   // cyan-600
+      30, '#facc15',   // yellow-400
+      80, '#f97316',   // orange-500
+      200, '#dc2626',  // red-600 — strong anomaly
+    ],
+    '#a78bfa', // violet fallback (no As reading)
   ] as unknown as maplibregl.DataDrivenPropertyValueSpecification<string>;
 }
