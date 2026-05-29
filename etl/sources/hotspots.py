@@ -226,8 +226,14 @@ def run(work_dir: Path) -> SourceResult:
         }
     )
 
-    _bin_mrds(work_dir / "mineral_sites.geojson", cells, log)
-    _bin_polygons(work_dir / "claims.geojson", cells, "claims", log)
+    # Filenames MUST match the out_path each source writes (verified
+    # against mrds.py / blm_claims.py): mrds.geojson + blm_claims.geojson.
+    # Earlier these read mineral_sites.geojson / claims.geojson, which
+    # don't exist — so every cell scored deposits=0, blm=0 and got
+    # dropped, producing an empty hotspots layer + empty topHotspots
+    # (which in turn left the heatmap blank and the wizard disabled).
+    _bin_mrds(work_dir / "mrds.geojson", cells, log)
+    _bin_polygons(work_dir / "blm_claims.geojson", cells, "claims", log)
     _bin_polygons(
         work_dir / "federal_lands.geojson",
         cells,
