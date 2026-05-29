@@ -115,6 +115,22 @@ app.get('/manifest', async (c) => {
     return c.json({ error: 'manifest_invalid_json' }, 502);
   }
   const origin = new URL(c.req.url).origin;
+  // Defense-in-depth: only ever emit known keys. The manifest is written
+  // by our own ETL, but R2 is a mutable store — if its contents were ever
+  // tampered with, this whitelist guarantees /manifest can't serve
+  // unexpected fields (e.g. attacker-injected strings) to the client.
+  const ALLOWED_KEYS = new Set([
+    'version',
+    'publishedAt',
+    'pmtilesUrl',
+    'featuresDbUrl',
+    'checksums',
+    'counts',
+    'topHotspots',
+  ]);
+  manifest = Object.fromEntries(
+    Object.entries(manifest).filter(([k]) => ALLOWED_KEYS.has(k)),
+  );
   // Cache-bust the pmtiles + features.db URLs with the manifest's
   // version (a unix timestamp set at ETL time). Otherwise protomaps +
   // sql.js + browsers + Cloudflare's edge can all serve the previous
