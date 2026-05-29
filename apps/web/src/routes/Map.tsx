@@ -2508,16 +2508,16 @@ function buildLayer(
         // the same break points used in the sidebar Top Hotspots list.
         'fill-color': [
           'interpolate', ['linear'], ['get', 'score'],
-          0, '#475569',   // slate-600 — barely visible
-          20, '#facc15',  // yellow-400
-          45, '#f97316',  // orange-500
-          70, '#dc2626',  // red-600
-          90, '#7f1d1d',  // red-900 — hottest
+          0, '#64748b',   // slate-500 — slightly brighter floor so low cells still read
+          15, '#fde047',  // yellow-300 — kicks in earlier so warm cells are obvious
+          40, '#f97316',  // orange-500
+          65, '#dc2626',  // red-600
+          85, '#7f1d1d',  // red-900 — hottest
         ],
         'fill-opacity': [
           'interpolate', ['linear'], ['get', 'score'],
-          0, 0.10,
-          100, 0.55,
+          0, 0.28,    // bumped floor: heatmap stays visible even on cold cells
+          100, 0.75,  // bumped ceiling: hot cells dominate the green underlay
         ],
       },
     };
