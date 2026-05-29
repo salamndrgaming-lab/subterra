@@ -22,16 +22,19 @@ import requests
 from tqdm import tqdm
 
 ITEM_ID = "4a158d2113f145039f71b80d07e2c19c"
+# atlas.eia.gov and hub.arcgis.com both 403 — pivot to opendata.arcgis.com
+# which is the LEGACY Hub Download endpoint and serves the underlying
+# data without the reverse-proxy filtering that the newer hosts apply.
 PRIMARY_URL = (
-    f"https://atlas.eia.gov/api/download/v1/items/{ITEM_ID}/geojson?layers=0"
+    f"https://opendata.arcgis.com/api/v3/datasets/{ITEM_ID}_0/downloads/data?format=geojson&spatialRefId=4326"
 )
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0 "
     "(Subterra-ETL +https://github.com/salamndrgaming-lab/subterra)"
 )
-REQUEST_TIMEOUT = 300.0
+REQUEST_TIMEOUT = 120.0
 POLL_INTERVAL = 5.0
-POLL_TIMEOUT = 600.0
+POLL_TIMEOUT = 90.0  # If the hub hasn't published in 90s, give up and move on.
 
 
 @dataclass
@@ -123,13 +126,21 @@ def run(work_dir: Path) -> SourceResult:
     skipped = 0
     started = time.monotonic()
 
+    # Download to a temp file so we can both ijson-stream it AND retain
+    # the raw bytes for diagnostics when the response shape is unexpected.
+    raw_path = work_dir / "pipelines_natgas.raw.json"
     try:
-        with out_path.open("w", encoding="utf-8") as out, resp:
+        with raw_path.open("wb") as rawf, resp:
             resp.raw.decode_content = True
+            for chunk in iter(lambda: resp.raw.read(1 << 16), b""):
+                rawf.write(chunk)
+        log.info("downloaded %d bytes → %s", raw_path.stat().st_size, raw_path.name)
+
+        with out_path.open("w", encoding="utf-8") as out, raw_path.open("rb") as src:
             out.write('{"type":"FeatureCollection","features":[')
             first = True
             pbar = tqdm(desc="natgas pipelines", unit="feat", smoothing=0.1)
-            for feat in ijson.items(resp.raw, "features.item", use_float=True):
+            for feat in ijson.items(src, "features.item", use_float=True):
                 geom = feat.get("geometry")
                 if not geom:
                     skipped += 1
@@ -143,6 +154,14 @@ def run(work_dir: Path) -> SourceResult:
                 pbar.update(1)
             pbar.close()
             out.write("]}")
+
+        if feature_count == 0:
+            with raw_path.open("rb") as src:
+                head = src.read(800)
+            log.error(
+                "ZERO features parsed from EIA response. First 800 bytes:\n%s",
+                head.decode("utf-8", errors="replace"),
+            )
     except Exception:
         if out_path.exists():
             out_path.unlink()

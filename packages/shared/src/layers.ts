@@ -6,7 +6,7 @@
 export interface LayerDef {
   id: string;
   label: string;
-  group: 'federal' | 'cadastral' | 'oilgas' | 'mining' | 'infrastructure';
+  group: 'federal' | 'cadastral' | 'oilgas' | 'mining' | 'infrastructure' | 'analysis';
   defaultVisible: boolean;
   /** Tippecanoe layer id inside the PMTiles file. */
   tilesetLayer: string;
@@ -16,6 +16,11 @@ export interface LayerDef {
   minZoom: number;
   /** Layer-specific paint color (overrides the group default). Hex like #f59e0b. */
   color?: string;
+  /** Optional MapLibre filter expression. Lets multiple layers share one
+   *  tilesetLayer with different filters (e.g. open-blm-land is just
+   *  federal_lands filtered to agency=BLM). Type is `unknown[]` because
+   *  the maplibre Filter type isn't available in @subterra/shared. */
+  filter?: readonly unknown[];
 }
 
 export const LAYERS: readonly LayerDef[] = [
@@ -72,7 +77,13 @@ export const LAYERS: readonly LayerDef[] = [
     label: 'Open BLM Land (stake-able)',
     group: 'mining',
     defaultVisible: false,
-    tilesetLayer: 'open_blm_land',
+    // Shares the federal_lands source-layer + filters to BLM-only. Real
+    // "open" stakeability (subtracting active claims) is checked at click
+    // time via map.queryRenderedFeatures + the stake-ability indicator
+    // in the detail drawer — spatial subtraction over 550k+ claim polygons
+    // is too expensive to precompute as a polygon layer.
+    tilesetLayer: 'federal_lands',
+    filter: ['==', ['get', 'agency'], 'BLM'] as const,
     geometry: 'polygon',
     minZoom: 6,
     color: '#a3e635', // lime — the staking target
@@ -87,7 +98,9 @@ export const LAYERS: readonly LayerDef[] = [
     tilesetLayer: 'wells',
     geometry: 'point',
     minZoom: 6,
-    color: '#10b981', // emerald
+    // orange — eliminates the wells-on-green-federal-land collision the
+    // old emerald color caused. Pairs visually with well-laterals amber.
+    color: '#fb923c',
   },
   {
     id: 'well-laterals',
@@ -97,7 +110,7 @@ export const LAYERS: readonly LayerDef[] = [
     tilesetLayer: 'well_laterals',
     geometry: 'line',
     minZoom: 9,
-    color: '#14b8a6', // teal
+    color: '#fbbf24', // amber — pairs with the orange wells
   },
   {
     id: 'leases',
@@ -107,7 +120,8 @@ export const LAYERS: readonly LayerDef[] = [
     tilesetLayer: 'leases',
     geometry: 'polygon',
     minZoom: 6,
-    color: '#06b6d4', // cyan
+    color: '#0e7490', // cyan-700 — deeper than the old cyan so the lease
+                     // fill stands apart from the sky-blue gas pipelines
   },
 
   // infrastructure
@@ -131,6 +145,20 @@ export const LAYERS: readonly LayerDef[] = [
     minZoom: 5,
     color: '#dc2626', // red
   },
+
+  // analysis — precomputed prospecting overlays. Score-driven, click for
+  // cost/revenue heuristics. Painted in Map.tsx with a graduated fill
+  // expression keyed off the `score` property.
+  {
+    id: 'hotspots',
+    label: 'Resource Hotspots (heatmap)',
+    group: 'analysis',
+    defaultVisible: false,
+    tilesetLayer: 'hotspots',
+    geometry: 'polygon',
+    minZoom: 4,
+    color: '#ef4444', // fallback only — Map.tsx paints score-graduated
+  },
 ] as const;
 
 export const LAYER_GROUPS: Record<LayerDef['group'], string> = {
@@ -139,6 +167,7 @@ export const LAYER_GROUPS: Record<LayerDef['group'], string> = {
   oilgas: 'Oil & Gas',
   mining: 'Mining',
   infrastructure: 'Infrastructure',
+  analysis: 'Analysis',
 };
 
 /** Commodity-category colors used by MRDS (matched at render time). */

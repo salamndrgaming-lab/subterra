@@ -1,38 +1,59 @@
 """
-U.S. Oil and Natural Gas Wells (HIFLD mirror via NASA NCCS).
+Multi-state oil & gas wells.
 
-HIFLD's public open-data portal was deactivated August 26, 2025. NASA
-Center for Climate Simulation maintains a public mirror of the HIFLD
-energy services at maps.nccs.nasa.gov — same data, stable URL, paginated
-ArcGIS MapServer query (same pattern as sources/plss.py).
+State commissions publish wellbore data via ArcGIS REST endpoints.
+Fetches the major-state services in sequence; per-state failures are
+caught so one broken endpoint doesn't drop the whole layer.
 
-~1 million wells across CONUS. Pages of 2000 = ~500 requests, ~5-10
-min runtime.
+States covered:
+  - CO  Colorado ECMC (DJ Basin + Piceance), via dnrgis.state.co.us
+  - ND  North Dakota DMR (Bakken / Williston), via gis.dmr.nd.gov
+  - WY  Wyoming WOGCC (Powder River + Green River), via gis.deq.wyoming.gov
 
-Source: https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/energy/MapServer/15
+The previous NASA NCCS HIFLD mirror was consistently returning 503
+under our query load. State commissions are the authoritative source
+anyway and have stable per-state ArcGIS REST endpoints that better
+support paginated bulk fetches.
+
+TX (RRC) is the largest US oil/gas producer but doesn't publish a
+clean public statewide ArcGIS endpoint — could be added later via
+their wellbore data-pull CSV or a per-county aggregation.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import requests
-from tqdm import tqdm
+from sources._arcgis import iter_features_concurrent
 
-SERVICE = "https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/energy/MapServer"
-LAYER_ID = 15  # oil_and_natural_gas_wells
-PAGE_SIZE = 2000
-USER_AGENT = (
-    "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0 "
-    "(Subterra-ETL +https://github.com/salamndrgaming-lab/subterra)"
-)
-REQUEST_TIMEOUT = 180.0
+STATE_SOURCES: list[dict[str, Any]] = [
+    {
+        "code": "CO",
+        "name": "Colorado ECMC",
+        "service": "https://data.dnrgis.state.co.us/arcgis/rest/services/DNR_Public/OGCC_Wells/FeatureServer",
+        "layer": 0,
+        "workers": 4,
+    },
+    {
+        "code": "ND",
+        "name": "North Dakota DMR",
+        "service": "https://gis.dmr.nd.gov/dmrpublicservices/rest/services/OilGasPublicMapDataVectorTiles/Wells/FeatureServer",
+        "layer": 0,
+        "workers": 4,
+    },
+    {
+        "code": "WY",
+        "name": "Wyoming WOGCC",
+        "service": "https://gis.deq.wyoming.gov/arcgis_443/rest/services/WOGCC_WELLS/MapServer",
+        "layer": 0,
+        "workers": 3,
+    },
+]
 
 
 @dataclass
@@ -42,33 +63,8 @@ class SourceResult:
     feature_count: int
 
 
-def _fetch_page(query_url: str, offset: int) -> dict[str, Any]:
-    params = {
-        "where": "1=1",
-        "outFields": "*",
-        "returnGeometry": "true",
-        "outSR": "4326",
-        "f": "geojson",
-        "resultRecordCount": str(PAGE_SIZE),
-        "resultOffset": str(offset),
-        "orderByFields": "OBJECTID ASC",
-    }
-    resp = requests.get(
-        query_url,
-        params=params,
-        headers={"User-Agent": USER_AGENT, "accept": "application/geo+json, application/json"},
-        timeout=REQUEST_TIMEOUT,
-    )
-    resp.raise_for_status()
-    body = resp.json()
-    if isinstance(body, dict) and body.get("error"):
-        raise RuntimeError(f"ArcGIS error from {query_url}: {body['error']}")
-    return body
-
-
-def _normalize_props(p: dict[str, Any]) -> dict[str, Any]:
-    """HIFLD wells schema is broad; pluck the fields a prospector actually
-    wants in the click drawer and drop the rest."""
+def _normalize_props(p: dict[str, Any], state_code: str) -> dict[str, Any]:
+    """Each state uses different field names; coalesce to a stable shape."""
     def first(*keys: str) -> object:
         for k in keys:
             for cased in (k, k.upper(), k.lower()):
@@ -77,79 +73,74 @@ def _normalize_props(p: dict[str, Any]) -> dict[str, Any]:
                     return v
         return None
 
-    out: dict[str, Any] = {}
-    for label, candidates in [
-        ("api", ["api", "API", "API_NUM", "API_WELL"]),
-        ("name", ["NAME", "WELL_NAME", "name"]),
-        ("operator", ["OPERATOR", "CURRENT_OP", "operator"]),
-        ("commodity", ["TYPE", "WELL_TYPE", "PROD_TYPE", "type"]),
-        ("status", ["STATUS", "WELL_STATU", "STATE", "status"]),
-        ("state", ["STATE_NAME", "STATE", "ST_ABBREV"]),
-        ("county", ["COUNTY", "county"]),
-        ("spud_at", ["SPUD_DATE", "SPUDDATE", "SPUD_DT"]),
-        ("first_prod_at", ["FIRST_PROD", "FIRSTPROD", "F_PROD_DT"]),
-        ("depth_ft", ["TOTAL_DEPT", "TD", "TOTAL_DEPTH"]),
-    ]:
-        v = first(*candidates)
-        if v is not None:
-            out[label] = v
-    return out
+    raw = {
+        "api": first("api", "API", "API_NUM", "API_LABEL", "API10", "API14", "FileNumber", "FILE_NUMBER"),
+        "name": first("WELL_NAME", "well_name", "NAME", "Name", "WellName", "well_name_t"),
+        "operator": first(
+            "OPERATOR", "OPERATOR_NAME", "OPER_NAME", "COMPANY", "Operator",
+            "CURRENT_OP", "CurrentOperator", "ApiOperatorName",
+        ),
+        "status": first("STATUS", "WELL_STATUS", "WellStatus", "FAC_STATUS", "well_status"),
+        "type": first("WELL_TYPE", "TYPE", "PROD_TYPE", "well_type", "FAC_TYPE", "facility_type"),
+        "state": state_code,
+        "county": first("COUNTY", "County", "COUNTY_NAME"),
+        "spud_at": first("SPUD_DATE", "SPUDDATE", "SPUD_DT", "spud_date"),
+        "depth_ft": first("TOTAL_DEPTH", "TOTAL_DEPT", "TD", "td", "MeasuredDepth"),
+    }
+    return {k: v for k, v in raw.items() if v is not None}
 
 
 def run(work_dir: Path) -> SourceResult:
     log = logging.getLogger("etl.wells")
-    log.info("starting HIFLD oil & gas wells download (NASA NCCS mirror)")
-
-    base = os.environ.get("WELLS_SERVICE_URL", SERVICE)
-    query_url = f"{base}/{LAYER_ID}/query"
-    log.info("querying %s", query_url)
+    log.info("starting multi-state oil & gas wells download")
 
     out_path = work_dir / "wells.geojson"
-    feature_count = 0
-    skipped = 0
-    offset = 0
+    total_count = 0
     started = time.monotonic()
-    no_progress = 0
+    first = [True]
+    per_state: dict[str, int] = {}
 
     try:
         with out_path.open("w", encoding="utf-8") as out:
             out.write('{"type":"FeatureCollection","features":[')
-            first = True
-            pbar = tqdm(desc="wells", unit="feat", smoothing=0.1)
-            while True:
-                body = _fetch_page(query_url, offset)
-                features = body.get("features", [])
-                if not features:
-                    break
-                for feat in features:
+
+            for state in STATE_SOURCES:
+                state_count = [0]
+
+                def emit(feat: dict[str, Any], _state=state) -> None:
                     geom = feat.get("geometry")
                     if not geom or geom.get("type") != "Point":
-                        skipped += 1
-                        continue
+                        return
                     coords = geom.get("coordinates") or []
                     if len(coords) < 2 or coords[0] is None or coords[1] is None:
-                        skipped += 1
-                        continue
-                    props = _normalize_props(feat.get("properties") or feat.get("attributes") or {})
-                    if not first:
+                        return
+                    props = _normalize_props(
+                        feat.get("properties") or feat.get("attributes") or {},
+                        _state["code"],
+                    )
+                    if not first[0]:
                         out.write(",")
-                    first = False
+                    first[0] = False
                     json.dump({"type": "Feature", "geometry": geom, "properties": props}, out)
-                    feature_count += 1
-                pbar.update(len(features))
+                    state_count[0] += 1
 
-                exceeded = body.get("exceededTransferLimit", False)
-                if not exceeded and len(features) < PAGE_SIZE:
-                    break
-                offset += len(features)
-                if len(features) == 0:
-                    no_progress += 1
-                    if no_progress >= 3:
-                        log.warning("no progress for 3 consecutive pages, stopping")
-                        break
-                else:
-                    no_progress = 0
-            pbar.close()
+                query_url = f"{state['service']}/{state['layer']}/query"
+                log.info("fetching %s (%s)", state["name"], query_url)
+                try:
+                    iter_features_concurrent(
+                        query_url,
+                        on_feature=emit,
+                        workers=state["workers"],
+                        retries=4,
+                        progress_label=f"wells-{state['code']}",
+                    )
+                    log.info("  %s: %d wells", state["name"], state_count[0])
+                    per_state[state["code"]] = state_count[0]
+                    total_count += state_count[0]
+                except Exception as err:  # noqa: BLE001
+                    log.warning("  %s FAILED — %s: %s", state["name"], type(err).__name__, err)
+                    continue
+
             out.write("]}")
     except Exception:
         if out_path.exists():
@@ -157,9 +148,9 @@ def run(work_dir: Path) -> SourceResult:
         raise
 
     elapsed = time.monotonic() - started
-    log.info("wrote %d wells (skipped %d) in %.1fs → %s", feature_count, skipped, elapsed, out_path.name)
+    log.info("wrote %d wells across %d states in %.1fs — %s", total_count, len(per_state), elapsed, per_state)
     return SourceResult(
         layer_id="wells",
         geojson_path=out_path,
-        feature_count=feature_count,
+        feature_count=total_count,
     )
