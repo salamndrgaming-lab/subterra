@@ -182,7 +182,7 @@ def write_manifest(results: list[SourceResult], pmtiles_path: Path) -> Path:
         try:
             with r.geojson_path.open("r", encoding="utf-8") as f:
                 data = json.load(f)
-            for feat in (data.get("features") or [])[:20]:
+            for feat in (data.get("features") or [])[:100]:
                 props = feat.get("properties") or {}
                 top_hotspots.append({
                     "score": props.get("score"),

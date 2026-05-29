@@ -3,7 +3,14 @@ import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { COMMODITIES, COMMODITY_CATEGORY_COLORS, LAYERS, LAYER_GROUPS, type LayerDef } from '@subterra/shared';
+import {
+  COMMODITIES,
+  COMMODITY_CATEGORY_COLORS,
+  LAYERS,
+  LAYER_GROUPS,
+  type LayerDef,
+  type TopHotspot,
+} from '@subterra/shared';
 import { cn } from '@/lib/cn';
 import { fetchManifest } from '@/lib/manifest';
 import { useLayerVisibility } from '@/stores/layers';
@@ -12,6 +19,12 @@ import { pointInPolygon, polygonAreaAcres, ringBbox, type LngLat } from '@/lib/g
 import { columnImageUrl, fetchGeology, type GeologyAtPoint, type StratUnit } from '@/lib/macrostrat';
 import { fetchElevation, type ElevationResult } from '@/lib/elevation';
 import { estimateCosts, formatAmount, totalRange, type LineItem } from '@/lib/cost-estimate';
+import {
+  findOptimalPicks,
+  SUPPORTED_STATES,
+  type OptimalPick,
+  type OptimalQuery,
+} from '@/lib/optimal-acre';
 
 /** Primary vector basemap (OpenFreeMap dark). If this URL ever 403s or
  *  fails to fetch (CDN outage, blocking, etc.) the map falls back to the
@@ -81,6 +94,11 @@ export function MapPage() {
   const [commodityFilter, setCommodityFilter] = useState<Set<string>>(new Set());
   const [drawMode, setDrawMode] = useState<'off' | 'drawing' | 'done'>('off');
   const [aoiVertices, setAoiVertices] = useState<LngLat[]>([]);
+  /** "Find Optimal Acre" wizard state. `wizardOpen` controls the modal;
+   *  `optimalPick` holds the chosen pick so the map can paint the
+   *  recommended 100-acre square + open the explainer drawer. */
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [optimalPick, setOptimalPick] = useState<OptimalPick | null>(null);
   const visibility = useLayerVisibility((s) => s.visibility);
   const toggle = useLayerVisibility((s) => s.toggle);
 
@@ -362,6 +380,32 @@ export function MapPage() {
           },
         });
       }
+      // "Find Optimal Acre" recommendation source — populated when the
+      // wizard returns a pick. Painted as a bright magenta square with
+      // a pulsing-style halo so it's visually unmistakable from the
+      // green AOI polygons (different intent: AOI = "tell me about this
+      // area", recommended-stake = "this is what to stake").
+      if (!map.getSource('recommended-stake')) {
+        map.addSource('recommended-stake', { type: 'geojson', data: emptyFC() });
+        map.addLayer({
+          id: 'recommended-stake-halo',
+          source: 'recommended-stake',
+          type: 'fill',
+          paint: { 'fill-color': '#f0abfc', 'fill-opacity': 0.15 },
+        });
+        map.addLayer({
+          id: 'recommended-stake-fill',
+          source: 'recommended-stake',
+          type: 'fill',
+          paint: { 'fill-color': '#d946ef', 'fill-opacity': 0.45 },
+        });
+        map.addLayer({
+          id: 'recommended-stake-line',
+          source: 'recommended-stake',
+          type: 'line',
+          paint: { 'line-color': '#f5d0fe', 'line-width': 3, 'line-opacity': 0.95 },
+        });
+      }
     };
     if (map.isStyleLoaded()) ensureAoiLayers();
     else map.once('load', ensureAoiLayers);
@@ -412,6 +456,27 @@ export function MapPage() {
     src.setData(aoiGeoJson(aoiVertices, drawMode));
   }, [aoiVertices, drawMode]);
 
+  // 7. Push the current recommended-stake polygon into its source so the
+  //    map shows the picked acre as a bright magenta square. Cleared
+  //    when the user closes the recommendation drawer.
+  useEffect(() => {
+    const map = mapRef.current;
+    const src = map?.getSource('recommended-stake') as maplibregl.GeoJSONSource | undefined;
+    if (!src) return;
+    if (!optimalPick) {
+      src.setData(emptyFC());
+      return;
+    }
+    src.setData({
+      type: 'FeatureCollection',
+      features: [{
+        type: 'Feature',
+        geometry: optimalPick.stakePolygon,
+        properties: { rank: optimalPick.rank },
+      }],
+    });
+  }, [optimalPick]);
+
   // AOI summary: compute counts/area whenever the polygon finalizes.
   const aoiSummary = useMemo(() => {
     if (drawMode !== 'done' || aoiVertices.length < 3) return null;
@@ -445,6 +510,20 @@ export function MapPage() {
         </Link>
 
         <SearchBox onPick={flyTo} />
+
+        <button
+          type="button"
+          onClick={() => setWizardOpen(true)}
+          disabled={!manifestQuery.data?.topHotspots?.length}
+          className="mt-2 w-full rounded-md border border-fuchsia-400/60 bg-fuchsia-500/10 px-3 py-2 font-mono text-[11px] text-fuchsia-100 hover:bg-fuchsia-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+          title={
+            manifestQuery.data?.topHotspots?.length
+              ? 'Pick the best 100-acre stake for a commodity + budget'
+              : 'Hotspot data not loaded yet — needs the latest ETL refresh'
+          }
+        >
+          ★ Find Optimal Acre
+        </button>
 
         <CommodityFilter selected={commodityFilter} onChange={setCommodityFilter} />
 
@@ -606,7 +685,7 @@ export function MapPage() {
           }}
         />
         {aoiSummary && <AoiPanel summary={aoiSummary} onClose={() => { setAoiVertices([]); setDrawMode('off'); }} />}
-        {selected && !aoiSummary && (
+        {selected && !aoiSummary && !optimalPick && (
           <DetailDrawer
             feature={selected}
             geology={geologyQuery.data}
@@ -614,6 +693,31 @@ export function MapPage() {
             geologyError={geologyQuery.error ? String(geologyQuery.error) : null}
             elevation={elevationQuery.data ?? null}
             onClose={() => setSelected(null)}
+          />
+        )}
+        {optimalPick && (
+          <RecommendedStakeDrawer
+            pick={optimalPick}
+            onClose={() => setOptimalPick(null)}
+          />
+        )}
+        {wizardOpen && (
+          <OptimalAcreWizard
+            hotspots={manifestQuery.data?.topHotspots ?? []}
+            onClose={() => setWizardOpen(false)}
+            onPick={(pick) => {
+              setWizardOpen(false);
+              setSelected(null);
+              setOptimalPick(pick);
+              const map = mapRef.current;
+              if (map) {
+                map.flyTo({
+                  center: [pick.hotspot.lng, pick.hotspot.lat],
+                  zoom: 13,
+                  speed: 1.6,
+                });
+              }
+            }}
           />
         )}
       </div>
@@ -907,6 +1011,300 @@ function computeAoiSummary(map: maplibregl.Map | null, vertices: LngLat[]): AoiS
     year1CostHigh,
     annualCost,
   };
+}
+
+// ─── Optimal Acre wizard + recommendation drawer ──────────────────────
+
+/** Commodities offered in the wizard dropdown. Hand-picked from the
+ *  commodity-base-value list in etl/sources/hotspots.py — these are the
+ *  ones for which we ship a meaningful per-cell revenue estimate. */
+const WIZARD_COMMODITIES: ReadonlyArray<{ code: string; label: string }> = [
+  { code: 'AU', label: 'Gold (Au)' },
+  { code: 'AG', label: 'Silver (Ag)' },
+  { code: 'CU', label: 'Copper (Cu)' },
+  { code: 'LI', label: 'Lithium (Li)' },
+  { code: 'REE', label: 'Rare Earths' },
+  { code: 'MO', label: 'Molybdenum (Mo)' },
+  { code: 'ZN', label: 'Zinc (Zn)' },
+  { code: 'PB', label: 'Lead (Pb)' },
+  { code: 'U', label: 'Uranium (U)' },
+  { code: 'W', label: 'Tungsten (W)' },
+];
+
+const BUDGET_PRESETS: ReadonlyArray<{ value: number; label: string }> = [
+  { value: 5_000, label: '$5K (single claim · 1 yr)' },
+  { value: 15_000, label: '$15K (5 claims · 1 yr)' },
+  { value: 50_000, label: '$50K (10 claims · 5 yr)' },
+  { value: 200_000, label: '$200K (small-mine workup)' },
+  { value: 1_000_000, label: '$1M (full prospect)' },
+];
+
+function OptimalAcreWizard({
+  hotspots,
+  onPick,
+  onClose,
+}: {
+  hotspots: readonly TopHotspot[];
+  onPick: (pick: OptimalPick) => void;
+  onClose: () => void;
+}) {
+  const [commodity, setCommodity] = useState<string | null>('AU');
+  const [budget, setBudget] = useState<number>(50_000);
+  const [state, setState] = useState<string | null>(null);
+
+  const query: OptimalQuery = useMemo(
+    () => ({ commodity, maxBudget: budget, state }),
+    [commodity, budget, state],
+  );
+  const picks = useMemo(() => findOptimalPicks(hotspots, query), [hotspots, query]);
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Find optimal acre"
+      className="absolute inset-0 z-30 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      onClick={(e) => {
+        // Close only when clicking the backdrop, not the panel itself.
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="w-full max-w-2xl rounded-lg border border-fuchsia-400/30 bg-bg-surface shadow-2xl">
+        <header className="flex items-start justify-between gap-2 border-b border-border px-5 py-3">
+          <div>
+            <div className="font-mono text-[10px] uppercase tracking-wider text-fuchsia-300">
+              Wizard · prospecting picker
+            </div>
+            <div className="font-mono text-base text-text">Find Optimal Acre</div>
+            <div className="mt-0.5 font-mono text-[10px] text-text-muted">
+              Searches {hotspots.length} pre-scored hotspot cells across the western US.
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="rounded-md border border-border bg-bg-panel px-2 py-1 font-mono text-[10px] text-text-muted hover:text-text"
+          >
+            ✕
+          </button>
+        </header>
+
+        <div className="grid grid-cols-2 gap-4 px-5 py-4">
+          {/* Inputs */}
+          <div className="space-y-3 font-mono text-[11px]">
+            <div>
+              <label className="mb-1 block text-[10px] uppercase tracking-wider text-text-muted">
+                Target commodity
+              </label>
+              <select
+                value={commodity ?? ''}
+                onChange={(e) => setCommodity(e.target.value || null)}
+                className="w-full rounded border border-border bg-bg-panel px-2 py-1.5 text-text"
+              >
+                <option value="">Any commodity</option>
+                {WIZARD_COMMODITIES.map((c) => (
+                  <option key={c.code} value={c.code}>{c.label}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="mb-1 block text-[10px] uppercase tracking-wider text-text-muted">
+                Max budget
+              </label>
+              <select
+                value={budget}
+                onChange={(e) => setBudget(Number(e.target.value))}
+                className="w-full rounded border border-border bg-bg-panel px-2 py-1.5 text-text"
+              >
+                {BUDGET_PRESETS.map((b) => (
+                  <option key={b.value} value={b.value}>{b.label}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="mb-1 block text-[10px] uppercase tracking-wider text-text-muted">
+                State (optional)
+              </label>
+              <select
+                value={state ?? ''}
+                onChange={(e) => setState(e.target.value || null)}
+                className="w-full rounded border border-border bg-bg-panel px-2 py-1.5 text-text"
+              >
+                <option value="">Anywhere in the West</option>
+                {SUPPORTED_STATES.map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="rounded border border-border bg-bg-panel/40 p-2 text-[9px] leading-snug text-text-muted">
+              Picker ranks pre-scored hotspot cells by: hotspot score +
+              commodity-fit boost + budget-fit bonus − claim-competition
+              penalty. Cells above your budget are filtered out entirely.
+            </div>
+          </div>
+
+          {/* Results */}
+          <div className="space-y-2">
+            <div className="font-mono text-[10px] uppercase tracking-wider text-text-muted">
+              Top 3 picks ({picks.length} match{picks.length === 1 ? '' : 'es'})
+            </div>
+            {picks.length === 0 && (
+              <div className="rounded border border-border bg-bg-panel/40 p-3 font-mono text-[10px] text-text-muted">
+                No cells match. Try a wider budget, drop the state filter,
+                or pick a different commodity.
+              </div>
+            )}
+            {picks.map((pick) => (
+              <button
+                key={`${pick.hotspot.lng},${pick.hotspot.lat}`}
+                type="button"
+                onClick={() => onPick(pick)}
+                className="block w-full rounded border border-border bg-bg-panel/40 px-3 py-2 text-left font-mono text-[10px] hover:border-fuchsia-400 hover:bg-bg-panel"
+              >
+                <div className="flex items-center gap-2">
+                  <span
+                    aria-hidden
+                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-fuchsia-500/30 text-[10px] font-bold text-fuchsia-100"
+                  >
+                    #{pick.rank}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-text">
+                      Score {Math.round(pick.adjustedScore)} · {pick.hotspot.deposits} sites
+                    </span>
+                    <span className="block text-text-muted">
+                      {pick.hotspot.lat.toFixed(2)}°, {pick.hotspot.lng.toFixed(2)}° · {pick.hotspot.topCommodities}
+                    </span>
+                  </span>
+                  <span className="shrink-0 text-fuchsia-300">stake →</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <footer className="border-t border-border px-5 py-2 font-mono text-[9px] uppercase tracking-wider text-text-muted">
+          Heuristic picker · cost/revenue ranges are rough public-data estimates
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function RecommendedStakeDrawer({
+  pick,
+  onClose,
+}: {
+  pick: OptimalPick;
+  onClose: () => void;
+}) {
+  const h = pick.hotspot;
+  const costMid = (h.costLow + h.costHigh) / 2;
+  const revMid = (h.revenueLow + h.revenueHigh) / 2;
+  const margin = revMid - costMid;
+  return (
+    <aside
+      className="absolute right-3 top-3 bottom-3 z-10 flex w-[360px] flex-col rounded-lg border border-fuchsia-400/40 bg-bg-surface/95 shadow-2xl backdrop-blur"
+    >
+      <header className="flex items-start justify-between gap-2 border-b border-border px-4 py-3">
+        <div className="min-w-0">
+          <div className="font-mono text-[10px] uppercase tracking-wider text-fuchsia-300">
+            Recommended stake · pick #{pick.rank}
+          </div>
+          <div className="mt-0.5 font-mono text-sm text-text">
+            {pick.recommendedAcres} acres · ~{Math.round(Math.sqrt(pick.recommendedAcres * 4046.86))} m square
+          </div>
+          <div className="mt-0.5 font-mono text-[10px] text-text-muted">
+            {h.lat.toFixed(5)}, {h.lng.toFixed(5)}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close"
+          className="rounded-md border border-border bg-bg-panel px-2 py-1 font-mono text-[10px] text-text-muted hover:text-text"
+        >
+          ✕
+        </button>
+      </header>
+
+      <div className="flex-1 overflow-y-auto px-4 py-3 font-mono text-[11px]">
+        <section className="mb-4 rounded-md border border-fuchsia-400/30 bg-fuchsia-500/5 p-3">
+          <div className="mb-1 text-[10px] uppercase tracking-wider text-fuchsia-300">
+            Why this one
+          </div>
+          <ul className="space-y-1 text-text">
+            {pick.reasons.map((r, i) => (
+              <li key={i} className="flex gap-2">
+                <span aria-hidden className="text-fuchsia-400">•</span>
+                <span className="min-w-0 flex-1">{r}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+
+        <section className="mb-4">
+          <div className="mb-1 text-[10px] uppercase tracking-wider text-text-muted">
+            Cost vs revenue (heuristic)
+          </div>
+          <dl className="grid grid-cols-[120px_minmax(0,1fr)] gap-y-1">
+            <dt className="text-text-muted">Stake cost</dt>
+            <dd className="text-text">{fmtMoney(h.costLow)} – {fmtMoney(h.costHigh)}</dd>
+            <dt className="text-text-muted">Revenue potential</dt>
+            <dd className="text-text">{fmtMoney(h.revenueLow)} – {fmtMoney(h.revenueHigh)}</dd>
+            <dt className="text-text-muted">Margin (mid)</dt>
+            <dd style={{ color: margin >= 0 ? '#22c55e' : '#ef4444' }}>
+              {margin >= 0 ? '+' : '−'}{fmtMoney(Math.abs(margin))}
+            </dd>
+          </dl>
+        </section>
+
+        <section className="mb-4">
+          <div className="mb-1 text-[10px] uppercase tracking-wider text-text-muted">
+            Cell signals
+          </div>
+          <dl className="grid grid-cols-[120px_minmax(0,1fr)] gap-y-1">
+            <dt className="text-text-muted">Hotspot score</dt>
+            <dd className="text-text">{Math.round(h.score)}/100</dd>
+            <dt className="text-text-muted">Adjusted score</dt>
+            <dd className="text-text">{Math.round(pick.adjustedScore)}</dd>
+            <dt className="text-text-muted">Mineral occurrences</dt>
+            <dd className="text-text">{h.deposits}</dd>
+            <dt className="text-text-muted">Existing claims</dt>
+            <dd className="text-text">{h.claims}</dd>
+            <dt className="text-text-muted">BLM coverage</dt>
+            <dd className="text-text">{h.blmPolys} polygons</dd>
+            <dt className="text-text-muted">Top commodities</dt>
+            <dd className="text-text">{h.topCommodities || '—'}</dd>
+          </dl>
+        </section>
+
+        <section className="rounded border border-border/60 bg-bg/40 p-2 text-[9px] leading-snug text-text-muted">
+          <span className="text-text">Disclaimer.</span> All numbers are
+          heuristic ranges from public-data signals. The recommended
+          square is a 100-acre stake centered on the cell centroid — real
+          staking requires field-verifying open ground, surveying a legal
+          claim boundary, and filing BLM Form 3830-1.
+        </section>
+      </div>
+
+      <footer className="flex items-center justify-between gap-2 border-t border-border px-4 py-2 font-mono text-[10px] text-text-muted">
+        <a
+          href={`https://www.google.com/maps?q=${h.lat},${h.lng}`}
+          target="_blank"
+          rel="noreferrer"
+          className="text-accent hover:underline"
+        >
+          Open in Google Maps ↗
+        </a>
+        <span>magenta square on the map</span>
+      </footer>
+    </aside>
+  );
 }
 
 function AoiControls({
