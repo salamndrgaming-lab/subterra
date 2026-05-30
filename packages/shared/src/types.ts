@@ -26,6 +26,23 @@ export interface TileManifest {
   /** Live commodity spot prices fetched at ETL time. Advisory — the
    * client shows them as "spot as of <date>". Absent in old manifests. */
   commodityPrices?: CommodityPrices;
+  /** Per-source outcome from the ETL run that produced this manifest.
+   *  Lets the UI surface "this layer failed because X" instead of
+   *  silently rendering an empty layer. Absent in old manifests. */
+  sources?: SourceStatus[];
+}
+
+/** Outcome of one ETL source module in the run that produced the
+ *  current manifest. `status` is 'ok' when the source wrote at least
+ *  one feature, 'empty' when it completed cleanly with zero, and
+ *  'failed' when it raised — in which case `error` carries the
+ *  (truncated) exception type + message. */
+export interface SourceStatus {
+  name: string;
+  status: 'ok' | 'empty' | 'failed';
+  featureCount: number;
+  elapsedS: number;
+  error?: string;
 }
 
 /** Live (or static-fallback) commodity spot prices carried in the

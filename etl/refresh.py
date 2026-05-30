@@ -77,13 +77,31 @@ def configure_logging() -> None:
     )
 
 
+# Per-source status entry. Captured for the manifest so the web app can
+# show "this layer failed in the last ETL run because X" without anyone
+# needing to read Actions logs.
+@dataclass
+class SourceStatus:
+    name: str
+    status: str           # 'ok' | 'failed' | 'empty'
+    feature_count: int
+    elapsed_s: float
+    error: str | None = None
+
+
+# Mutable list collected by run_sources() and read by write_manifest().
+SOURCE_STATUSES: list[SourceStatus] = []
+
+
 def run_sources(only: set[str] | None, skip_set: set[str]) -> list[SourceResult]:
     """Run every enabled source module. A failure in one source is logged
     but doesn't abort the run — tippecanoe builds tiles from whatever
     succeeded so a single broken upstream doesn't blank the production
-    map. Failures are summarized at the end."""
+    map. Per-source status is recorded in SOURCE_STATUSES for the
+    manifest, which is how the web UI learns *why* a layer is empty."""
     results: list[SourceResult] = []
     failures: list[tuple[str, str]] = []
+    SOURCE_STATUSES.clear()
     for name in SOURCES:
         if only is not None and name not in only:
             continue
@@ -101,10 +119,24 @@ def run_sources(only: set[str] | None, skip_set: set[str]) -> list[SourceResult]
                 elapsed, result.feature_count, result.geojson_path.name,
             )
             results.append(result)
+            SOURCE_STATUSES.append(SourceStatus(
+                name=name,
+                status="ok" if result.feature_count > 0 else "empty",
+                feature_count=result.feature_count,
+                elapsed_s=round(elapsed, 1),
+            ))
         except Exception as exc:  # noqa: BLE001
             elapsed = time.monotonic() - t0
             log.error("FAILED after %.1fs — %s: %s", elapsed, type(exc).__name__, exc)
             failures.append((name, f"{type(exc).__name__}: {exc}"))
+            SOURCE_STATUSES.append(SourceStatus(
+                name=name,
+                status="failed",
+                feature_count=0,
+                elapsed_s=round(elapsed, 1),
+                # Truncate to keep the manifest under reasonable size.
+                error=f"{type(exc).__name__}: {str(exc)[:500]}",
+            ))
     if failures:
         logging.getLogger("etl").warning(
             "%d source(s) failed: %s",
@@ -232,6 +264,18 @@ def write_manifest(results: list[SourceResult], pmtiles_path: Path) -> Path:
         "counts": {r.layer_id: r.feature_count for r in results},
         "topHotspots": top_hotspots,
         "commodityPrices": commodity_prices,
+        # Per-source ETL outcome. Turns silent "layer renders empty"
+        # failures into a visible signal the UI can surface.
+        "sources": [
+            {
+                "name": s.name,
+                "status": s.status,
+                "featureCount": s.feature_count,
+                "elapsedS": s.elapsed_s,
+                **({"error": s.error} if s.error else {}),
+            }
+            for s in SOURCE_STATUSES
+        ],
     }
     path = OUT / "manifest.json"
     path.write_text(json.dumps(manifest, indent=2))

@@ -11,6 +11,7 @@ import {
   type LayerDef,
   type TopHotspot,
   type CommodityPrices,
+  type SourceStatus,
 } from '@subterra/shared';
 import { cn } from '@/lib/cn';
 import { fetchManifest } from '@/lib/manifest';
@@ -563,6 +564,10 @@ export function MapPage() {
           {Object.entries(LAYER_GROUPS).map(([group, label]) => {
             const layersInGroup = LAYERS.filter((l) => l.group === group);
             if (layersInGroup.length === 0) return null;
+            // Index per-source status by source name (matches tilesetLayer).
+            const sourceStatus = new Map(
+              (manifestQuery.data?.sources ?? []).map((s) => [s.name, s]),
+            );
             return (
               <Section key={group} title={label}>
                 {layersInGroup.map((l) => (
@@ -573,6 +578,7 @@ export function MapPage() {
                     color={l.color ?? '#94a3b8'}
                     visible={visibility[l.id] ?? false}
                     count={manifestQuery.data?.counts[l.tilesetLayer] ?? 0}
+                    status={sourceStatus.get(l.tilesetLayer)}
                     onToggle={() => toggle(l.id)}
                   />
                 ))}
@@ -750,6 +756,7 @@ function LayerRow({
   color,
   visible,
   count,
+  status,
   onToggle,
 }: {
   id: string;
@@ -757,14 +764,24 @@ function LayerRow({
   color: string;
   visible: boolean;
   count: number;
+  status?: SourceStatus;
   onToggle: () => void;
 }) {
+  // 'failed' or 'empty' from the last ETL run are both reasons a toggled
+  // layer paints nothing. Surfacing them inline turns a silent
+  // "nothing happens when I click this" into a one-glance diagnosis.
+  const isBroken = status?.status === 'failed' || status?.status === 'empty';
+  const brokenTitle = isBroken
+    ? `Last ETL run: ${status!.status}${status!.error ? ` — ${status!.error}` : ''}`
+    : undefined;
   return (
     <button
       type="button"
       onClick={onToggle}
       data-layer-id={id}
       data-visible={visible}
+      data-source-status={status?.status}
+      title={brokenTitle}
       className={cn(
         'flex w-full items-center justify-between gap-2 rounded-md border px-2.5 py-1.5 text-left font-mono text-xs transition',
         visible
@@ -784,7 +801,22 @@ function LayerRow({
         />
         <span className="truncate">{label}</span>
       </span>
-      <span className="font-mono text-[10px] text-text-muted">{count > 0 ? count.toLocaleString() : '·'}</span>
+      <span className="flex shrink-0 items-center gap-1 font-mono text-[10px] text-text-muted">
+        {isBroken && (
+          <span
+            aria-hidden
+            className={cn(
+              'rounded px-1 py-px text-[9px]',
+              status!.status === 'failed'
+                ? 'bg-red-500/20 text-red-300'
+                : 'bg-amber-500/20 text-amber-300',
+            )}
+          >
+            {status!.status === 'failed' ? 'ETL ✕' : 'empty'}
+          </span>
+        )}
+        <span>{count > 0 ? count.toLocaleString() : '·'}</span>
+      </span>
     </button>
   );
 }

@@ -128,6 +128,7 @@ app.get('/manifest', async (c) => {
     'counts',
     'topHotspots',
     'commodityPrices',
+    'sources',
   ]);
   manifest = Object.fromEntries(
     Object.entries(manifest).filter(([k]) => ALLOWED_KEYS.has(k)),

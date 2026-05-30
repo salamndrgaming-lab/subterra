@@ -57,15 +57,39 @@ def _download_zip(url: str, dest: Path, log: logging.Logger) -> None:
                     f.write(chunk)
 
 
-def _find_polygon_shapefile(extract_dir: Path) -> Path | None:
-    """ECOS bundles several shapefiles inside the zip. We want the
-    polygon set (typically named CRITHAB_POLY.shp). Falls back to any
-    .shp whose name contains 'poly' if the canonical name moves."""
-    canonical = list(extract_dir.rglob("CRITHAB_POLY.shp"))
-    if canonical:
-        return canonical[0]
-    candidates = [p for p in extract_dir.rglob("*.shp") if "poly" in p.name.lower()]
-    return candidates[0] if candidates else None
+def _find_polygon_shapefile(extract_dir: Path, log: logging.Logger) -> Path | None:
+    """ECOS bundles several shapefiles inside the zip — typically a
+    polygon set (areas) plus a line set (linear features). We want the
+    polygons. The canonical name has been CRITHAB_POLY.shp for years but
+    we don't hard-depend on that: we score every .shp by (a) name hints
+    and (b) whether the matching .shx / .dbf companions exist, picking
+    the highest-scoring polygon-looking candidate."""
+    shps = list(extract_dir.rglob("*.shp"))
+    log.info("zip contained %d shapefile(s): %s", len(shps), [p.name for p in shps])
+    if not shps:
+        return None
+
+    scored: list[tuple[int, Path]] = []
+    for p in shps:
+        name = p.name.lower()
+        score = 0
+        if "poly" in name:
+            score += 5
+        if "crithab" in name:
+            score += 2
+        if "line" in name or "lin" in name.replace("line", ""):
+            score -= 4  # explicitly avoid the line-feature companion
+        # Companions must exist for fiona to read it at all.
+        if not (p.with_suffix(".shx").exists() and p.with_suffix(".dbf").exists()):
+            score -= 10
+        scored.append((score, p))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    best = scored[0]
+    if best[0] < 0:
+        log.warning("no viable polygon shapefile found; best candidate scored %d", best[0])
+        return None
+    log.info("selected %s (score=%d)", best[1].name, best[0])
+    return best[1]
 
 
 def run(work_dir: Path) -> SourceResult:
@@ -87,7 +111,7 @@ def run(work_dir: Path) -> SourceResult:
         with zipfile.ZipFile(zip_path) as zf:
             zf.extractall(tmpdir / "extracted")
 
-        shp = _find_polygon_shapefile(tmpdir / "extracted")
+        shp = _find_polygon_shapefile(tmpdir / "extracted", log)
         if shp is None:
             raise RuntimeError(
                 "critical-habitat zip did not contain a polygon shapefile",
