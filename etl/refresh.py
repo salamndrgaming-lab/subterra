@@ -47,6 +47,13 @@ SOURCES = [
     "wells",            # Phase 2 — HIFLD wells via NASA NCCS mirror (~1M points)
     "geochemistry",  # Phase 9 — USGS NGDB stream-sediment/soil samples (~1.5M points)
     "geophysics",    # Phase 9 — USGS Earth MRI airborne survey footprints
+    # Stake-ability constraint layers — needed for legally-correct
+    # "open BLM land" identification and the eligibility check in the
+    # detail drawer. Each is a polygon source consumed by both the
+    # tile layer (visualization) and the features-db PIP path.
+    "withdrawals",     # BLM National Withdrawn Lands (mineral entry blockers)
+    "critical_habitat",# USFWS ESA designated critical habitat
+    "indian_lands",    # Census TIGER AIANNH — tribal lands (hard exclusion)
     # hotspots reads other sources' GeoJSON from work_dir to score
     # cell-binned prospecting opportunity — MUST stay last so the
     # inputs are guaranteed to exist when it runs.

@@ -170,6 +170,39 @@ export const LAYERS: readonly LayerDef[] = [
     color: '#2dd4bf', // teal — airborne survey footprints
   },
 
+  // Stake-ability constraints — eligibility blockers a clicked point can hit.
+  // Drawn under the cadastral group so they sit next to PLSS in the sidebar.
+  {
+    id: 'withdrawals',
+    label: 'Mineral Withdrawals (BLM)',
+    group: 'federal',
+    defaultVisible: false,
+    tilesetLayer: 'withdrawals',
+    geometry: 'polygon',
+    minZoom: 5,
+    color: '#ef4444', // red — "do not stake here" signal
+  },
+  {
+    id: 'critical-habitat',
+    label: 'USFWS Critical Habitat',
+    group: 'federal',
+    defaultVisible: false,
+    tilesetLayer: 'critical_habitat',
+    geometry: 'polygon',
+    minZoom: 5,
+    color: '#f97316', // orange — strong caution, not hard-block
+  },
+  {
+    id: 'indian-lands',
+    label: 'Tribal Lands (AIANNH)',
+    group: 'federal',
+    defaultVisible: false,
+    tilesetLayer: 'indian_lands',
+    geometry: 'polygon',
+    minZoom: 4,
+    color: '#a855f7', // purple — distinct from BLM/USFS/NPS agency colors
+  },
+
   // analysis — precomputed prospecting overlays. Score-driven, click for
   // cost/revenue heuristics. Painted in Map.tsx with a graduated fill
   // expression keyed off the `score` property.

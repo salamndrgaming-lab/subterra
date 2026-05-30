@@ -28,4 +28,11 @@ describe('shared registry', () => {
   it('CONUS state list has 48 states', () => {
     expect(CONUS_STATES.length).toBe(48);
   });
+
+  it('includes the Phase 9 stake-ability constraint layers', () => {
+    const ids = new Set(LAYERS.map((l) => l.id));
+    expect(ids.has('withdrawals')).toBe(true);
+    expect(ids.has('critical-habitat')).toBe(true);
+    expect(ids.has('indian-lands')).toBe(true);
+  });
 });

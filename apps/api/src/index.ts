@@ -223,6 +223,12 @@ app.delete('/aois/:id', NOT_YET('4'));
 app.get('/score', NOT_YET('5'));
 app.post('/aois/:id/nol-packet', NOT_YET('5'));
 
+// Phase 9 — stake-ability eligibility lookup. Full point-in-polygon
+// implementation arrives with the features.db build (Phase 3+). For now
+// this returns a deterministic 501 with the contract clients can code
+// against, so the web Eligibility card can render a placeholder state.
+app.get('/eligibility', NOT_YET('9'));
+
 // Phase 6 — alerts
 app.get('/alerts', NOT_YET('6'));
 app.post('/alerts', NOT_YET('6'));
