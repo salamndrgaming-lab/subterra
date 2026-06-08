@@ -16,6 +16,7 @@ import {
 import { cn } from '@/lib/cn';
 import { fetchManifest } from '@/lib/manifest';
 import { useLayerVisibility } from '@/stores/layers';
+import { useViewMode } from '@/stores/view-mode';
 import { geocode, type GeocodeHit } from '@/lib/geocode';
 import { pointInPolygon, polygonAreaAcres, ringBbox, type LngLat } from '@/lib/geo';
 import { columnImageUrl, fetchGeology, type GeologyAtPoint, type StratUnit } from '@/lib/macrostrat';
@@ -62,6 +63,39 @@ const FALLBACK_STYLE: maplibregl.StyleSpecification = {
   ],
 };
 
+/** Satellite basemap — Esri World Imagery raster tiles. Free for
+ *  low-volume / non-commercial use with the attribution surfaced via
+ *  the source `attribution`. When billing kicks in, swap the URL to a
+ *  keyed provider (MapTiler Satellite, etc.) — one constant change. */
+const IMAGERY_STYLE: maplibregl.StyleSpecification = {
+  version: 8,
+  sources: {
+    basemap: {
+      type: 'raster',
+      tiles: [
+        'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      ],
+      tileSize: 256,
+      attribution:
+        'Tiles © <a href="https://www.esri.com/" target="_blank" rel="noreferrer">Esri</a>, Maxar, Earthstar Geographics, and the GIS User Community',
+      maxzoom: 19,
+    },
+  },
+  layers: [
+    { id: 'bg', type: 'background', paint: { 'background-color': '#0a0c10' } },
+    { id: 'basemap', type: 'raster', source: 'basemap' },
+  ],
+};
+
+/** Mapzen Terrarium DEM hosted on AWS — free public bucket, no key,
+ *  no rate limit, well-attested for MapLibre `terrain` sources via the
+ *  `terrarium` encoding. Used by setTerrain when viewMode.terrain3d is on. */
+const DEM_TILES_URL =
+  'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png';
+const DEM_SOURCE_ID = 'dem';
+const TERRAIN_EXAGGERATION = 1.3;
+const TERRAIN_PITCH_DEG = 50;
+
 interface SelectedFeature {
   layerId: string;
   layerLabel: string;
@@ -90,6 +124,9 @@ interface SelectedFeature {
 export function MapPage() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
+  // Tracks the last-applied imagery state so the toggle effect can skip
+  // the no-op first run when the map's initial style already matches.
+  const lastImageryRef = useRef<boolean | undefined>(undefined);
   const [styleLoaded, setStyleLoaded] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
   const [selected, setSelected] = useState<SelectedFeature | null>(null);
@@ -103,6 +140,10 @@ export function MapPage() {
   const [optimalPick, setOptimalPick] = useState<OptimalPick | null>(null);
   const visibility = useLayerVisibility((s) => s.visibility);
   const toggle = useLayerVisibility((s) => s.toggle);
+  const terrain3d = useViewMode((s) => s.terrain3d);
+  const imagery = useViewMode((s) => s.imagery);
+  const setTerrain3d = useViewMode((s) => s.setTerrain3d);
+  const setImagery = useViewMode((s) => s.setImagery);
 
   const manifestQuery = useQuery({
     queryKey: ['manifest'],
@@ -198,8 +239,11 @@ export function MapPage() {
     };
   }, []);
 
-  // 2. When the manifest lands, add the pmtiles source + all registry layers,
-  //    plus click/hover handlers that open the detail drawer.
+  // 2. When the manifest lands, add the pmtiles source + all registry layers.
+  //    Idempotent: also re-runs on every `style.load` so the basemap-swap
+  //    effect (imagery toggle) gets its source+layers reinstalled after
+  //    setStyle wipes them. Click + hover handlers live in their own
+  //    effect (below) so re-install doesn't attach duplicates.
   useEffect(() => {
     const map = mapRef.current;
     const manifest = manifestQuery.data;
@@ -220,6 +264,11 @@ export function MapPage() {
         // main (def.id) layer; the outline is non-interactive.
         const specs = buildLayer(def, visibility[def.id] ?? def.defaultVisible);
         for (const spec of specs) map.addLayer(spec);
+        // Per-layer mouseenter/mouseleave handlers are re-attached on
+        // every install — maplibre drops layer-targeted listeners when
+        // setStyle wipes the layer. Safe to re-add because each install
+        // is gated on getLayer() above; we only get here when the layer
+        // was just (re)created, so there's no prior listener to dedupe.
         map.on('mouseenter', def.id, () => {
           map.getCanvas().style.cursor = 'pointer';
         });
@@ -227,85 +276,159 @@ export function MapPage() {
           map.getCanvas().style.cursor = '';
         });
       }
-
-      map.on('click', (e) => {
-        const liveLayerIds = LAYERS.map((l) => l.id).filter((id) => !!map.getLayer(id));
-        const hits = map.queryRenderedFeatures(e.point, { layers: liveLayerIds });
-
-        // Stake-ability check works whether or not a specific feature was
-        // clicked — we collect overlapping active claims at the click pixel.
-        const claimHits = map.getLayer('mining-claims')
-          ? map.queryRenderedFeatures(e.point, { layers: ['mining-claims'] })
-          : [];
-
-        // Surface managing agency — drives the cost panel's restricted
-        // (NPS/BIA) vs stakeable (BLM/USFS) branching. Read from
-        // federal-lands first, fall back to open-blm-land (same source).
-        const federalHits =
-          (map.getLayer('federal-lands')
-            ? map.queryRenderedFeatures(e.point, { layers: ['federal-lands'] })
-            : []) ||
-          (map.getLayer('open-blm-land')
-            ? map.queryRenderedFeatures(e.point, { layers: ['open-blm-land'] })
-            : []);
-        const surfaceAgency =
-          federalHits.length > 0
-            ? (federalHits[0]!.properties?.agency as string | undefined)
-            : undefined;
-        const f = hits[0];
-        const selfSerial = f?.layer.id === 'mining-claims' ? f.properties?.serial : undefined;
-        const seen = new Set<string>();
-        const overlappingClaims = claimHits
-          .filter((h) => {
-            const s = String(h.properties?.serial ?? '');
-            if (!s) return false;
-            if (selfSerial && s === String(selfSerial)) return false;
-            if (seen.has(s)) return false;
-            seen.add(s);
-            return true;
-          })
-          .slice(0, 8)
-          .map((h) => ({
-            serial: String(h.properties?.serial ?? ''),
-            claimant: String(h.properties?.claimant ?? ''),
-            acreage: String(h.properties?.acreage ?? ''),
-          }));
-
-        // If a specific feature was clicked, use its centroid + properties.
-        // Otherwise this is an empty-map click — still open the drawer at
-        // that lat/lng so the user can see the subsurface geology there.
-        if (f) {
-          const def = LAYERS.find((l) => l.id === f.layer.id);
-          const point =
-            f.geometry.type === 'Point'
-              ? (f.geometry.coordinates as [number, number])
-              : ([e.lngLat.lng, e.lngLat.lat] as [number, number]);
-          setSelected({
-            layerId: f.layer.id,
-            layerLabel: def?.label ?? f.layer.id,
-            properties: (f.properties ?? {}) as Record<string, unknown>,
-            lng: point[0],
-            lat: point[1],
-            overlappingClaims,
-            surfaceAgency,
-          });
-        } else {
-          setSelected({
-            layerId: '__point__',
-            layerLabel: 'Point inspection',
-            properties: {},
-            lng: e.lngLat.lng,
-            lat: e.lngLat.lat,
-            overlappingClaims,
-            surfaceAgency,
-          });
-        }
-      });
     };
     if (map.isStyleLoaded()) install();
     else map.once('load', install);
+    // Reinstall after every style swap. `style.load` fires whenever
+    // setStyle finishes loading — that's our re-install signal.
+    map.on('style.load', install);
+    return () => {
+      map.off('style.load', install);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- visibility is synced by a separate effect below; including it here would cause unnecessary re-installs of every layer on every toggle.
   }, [manifestQuery.data]);
+
+  // 2b. Click handler — attached once at mount (no layer target, so it
+  //     survives setStyle). Queries inside the handler against whatever
+  //     layers currently exist.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const onClick = (e: maplibregl.MapMouseEvent): void => {
+      const liveLayerIds = LAYERS.map((l) => l.id).filter((id) => !!map.getLayer(id));
+      const hits = map.queryRenderedFeatures(e.point, { layers: liveLayerIds });
+
+      // Stake-ability check works whether or not a specific feature was
+      // clicked — we collect overlapping active claims at the click pixel.
+      const claimHits = map.getLayer('mining-claims')
+        ? map.queryRenderedFeatures(e.point, { layers: ['mining-claims'] })
+        : [];
+
+      // Surface managing agency — drives the cost panel's restricted
+      // (NPS/BIA) vs stakeable (BLM/USFS) branching. Read from
+      // federal-lands first, fall back to open-blm-land (same source).
+      const federalHits =
+        (map.getLayer('federal-lands')
+          ? map.queryRenderedFeatures(e.point, { layers: ['federal-lands'] })
+          : []) ||
+        (map.getLayer('open-blm-land')
+          ? map.queryRenderedFeatures(e.point, { layers: ['open-blm-land'] })
+          : []);
+      const surfaceAgency =
+        federalHits.length > 0
+          ? (federalHits[0]!.properties?.agency as string | undefined)
+          : undefined;
+      const f = hits[0];
+      const selfSerial = f?.layer.id === 'mining-claims' ? f.properties?.serial : undefined;
+      const seen = new Set<string>();
+      const overlappingClaims = claimHits
+        .filter((h) => {
+          const s = String(h.properties?.serial ?? '');
+          if (!s) return false;
+          if (selfSerial && s === String(selfSerial)) return false;
+          if (seen.has(s)) return false;
+          seen.add(s);
+          return true;
+        })
+        .slice(0, 8)
+        .map((h) => ({
+          serial: String(h.properties?.serial ?? ''),
+          claimant: String(h.properties?.claimant ?? ''),
+          acreage: String(h.properties?.acreage ?? ''),
+        }));
+
+      // If a specific feature was clicked, use its centroid + properties.
+      // Otherwise this is an empty-map click — still open the drawer at
+      // that lat/lng so the user can see the subsurface geology there.
+      if (f) {
+        const def = LAYERS.find((l) => l.id === f.layer.id);
+        const point =
+          f.geometry.type === 'Point'
+            ? (f.geometry.coordinates as [number, number])
+            : ([e.lngLat.lng, e.lngLat.lat] as [number, number]);
+        setSelected({
+          layerId: f.layer.id,
+          layerLabel: def?.label ?? f.layer.id,
+          properties: (f.properties ?? {}) as Record<string, unknown>,
+          lng: point[0],
+          lat: point[1],
+          overlappingClaims,
+          surfaceAgency,
+        });
+      } else {
+        setSelected({
+          layerId: '__point__',
+          layerLabel: 'Point inspection',
+          properties: {},
+          lng: e.lngLat.lng,
+          lat: e.lngLat.lat,
+          overlappingClaims,
+          surfaceAgency,
+        });
+      }
+    };
+    map.on('click', onClick);
+    return () => {
+      map.off('click', onClick);
+    };
+  }, []);
+
+  // 2c. Imagery basemap toggle — setStyle swaps the basemap. The install
+  //     effect's `style.load` listener re-adds the PMTiles source + layers
+  //     once the new style finishes loading. Skips the no-op first render
+  //     when the desired state already matches the map's initial style.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const prev = lastImageryRef.current;
+    lastImageryRef.current = imagery;
+    if (prev === undefined && imagery === false) return; // already there
+    map.setStyle(imagery ? IMAGERY_STYLE : PRIMARY_STYLE);
+  }, [imagery]);
+
+  // 2d. 3D terrain toggle — add a DEM source + setTerrain, ease pitch.
+  //     Re-applied on every style.load so terrain survives basemap swaps.
+  //     `prefers-reduced-motion: reduce` collapses the easeTo into an
+  //     instant setPitch so we don't motion-sick anyone.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const reduceMotion =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    const apply = (): void => {
+      if (terrain3d) {
+        if (!map.getSource(DEM_SOURCE_ID)) {
+          map.addSource(DEM_SOURCE_ID, {
+            type: 'raster-dem',
+            tiles: [DEM_TILES_URL],
+            tileSize: 256,
+            encoding: 'terrarium',
+            maxzoom: 15,
+            attribution:
+              'DEM: <a href="https://github.com/tilezen/joerd" target="_blank" rel="noreferrer">Mapzen Terrarium</a> via AWS',
+          });
+        }
+        map.setTerrain({ source: DEM_SOURCE_ID, exaggeration: TERRAIN_EXAGGERATION });
+        if (reduceMotion) map.setPitch(TERRAIN_PITCH_DEG);
+        else map.easeTo({ pitch: TERRAIN_PITCH_DEG, duration: 600 });
+      } else {
+        // setTerrain(null) clears the DEM-driven elevation effect. Leave
+        // the source in place — cheap, and any re-toggle skips re-add.
+        map.setTerrain(null);
+        if (reduceMotion) map.setPitch(0);
+        else map.easeTo({ pitch: 0, duration: 600 });
+      }
+    };
+    if (map.isStyleLoaded()) apply();
+    else map.once('load', apply);
+    map.on('style.load', apply);
+    return () => {
+      map.off('style.load', apply);
+    };
+  }, [terrain3d]);
 
   // 3. Sync visibility — flip `layout.visibility` whenever the user toggles.
   useEffect(() => {
@@ -682,6 +805,12 @@ export function MapPage() {
           </div>
         )}
         <Legend mrdsVisible={visibility['mrds'] ?? true} />
+        <ViewModeControls
+          terrain3d={terrain3d}
+          imagery={imagery}
+          onToggleTerrain={() => setTerrain3d(!terrain3d)}
+          onToggleImagery={() => setImagery(!imagery)}
+        />
         <AoiControls
           mode={drawMode}
           vertexCount={aoiVertices.length}
@@ -845,6 +974,75 @@ function Logo() {
       <path d="M11 2 L20 18 L2 18 Z" stroke="#f59e0b" strokeWidth="1.5" />
       <circle cx="11" cy="11" r="1.2" fill="#f59e0b" />
     </svg>
+  );
+}
+
+// ─── View mode toggles ────────────────────────────────────────────────
+
+/** Floating top-left control group: 3D terrain + satellite imagery
+ *  toggles. Independent toggles — either, both, or neither. Stored in
+ *  the persisted view-mode Zustand store so the choice survives reloads. */
+function ViewModeControls({
+  terrain3d,
+  imagery,
+  onToggleTerrain,
+  onToggleImagery,
+}: {
+  terrain3d: boolean;
+  imagery: boolean;
+  onToggleTerrain: () => void;
+  onToggleImagery: () => void;
+}) {
+  return (
+    <div className="absolute left-3 top-3 z-10 flex gap-1 rounded-md border border-border bg-bg-surface/90 p-1 font-mono text-[11px] shadow-lg backdrop-blur">
+      <ViewModeButton
+        active={imagery}
+        onClick={onToggleImagery}
+        label="Imagery"
+        title={imagery ? 'Switch to dark vector basemap' : 'Switch to satellite imagery'}
+        testId="toggle-imagery"
+      />
+      <ViewModeButton
+        active={terrain3d}
+        onClick={onToggleTerrain}
+        label="3D"
+        title={terrain3d ? 'Return to flat top-down view' : 'Enable 3D terrain'}
+        testId="toggle-terrain3d"
+      />
+    </div>
+  );
+}
+
+function ViewModeButton({
+  active,
+  onClick,
+  label,
+  title,
+  testId,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+  title: string;
+  testId: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      aria-pressed={active}
+      data-testid={testId}
+      data-active={active}
+      className={cn(
+        'rounded px-2.5 py-1 transition',
+        active
+          ? 'bg-accent/20 text-accent shadow-inner ring-1 ring-accent/40'
+          : 'text-text-muted hover:bg-bg-panel hover:text-text',
+      )}
+    >
+      {label}
+    </button>
   );
 }
 
