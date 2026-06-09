@@ -15,6 +15,7 @@ import {
 } from '@subterra/shared';
 import { cn } from '@/lib/cn';
 import { fetchManifest } from '@/lib/manifest';
+import { checkPmtilesCached, precachePmtiles } from '@/lib/sw';
 import { useLayerVisibility } from '@/stores/layers';
 import { useViewMode } from '@/stores/view-mode';
 import { geocode, type GeocodeHit } from '@/lib/geocode';
@@ -133,6 +134,13 @@ export function MapPage() {
   const [commodityFilter, setCommodityFilter] = useState<Set<string>>(new Set());
   const [drawMode, setDrawMode] = useState<'off' | 'drawing' | 'done'>('off');
   const [aoiVertices, setAoiVertices] = useState<LngLat[]>([]);
+  /** Offline cache state: 'unknown' before the SW reports; 'cached' if the
+   *  PMTiles file is in the SW cache; 'uncached' otherwise. 'saving'
+   *  while a Save-for-offline download is in flight. */
+  const [offlineState, setOfflineState] = useState<'unknown' | 'cached' | 'uncached' | 'saving'>(
+    'unknown',
+  );
+  const [offlineError, setOfflineError] = useState<string | null>(null);
   /** "Find Optimal Acre" wizard state. `wizardOpen` controls the modal;
    *  `optimalPick` holds the chosen pick so the map can paint the
    *  recommended 100-acre square + open the explainer drawer. */
@@ -430,6 +438,49 @@ export function MapPage() {
     };
   }, [terrain3d]);
 
+  // 2e. Poll the service worker for offline-cache status on mount. The
+  //     SW activates async; if it isn't ready on first call we retry
+  //     once after a beat. Re-checks when the manifest version changes
+  //     so a fresh ETL refresh demotes "cached" back to "uncached"
+  //     (the old version's URL no longer matches the new ?v=N).
+  useEffect(() => {
+    const manifest = manifestQuery.data;
+    if (!manifest) return;
+    let cancelled = false;
+    const check = async (): Promise<void> => {
+      const status = await checkPmtilesCached();
+      if (cancelled) return;
+      if (status.cached && status.url === manifest.pmtilesUrl) {
+        setOfflineState('cached');
+      } else {
+        setOfflineState('uncached');
+      }
+    };
+    void check();
+    // Re-check after a short delay — SW controller may be null on the
+    // very first page load (registration is async + the page wasn't
+    // controlled when this load started).
+    const t = setTimeout(() => void check(), 1500);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [manifestQuery.data]);
+
+  const handleSaveForOffline = async (): Promise<void> => {
+    const url = manifestQuery.data?.pmtilesUrl;
+    if (!url) return;
+    setOfflineError(null);
+    setOfflineState('saving');
+    const result = await precachePmtiles(url);
+    if (result.ok) {
+      setOfflineState('cached');
+    } else {
+      setOfflineState('uncached');
+      setOfflineError(result.error ?? 'precache failed');
+    }
+  };
+
   // 3. Sync visibility — flip `layout.visibility` whenever the user toggles.
   useEffect(() => {
     const map = mapRef.current;
@@ -668,6 +719,13 @@ export function MapPage() {
             <StatusPill
               label={claimsLoaded ? `${manifestQuery.data.counts.mining_claims} claims` : '0 claims'}
               ok={claimsLoaded}
+            />
+          )}
+          {manifestQuery.data && (
+            <OfflineControl
+              state={offlineState}
+              error={offlineError}
+              onSave={handleSaveForOffline}
             />
           )}
         </div>
@@ -964,6 +1022,64 @@ function StatusPill({ label, ok }: { label: string; ok: boolean }) {
         className={cn('h-1.5 w-1.5 rounded-full', ok ? 'bg-success' : 'bg-text-muted animate-pulse')}
       />
       {label}
+    </span>
+  );
+}
+
+/** Compact offline-cache widget for the header status row. Three visible
+ *  states:
+ *    - 'cached'   → green pill "offline ready", no button
+ *    - 'saving'   → amber pill "downloading…" with a spinner
+ *    - 'uncached' / 'unknown' → grey pill + "Save tiles for offline" button
+ *  Errors surface as a small red tooltip-style line below the row. */
+function OfflineControl({
+  state,
+  error,
+  onSave,
+}: {
+  state: 'unknown' | 'cached' | 'uncached' | 'saving';
+  error: string | null;
+  onSave: () => void | Promise<void>;
+}) {
+  if (state === 'cached') {
+    return (
+      <span
+        data-testid="pill-offline"
+        data-state="cached"
+        className="flex items-center gap-1.5 rounded-md border border-success/30 bg-bg-panel px-2 py-1 text-success"
+      >
+        <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-success" />
+        offline ready
+      </span>
+    );
+  }
+  if (state === 'saving') {
+    return (
+      <span
+        data-testid="pill-offline"
+        data-state="saving"
+        className="flex items-center gap-1.5 rounded-md border border-amber-500/40 bg-bg-panel px-2 py-1 text-amber-300"
+      >
+        <span aria-hidden className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" />
+        downloading tiles…
+      </span>
+    );
+  }
+  return (
+    <span className="flex items-center gap-1.5">
+      <button
+        type="button"
+        onClick={() => void onSave()}
+        title={error ?? 'Download tiles so the map keeps working offline'}
+        data-testid="btn-save-offline"
+        data-state={state}
+        className={cn(
+          'rounded-md border bg-bg-panel px-2 py-1 transition hover:border-accent hover:text-accent',
+          error ? 'border-red-500/40 text-red-300' : 'border-border text-text-muted',
+        )}
+      >
+        {error ? 'retry offline save' : 'save tiles for offline'}
+      </button>
     </span>
   );
 }

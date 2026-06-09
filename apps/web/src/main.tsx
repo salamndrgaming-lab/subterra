@@ -6,6 +6,7 @@ import { BrowserRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import { registerPmtilesProtocol } from './lib/pmtiles';
+import { registerSW } from './lib/sw';
 import { MapPage } from './routes/Map';
 import { LandingPage } from './routes/Landing';
 import { NotFoundPage } from './routes/NotFound';
@@ -13,6 +14,9 @@ import { NotFoundPage } from './routes/NotFound';
 // One-time MapLibre <-> PMTiles protocol registration. Must happen
 // before any <Map> component instantiates.
 registerPmtilesProtocol();
+
+// Register the offline-cache service worker (no-ops in dev).
+registerSW();
 
 const queryClient = new QueryClient({
   defaultOptions: {
