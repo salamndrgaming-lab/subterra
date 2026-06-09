@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Link } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   COMMODITIES,
   COMMODITY_CATEGORY_COLORS,
@@ -16,6 +16,7 @@ import {
 import { cn } from '@/lib/cn';
 import { CrossSection, type CrossSectionMrds } from '@/components/CrossSection';
 import { fetchManifest } from '@/lib/manifest';
+import { fetchMe, signOut } from '@/lib/auth';
 import { checkPmtilesCached, precachePmtiles } from '@/lib/sw';
 import { useLayerVisibility } from '@/stores/layers';
 import { useViewMode } from '@/stores/view-mode';
@@ -902,6 +903,8 @@ export function MapPage() {
         {manifestQuery.data?.commodityPrices && (
           <PriceTicker prices={manifestQuery.data.commodityPrices} />
         )}
+
+        <AuthBadge />
       </header>
 
       <aside className="flex h-full min-h-0 flex-col border-r border-border bg-bg-surface">
@@ -1327,6 +1330,69 @@ function Logo() {
       <path d="M11 2 L20 18 L2 18 Z" stroke="#f59e0b" strokeWidth="1.5" />
       <circle cx="11" cy="11" r="1.2" fill="#f59e0b" />
     </svg>
+  );
+}
+
+/** Header auth badge — three states:
+ *    - loading      → muted dot, no text
+ *    - signed out   → "Sign in" link to /signin
+ *    - signed in    → email + "sign out" button
+ *
+ *  Uses react-query so the badge auto-updates when sign-in completes
+ *  (the redirect after /auth/verify lands back on /map and the query
+ *  re-runs on mount). Refetches on window focus so a sign-out in
+ *  another tab takes effect when the user comes back. */
+function AuthBadge() {
+  const queryClient = useQueryClient();
+  const meQuery = useQuery({
+    queryKey: ['auth', 'me'],
+    queryFn: fetchMe,
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
+    retry: 0,
+  });
+  if (meQuery.isLoading) {
+    return (
+      <span
+        aria-hidden
+        className="ml-2 flex items-center gap-1.5 font-mono text-[10px] text-text-muted"
+      >
+        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-text-muted" />
+        loading…
+      </span>
+    );
+  }
+  if (!meQuery.data) {
+    return (
+      <a
+        href="/signin"
+        data-testid="auth-signin-link"
+        className="ml-2 rounded-md border border-border bg-bg-panel px-2 py-1 font-mono text-[10px] text-text-muted hover:border-accent hover:text-accent"
+      >
+        Sign in
+      </a>
+    );
+  }
+  return (
+    <span
+      data-testid="auth-signed-in"
+      className="ml-2 flex items-center gap-2 font-mono text-[10px]"
+    >
+      <span title={meQuery.data.email} className="max-w-[180px] truncate text-text">
+        {meQuery.data.email}
+      </span>
+      <button
+        type="button"
+        onClick={async () => {
+          await signOut();
+          await queryClient.invalidateQueries({ queryKey: ['auth', 'me'] });
+        }}
+        data-testid="auth-signout"
+        className="rounded-md border border-border bg-bg-panel px-2 py-1 text-text-muted hover:text-text"
+      >
+        sign out
+      </button>
+    </span>
   );
 }
 
