@@ -14,6 +14,7 @@ import {
   type SourceStatus,
 } from '@subterra/shared';
 import { cn } from '@/lib/cn';
+import { CrossSection, type CrossSectionMrds } from '@/components/CrossSection';
 import { fetchManifest } from '@/lib/manifest';
 import { checkPmtilesCached, precachePmtiles } from '@/lib/sw';
 import { useLayerVisibility } from '@/stores/layers';
@@ -146,6 +147,17 @@ export function MapPage() {
    *  recommended 100-acre square + open the explainer drawer. */
   const [wizardOpen, setWizardOpen] = useState(false);
   const [optimalPick, setOptimalPick] = useState<OptimalPick | null>(null);
+  /** Cross-section picker state. 'off' = inactive; 'pickingA'/'pickingB'
+   *  = waiting for the next click; 'open' = modal visible with chosen
+   *  AB line + MRDS hits projected onto it. */
+  const [csMode, setCsMode] = useState<'off' | 'pickingA' | 'pickingB' | 'open'>('off');
+  const [csA, setCsA] = useState<LngLat | null>(null);
+  const [csB, setCsB] = useState<LngLat | null>(null);
+  const [csMrds, setCsMrds] = useState<CrossSectionMrds[]>([]);
+  /** Mirror csMode + csA into refs so the mount-time click handler can
+   *  read the latest value without re-binding. */
+  const csModeRef = useRef<'off' | 'pickingA' | 'pickingB' | 'open'>('off');
+  const csARef = useRef<LngLat | null>(null);
   const visibility = useLayerVisibility((s) => s.visibility);
   const toggle = useLayerVisibility((s) => s.toggle);
   const terrain3d = useViewMode((s) => s.terrain3d);
@@ -303,6 +315,61 @@ export function MapPage() {
     const map = mapRef.current;
     if (!map) return;
     const onClick = (e: maplibregl.MapMouseEvent): void => {
+      // Cross-section picker intercepts feature clicks while picking
+      // points A and B. ESC clears the mode via the keydown effect below.
+      const csCur = csModeRef.current;
+      if (csCur === 'pickingA') {
+        const p: LngLat = [e.lngLat.lng, e.lngLat.lat];
+        csARef.current = p;
+        setCsA(p);
+        setCsMode('pickingB');
+        csModeRef.current = 'pickingB';
+        return;
+      }
+      if (csCur === 'pickingB') {
+        const aPt = csARef.current;
+        if (!aPt) {
+          setCsMode('off');
+          csModeRef.current = 'off';
+          return;
+        }
+        const bPt: LngLat = [e.lngLat.lng, e.lngLat.lat];
+        // Reject A==B (or near it — same pixel) so the SVG isn't degenerate.
+        if (Math.abs(bPt[0] - aPt[0]) < 1e-6 && Math.abs(bPt[1] - aPt[1]) < 1e-6) return;
+        setCsB(bPt);
+        // Sample MRDS within a generous queryRenderedFeatures rect over
+        // the bbox of AB (buffer-padded). projectOntoLine in the modal
+        // does the final distance-from-line filtering.
+        const padDeg = 0.05; // ~5 km at mid-latitudes — slop for the buffer
+        const bbox: [maplibregl.PointLike, maplibregl.PointLike] = [
+          map.project([Math.min(aPt[0], bPt[0]) - padDeg, Math.min(aPt[1], bPt[1]) - padDeg]),
+          map.project([Math.max(aPt[0], bPt[0]) + padDeg, Math.max(aPt[1], bPt[1]) + padDeg]),
+        ];
+        const mrdsHits = map.getLayer('mrds')
+          ? map.queryRenderedFeatures(bbox, { layers: ['mrds'] })
+          : [];
+        const seen = new Set<string>();
+        const collected: CrossSectionMrds[] = [];
+        for (const h of mrdsHits) {
+          const attrs = (h.properties ?? {}) as Record<string, unknown>;
+          const key = String(attrs.dep_id ?? attrs.id ?? `${h.geometry.type}-${collected.length}`);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          if (h.geometry.type !== 'Point') continue;
+          const coords = h.geometry.coordinates as [number, number];
+          collected.push({
+            lng: coords[0],
+            lat: coords[1],
+            name: String(attrs.name ?? attrs.site_name ?? '') || undefined,
+            commodity: String(attrs.commodity ?? '') || undefined,
+          });
+        }
+        setCsMrds(collected);
+        setCsMode('open');
+        csModeRef.current = 'open';
+        return;
+      }
+
       const liveLayerIds = LAYERS.map((l) => l.id).filter((id) => !!map.getLayer(id));
       const hits = map.queryRenderedFeatures(e.point, { layers: liveLayerIds });
 
@@ -466,6 +533,107 @@ export function MapPage() {
       clearTimeout(t);
     };
   }, [manifestQuery.data]);
+
+  // Cross-section: ESC cancels at any non-'off' state; sync csMode ref
+  // for the click handler. The cursor effect uses the mode too — same
+  // override pattern as drawMode below.
+  useEffect(() => {
+    csModeRef.current = csMode;
+  }, [csMode]);
+
+  useEffect(() => {
+    if (csMode === 'off') return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') {
+        setCsMode('off');
+        csModeRef.current = 'off';
+        setCsA(null);
+        csARef.current = null;
+        setCsB(null);
+        setCsMrds([]);
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [csMode]);
+
+  // Temp AB-line map layer for visual feedback while picking + after
+  // capture. Uses a dedicated source ID; rebuilt on each csA/csB change
+  // and torn down when csMode returns to 'off'.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const SRC = 'cs-line';
+    const apply = (): void => {
+      const removeAll = (): void => {
+        if (map.getLayer(`${SRC}-line`)) map.removeLayer(`${SRC}-line`);
+        if (map.getLayer(`${SRC}-endpoints`)) map.removeLayer(`${SRC}-endpoints`);
+        if (map.getSource(SRC)) map.removeSource(SRC);
+      };
+      if (csMode === 'off' || !csA) {
+        removeAll();
+        return;
+      }
+      const lineCoords: LngLat[] = csB ? [csA, csB] : [csA, csA];
+      const data: GeoJSON.FeatureCollection = {
+        type: 'FeatureCollection',
+        features: [
+          {
+            type: 'Feature',
+            geometry: { type: 'LineString', coordinates: lineCoords },
+            properties: { kind: 'line' },
+          },
+          ...[csA, csB].filter((p): p is LngLat => p != null).map((p) => ({
+            type: 'Feature' as const,
+            geometry: { type: 'Point' as const, coordinates: p },
+            properties: { kind: 'endpoint' },
+          })),
+        ],
+      };
+      const existing = map.getSource(SRC) as maplibregl.GeoJSONSource | undefined;
+      if (existing) {
+        existing.setData(data);
+      } else {
+        map.addSource(SRC, { type: 'geojson', data });
+        map.addLayer({
+          id: `${SRC}-line`,
+          source: SRC,
+          type: 'line',
+          filter: ['==', ['get', 'kind'], 'line'],
+          paint: {
+            'line-color': '#f59e0b',
+            'line-width': 2.4,
+            'line-dasharray': [2, 1.5],
+          },
+        });
+        map.addLayer({
+          id: `${SRC}-endpoints`,
+          source: SRC,
+          type: 'circle',
+          filter: ['==', ['get', 'kind'], 'endpoint'],
+          paint: {
+            'circle-radius': 5,
+            'circle-color': '#f59e0b',
+            'circle-stroke-color': '#0a0c10',
+            'circle-stroke-width': 1.5,
+          },
+        });
+      }
+    };
+    if (map.isStyleLoaded()) apply();
+    else map.once('load', apply);
+  }, [csMode, csA, csB]);
+
+  // Cursor cue while picking — crosshair through point-B click.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (csMode === 'pickingA' || csMode === 'pickingB') {
+      map.getCanvas().style.cursor = 'crosshair';
+    } else if (drawMode !== 'drawing') {
+      map.getCanvas().style.cursor = '';
+    }
+  }, [csMode, drawMode]);
 
   const handleSaveForOffline = async (): Promise<void> => {
     const url = manifestQuery.data?.pmtilesUrl;
@@ -869,6 +1037,25 @@ export function MapPage() {
           onToggleTerrain={() => setTerrain3d(!terrain3d)}
           onToggleImagery={() => setImagery(!imagery)}
         />
+        <CrossSectionControls
+          mode={csMode}
+          onStart={() => {
+            setCsA(null);
+            csARef.current = null;
+            setCsB(null);
+            setCsMrds([]);
+            setCsMode('pickingA');
+            csModeRef.current = 'pickingA';
+          }}
+          onCancel={() => {
+            setCsMode('off');
+            csModeRef.current = 'off';
+            setCsA(null);
+            csARef.current = null;
+            setCsB(null);
+            setCsMrds([]);
+          }}
+        />
         <AoiControls
           mode={drawMode}
           vertexCount={aoiVertices.length}
@@ -916,6 +1103,21 @@ export function MapPage() {
                   speed: 1.6,
                 });
               }
+            }}
+          />
+        )}
+        {csMode === 'open' && csA && csB && (
+          <CrossSection
+            a={csA}
+            b={csB}
+            mrds={csMrds}
+            onClose={() => {
+              setCsMode('off');
+              csModeRef.current = 'off';
+              setCsA(null);
+              csARef.current = null;
+              setCsB(null);
+              setCsMrds([]);
             }}
           />
         )}
@@ -1159,6 +1361,53 @@ function ViewModeButton({
     >
       {label}
     </button>
+  );
+}
+
+/** Floating top-left toolbar — Cross-section picker.
+ *
+ *  - 'off'      → idle button "Cross-section"
+ *  - 'pickingA' → highlighted button + banner "Click point A"
+ *  - 'pickingB' → highlighted button + banner "Click point B"
+ *  - 'open'     → idle button (modal handles its own state)
+ *
+ *  Sits just below ViewModeControls (which is at top:3). */
+function CrossSectionControls({
+  mode,
+  onStart,
+  onCancel,
+}: {
+  mode: 'off' | 'pickingA' | 'pickingB' | 'open';
+  onStart: () => void;
+  onCancel: () => void;
+}) {
+  const picking = mode === 'pickingA' || mode === 'pickingB';
+  return (
+    <div className="absolute left-3 top-14 z-10 flex items-center gap-2">
+      <button
+        type="button"
+        onClick={picking ? onCancel : onStart}
+        data-testid="toggle-cross-section"
+        data-mode={mode}
+        title={picking ? 'Cancel cross-section picking' : 'Click two points on the map to draw a cross-section'}
+        className={cn(
+          'rounded-md border bg-bg-surface/90 px-2.5 py-1 font-mono text-[11px] shadow-lg backdrop-blur transition',
+          picking
+            ? 'border-accent/60 bg-accent/15 text-accent ring-1 ring-accent/40'
+            : 'border-border text-text-muted hover:border-accent hover:text-accent',
+        )}
+      >
+        {picking ? 'Cancel section' : 'Cross-section'}
+      </button>
+      {picking && (
+        <span
+          data-testid="cs-picker-banner"
+          className="rounded-md border border-accent/40 bg-accent/10 px-2 py-1 font-mono text-[11px] text-accent shadow-lg backdrop-blur"
+        >
+          {mode === 'pickingA' ? 'Click point A' : 'Click point B (ESC to cancel)'}
+        </span>
+      )}
+    </div>
   );
 }
 
