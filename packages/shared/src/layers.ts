@@ -88,6 +88,21 @@ export const LAYERS: readonly LayerDef[] = [
     minZoom: 6,
     color: '#a3e635', // lime — the staking target
   },
+  {
+    id: 'water-rights',
+    label: 'Water Rights (NV, UT, AZ)',
+    group: 'infrastructure',
+    // Off by default — the layer is dense (tens of thousands of points
+    // per state) and answers a specific "can I get water?" question
+    // rather than a baseline-map need.
+    defaultVisible: false,
+    tilesetLayer: 'water_rights',
+    geometry: 'point',
+    // Only meaningful at basin / sub-basin zoom; at continental zoom
+    // the points coalesce into noise.
+    minZoom: 6,
+    color: '#0ea5e9', // sky blue — water
+  },
 
   // oilgas
   {

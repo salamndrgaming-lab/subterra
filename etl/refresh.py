@@ -54,6 +54,7 @@ SOURCES = [
     "withdrawals",     # BLM National Withdrawn Lands (mineral entry blockers)
     "critical_habitat",# USFWS ESA designated critical habitat
     "indian_lands",    # Census TIGER AIANNH — tribal lands (hard exclusion)
+    "water_rights",    # Per-state water rights (NV + UT + AZ — first cluster)
     # hotspots reads other sources' GeoJSON from work_dir to score
     # cell-binned prospecting opportunity — MUST stay last so the
     # inputs are guaranteed to exist when it runs.
