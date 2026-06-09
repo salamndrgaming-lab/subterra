@@ -142,6 +142,7 @@ export function MapPage() {
     'unknown',
   );
   const [offlineError, setOfflineError] = useState<string | null>(null);
+  const [layerSearch, setLayerSearch] = useState('');
   /** "Find Optimal Acre" wizard state. `wizardOpen` controls the modal;
    *  `optimalPick` holds the chosen pick so the map can paint the
    *  recommended 100-acre square + open the explainer drawer. */
@@ -905,13 +906,36 @@ export function MapPage() {
 
       <aside className="flex h-full min-h-0 flex-col border-r border-border bg-bg-surface">
         <div className="border-b border-border px-4 py-3">
-          <div className="font-mono text-[10px] uppercase tracking-wider text-text-muted">Layers</div>
+          <div className="flex items-center justify-between">
+            <div className="font-mono text-[10px] uppercase tracking-wider text-text-muted">Layers</div>
+            {manifestQuery.data?.publishedAt && (
+              <span
+                data-testid="layers-freshness"
+                title={`Tileset v${manifestQuery.data.version} published ${manifestQuery.data.publishedAt}`}
+                className="font-mono text-[9px] text-text-muted"
+              >
+                refreshed {humanizeAgo(manifestQuery.data.publishedAt)}
+              </span>
+            )}
+          </div>
           <div className="mt-1 font-mono text-sm text-text">Map controls</div>
+          <input
+            type="search"
+            value={layerSearch}
+            onChange={(e) => setLayerSearch(e.target.value)}
+            placeholder="Search layers…"
+            data-testid="layer-search"
+            className="mt-2 w-full rounded-md border border-border bg-bg-panel px-2 py-1 font-mono text-[11px] text-text placeholder:text-text-muted focus:border-accent focus:outline-none"
+          />
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
           {Object.entries(LAYER_GROUPS).map(([group, label]) => {
-            const layersInGroup = LAYERS.filter((l) => l.group === group);
+            const layersInGroup = LAYERS.filter((l) => {
+              if (l.group !== group) return false;
+              if (!layerSearch.trim()) return true;
+              return l.label.toLowerCase().includes(layerSearch.trim().toLowerCase());
+            });
             if (layersInGroup.length === 0) return null;
             // Index per-source status by source name (matches tilesetLayer).
             const sourceStatus = new Map(
@@ -934,6 +958,17 @@ export function MapPage() {
               </Section>
             );
           })}
+          {layerSearch.trim() &&
+            LAYERS.every(
+              (l) => !l.label.toLowerCase().includes(layerSearch.trim().toLowerCase()),
+            ) && (
+              <div
+                data-testid="layer-search-empty"
+                className="px-1 py-4 text-center font-mono text-[11px] text-text-muted"
+              >
+                No layers match &ldquo;{layerSearch}&rdquo;
+              </div>
+            )}
 
           {/* Top resource hotspots, precomputed by the ETL and shipped
               in the manifest. Click flies the map + opens the drawer
@@ -2375,6 +2410,8 @@ const PROPERTY_LABELS: Record<string, string> = {
   depth_ft: 'Total depth (ft)',
 };
 
+type DrawerTab = 'summary' | 'eligibility' | 'geology' | 'economics';
+
 function DetailDrawer({
   feature,
   geology,
@@ -2397,6 +2434,26 @@ function DetailDrawer({
     (feature.properties.name as string | undefined) ||
     (feature.properties.serial as string | undefined) ||
     feature.layerLabel;
+
+  // Tabs are only shown when they have meaningful content for the
+  // clicked feature. Eligibility hides for federal-lands clicks (the
+  // panel would render nothing — see StakeAbility's early-return).
+  const showEligibility = feature.layerId !== 'federal-lands';
+  const isHotspot = feature.layerId === 'hotspots';
+  const availableTabs: DrawerTab[] = ['summary'];
+  if (showEligibility) availableTabs.push('eligibility');
+  availableTabs.push('geology');
+  availableTabs.push('economics');
+
+  // Default tab persists per feature-click via React's natural state
+  // reset on key change (no key here, so it persists across clicks of
+  // the same point but resets when DetailDrawer mounts fresh).
+  const [tab, setTab] = useState<DrawerTab>('summary');
+  // If the previously-active tab is no longer available for this feature
+  // (e.g. user goes from a claim to a federal-lands click), fall back
+  // to summary.
+  const activeTab: DrawerTab = availableTabs.includes(tab) ? tab : 'summary';
+
   return (
     <aside
       data-testid="detail-drawer"
@@ -2424,23 +2481,62 @@ function DetailDrawer({
         </button>
       </header>
 
-      <div className="flex-1 overflow-y-auto px-4 py-3">
-        <StakeAbility feature={feature} />
-        {feature.layerId === 'hotspots' && <HotspotPanel feature={feature} />}
-        {entries.length > 0 && feature.layerId !== 'hotspots' && (
-          <dl className="mt-4 grid grid-cols-[120px_minmax(0,1fr)] gap-y-1 font-mono text-[11px]">
-            {entries.map(([key, value]) => (
-              <Row key={key} label={PROPERTY_LABELS[key] ?? key} value={value} />
-            ))}
-          </dl>
+      <nav
+        data-testid="drawer-tabs"
+        className="flex items-stretch gap-0.5 border-b border-border bg-bg-panel/30 px-1.5 py-1 font-mono text-[11px]"
+      >
+        {availableTabs.map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => setTab(t)}
+            aria-pressed={activeTab === t}
+            data-testid={`drawer-tab-${t}`}
+            data-active={activeTab === t}
+            className={cn(
+              'flex-1 rounded px-2 py-1 capitalize transition',
+              activeTab === t
+                ? 'bg-bg-surface text-accent shadow-inner ring-1 ring-accent/30'
+                : 'text-text-muted hover:bg-bg-panel hover:text-text',
+            )}
+          >
+            {t}
+          </button>
+        ))}
+      </nav>
+
+      <div data-testid={`drawer-pane-${activeTab}`} className="flex-1 overflow-y-auto px-4 py-3">
+        {activeTab === 'summary' && (
+          <>
+            {entries.length === 0 ? (
+              <p className="font-mono text-[11px] text-text-muted">
+                Point inspection — no feature attributes at this pixel. Geology + cost
+                heuristics still available in the other tabs.
+              </p>
+            ) : (
+              <dl className="grid grid-cols-[120px_minmax(0,1fr)] gap-y-1 font-mono text-[11px]">
+                {entries.map(([key, value]) => (
+                  <Row key={key} label={PROPERTY_LABELS[key] ?? key} value={value} />
+                ))}
+              </dl>
+            )}
+          </>
         )}
-        <CostPanel feature={feature} />
-        <SubsurfaceGeology
-          geology={geology}
-          loading={geologyLoading}
-          error={geologyError}
-          elevation={elevation}
-        />
+        {activeTab === 'eligibility' && <StakeAbility feature={feature} />}
+        {activeTab === 'geology' && (
+          <SubsurfaceGeology
+            geology={geology}
+            loading={geologyLoading}
+            error={geologyError}
+            elevation={elevation}
+          />
+        )}
+        {activeTab === 'economics' && (
+          <>
+            {isHotspot && <HotspotPanel feature={feature} />}
+            <CostPanel feature={feature} />
+          </>
+        )}
       </div>
 
       <footer className="flex items-center justify-between gap-2 border-t border-border px-4 py-2 font-mono text-[10px] text-text-muted">
@@ -2614,6 +2710,24 @@ function hotspotScoreColor(score: number): string {
   if (score >= 45) return '#f97316'; // orange-500
   if (score >= 20) return '#facc15'; // yellow-400
   return '#475569'; // slate-600
+}
+
+/** Humanize an ISO timestamp as "5m ago" / "2h ago" / "3d ago" — used by
+ *  the sidebar freshness badge so the user can tell at a glance whether
+ *  they're looking at this week's tileset or last month's. */
+function humanizeAgo(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return 'unknown';
+  const seconds = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  const months = Math.floor(days / 30);
+  return `${months}mo ago`;
 }
 
 /** Format a dollar amount as $1.2M / $850K / $42 etc. */
