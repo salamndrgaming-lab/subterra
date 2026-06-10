@@ -470,6 +470,87 @@ function computeBboxFromPolygon(geom: unknown): [number, number, number, number]
   return [west, south, east, north];
 }
 
+// Phase 4 — user-tracked claims (BLM maintenance-fee tracker). The
+// table stores claim serials a user has marked as theirs; the client
+// computes the countdown to Sept 1 (the BLM annual maintenance-fee
+// deadline) from the current date.
+
+app.get('/my-claims', requireUser, async (c) => {
+  const user = c.get('user');
+  const { results } = await c.env.DB.prepare(
+    'SELECT id, serial, name, notes, created_at FROM tracked_claims WHERE user_id = ? ORDER BY created_at DESC',
+  )
+    .bind(user.id)
+    .all<{ id: string; serial: string; name: string | null; notes: string | null; created_at: string }>();
+  return c.json({ claims: results });
+});
+
+app.post('/my-claims', requireUser, async (c) => {
+  const user = c.get('user');
+  let body: { serials?: unknown; name?: unknown; notes?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'bad_request' }, 400);
+  }
+  // Accept either { serial } (single) or { serials: [] } (bulk paste).
+  const rawSerials: string[] = [];
+  if (Array.isArray(body.serials)) {
+    for (const s of body.serials) if (typeof s === 'string') rawSerials.push(s);
+  } else if (typeof (body as { serial?: unknown }).serial === 'string') {
+    rawSerials.push((body as { serial: string }).serial);
+  }
+  const cleaned = Array.from(
+    new Set(
+      rawSerials
+        .map((s) => s.trim().toUpperCase())
+        .filter((s) => /^[A-Z0-9-]{4,32}$/.test(s)),
+    ),
+  );
+  if (cleaned.length === 0) {
+    return c.json({ error: 'no_valid_serials' }, 400);
+  }
+  const name = typeof body.name === 'string' ? body.name : null;
+  const notes = typeof body.notes === 'string' ? body.notes : null;
+  let added = 0;
+  let skipped = 0;
+  for (const serial of cleaned) {
+    const id = crypto.randomUUID();
+    try {
+      await c.env.DB.prepare(
+        'INSERT INTO tracked_claims (id, user_id, serial, name, notes) VALUES (?, ?, ?, ?, ?)',
+      )
+        .bind(id, user.id, serial, name, notes)
+        .run();
+      added += 1;
+    } catch (err) {
+      // UNIQUE(user_id, serial) — duplicate is the expected non-error
+      // path. Anything else surfaces.
+      if (String(err).includes('UNIQUE')) {
+        skipped += 1;
+      } else {
+        console.error('[my-claims] insert failed', err);
+        throw err;
+      }
+    }
+  }
+  return c.json({ added, skipped, total: cleaned.length }, 201);
+});
+
+app.delete('/my-claims/:id', requireUser, async (c) => {
+  const user = c.get('user');
+  const id = c.req.param('id');
+  const result = await c.env.DB.prepare(
+    'DELETE FROM tracked_claims WHERE id = ? AND user_id = ?',
+  )
+    .bind(id, user.id)
+    .run();
+  if (result.meta.changes === 0) {
+    return c.json({ error: 'not_found' }, 404);
+  }
+  return c.json({ ok: true });
+});
+
 // Phase 5 — opportunity scoring + NoL export
 app.get('/score', NOT_YET('5'));
 app.post('/aois/:id/nol-packet', NOT_YET('5'));

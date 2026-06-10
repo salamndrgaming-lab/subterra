@@ -1378,7 +1378,15 @@ function AuthBadge() {
       data-testid="auth-signed-in"
       className="ml-2 flex items-center gap-2 font-mono text-[10px]"
     >
-      <span title={meQuery.data.email} className="max-w-[180px] truncate text-text">
+      <Link
+        to="/claims"
+        data-testid="auth-claims-link"
+        className="rounded-md border border-border bg-bg-panel px-2 py-1 text-text-muted hover:border-accent hover:text-accent"
+        title="My BLM mining claims + Sept 1 countdown"
+      >
+        My claims
+      </Link>
+      <span title={meQuery.data.email} className="max-w-[160px] truncate text-text">
         {meQuery.data.email}
       </span>
       <button

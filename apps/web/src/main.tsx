@@ -10,6 +10,7 @@ import { registerSW } from './lib/sw';
 import { MapPage } from './routes/Map';
 import { LandingPage } from './routes/Landing';
 import { NotFoundPage } from './routes/NotFound';
+import { ClaimsPage } from './routes/Claims';
 import { SignInPage } from './routes/SignIn';
 
 // One-time MapLibre <-> PMTiles protocol registration. Must happen
@@ -41,6 +42,7 @@ createRoot(root).render(
           <Route path="/" element={<LandingPage />} />
           <Route path="/map" element={<MapPage />} />
           <Route path="/signin" element={<SignInPage />} />
+          <Route path="/claims" element={<ClaimsPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
       </BrowserRouter>
