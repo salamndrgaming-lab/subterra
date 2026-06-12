@@ -8,6 +8,8 @@
 
 import type { TileManifest } from '@subterra/shared';
 
+import { API_BASE } from './api-base';
+
 /** Phase-9 eligibility response. Mirrors the Worker's /eligibility shape. */
 export interface Eligibility {
   surfaceMgmt: string | null;
@@ -18,7 +20,7 @@ export interface Eligibility {
   stakeable: boolean;
 }
 
-const BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8787';
+const BASE = API_BASE;
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {

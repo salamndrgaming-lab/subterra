@@ -23,14 +23,13 @@ Total fixed infra cost: **$0**.
 
 ## Quickstart (local dev)
 
-Prerequisites: Node 20+, Python 3.12+, [tippecanoe](https://github.com/felt/tippecanoe).
+Prerequisites: Node 20+. (Python + tippecanoe are only needed to run
+the ETL yourself — local dev pulls live tiles without them.)
 
 ```bash
 git clone https://github.com/salamndrgaming-lab/subterra.git
 cd subterra
 npm install
-cp .env.example .env.local
-# edit .env.local — at minimum, leave CLOUDFLARE_* blank for local dev
 npm run dev
 ```
 
@@ -38,6 +37,21 @@ Two dev servers boot:
 
 - `http://localhost:5173` — Vite serving the web app
 - `http://localhost:8787` — wrangler serving the Worker
+
+That's the whole setup — no `.env.local`, no ETL run, no R2 seeding:
+
+- **Tiles/data:** when the local Worker has no tileset (it won't,
+  unless you've run the ETL), the web app falls back to the production
+  API read-only and the map shows the full live dataset.
+- **Database:** `npm run dev` applies pending D1 migrations to the
+  local SQLite simulator before the Worker starts.
+- **Sign-in emails:** without `RESEND_API_KEY` configured, the Worker
+  logs the magic-link URL to the wrangler terminal instead of emailing
+  it — copy that URL into your browser to finish sign-in.
+
+Optional: create `apps/web/.env.local` with
+`VITE_API_URL=<any Worker URL>` to pin the API target and bypass the
+automatic resolution in `apps/web/src/lib/api-base.ts`.
 
 ## Production deploy
 

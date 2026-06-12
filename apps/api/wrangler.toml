@@ -16,7 +16,11 @@ enabled = true
 [[d1_databases]]
 binding = "DB"
 database_name = "subterra"
-database_id = "5181e327-3a1b-4676-8254-b9d787f391d5"
+database_id = "00000000-0000-0000-0000-000000000000"
+# Migrations live at the repo root next to the rest of infra/. Path is
+# relative to this wrangler.toml. Required for `wrangler d1 migrations
+# apply` to find them (the default is ./migrations, which doesn't exist).
+migrations_dir = "../../infra/migrations"
 
 [[r2_buckets]]
 binding = "TILES"
@@ -38,6 +42,7 @@ name = "subterra-api-preview"
 binding = "DB"
 database_name = "subterra"
 database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "../../infra/migrations"
 
 [[env.preview.r2_buckets]]
 binding = "TILES"

@@ -1,6 +1,8 @@
 /** Client for the /my-claims Worker routes — list, add, delete. */
 
-const API_URL = (import.meta.env.VITE_API_URL ?? 'http://localhost:8787').replace(/\/$/, '');
+import { API_BASE } from './api-base';
+
+const API_URL = API_BASE;
 
 export interface TrackedClaim {
   id: string;

@@ -5,6 +5,15 @@ on:
     # Weekly Sun 02:00 UTC
     - cron: '0 2 * * 0'
   workflow_dispatch:
+    inputs:
+      only:
+        description: >-
+          Verification mode: comma-separated source list (e.g.
+          "water_rights" or "mrds,geochemistry"). Runs just those
+          sources and SKIPS the tile build + R2 upload — use to test a
+          source's endpoints without a 25-minute tippecanoe run.
+        required: false
+        default: ''
 
 concurrency:
   group: etl-refresh
@@ -24,6 +33,7 @@ jobs:
           cache-dependency-path: etl/requirements.txt
 
       - name: Install tippecanoe
+        if: ${{ inputs.only == '' }}
         timeout-minutes: 8
         env:
           DEBIAN_FRONTEND: noninteractive
@@ -47,14 +57,23 @@ jobs:
       - name: Run ETL
         env:
           EIA_API_KEY: ${{ secrets.EIA_API_KEY }}
+          ONLY: ${{ inputs.only }}
         run: |
-          python etl/refresh.py
-          echo "--- etl/out contents ---"
-          ls -la etl/out
-          test -s etl/out/subterra.pmtiles || { echo "::error::pmtiles missing"; exit 1; }
-          test -s etl/out/manifest.json   || { echo "::error::manifest missing"; exit 1; }
+          if [ -n "$ONLY" ]; then
+            echo "--- verification mode: --only $ONLY (no tiles, no upload) ---"
+            python etl/refresh.py --only "$ONLY" --skip-tippecanoe
+            echo "--- etl/work contents ---"
+            ls -la etl/work
+          else
+            python etl/refresh.py
+            echo "--- etl/out contents ---"
+            ls -la etl/out
+            test -s etl/out/subterra.pmtiles || { echo "::error::pmtiles missing"; exit 1; }
+            test -s etl/out/manifest.json   || { echo "::error::manifest missing"; exit 1; }
+          fi
 
       - name: Upload PMTiles + manifest to R2 (S3-compatible API)
+        if: ${{ inputs.only == '' }}
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
