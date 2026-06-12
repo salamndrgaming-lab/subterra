@@ -61,3 +61,35 @@ export function ringBbox(ring: LngLat[]): [number, number, number, number] {
   }
   return [w, s, e, n];
 }
+
+/** Best-effort centroid for a GeoJSON Polygon or MultiPolygon — used
+ *  when a feature returned by queryRenderedFeatures only has a polygon
+ *  geometry but the caller needs a single representative point (e.g.
+ *  to project onto the cross-section line). Averages the outer ring
+ *  vertices; for a MultiPolygon, uses the first polygon. Returns null
+ *  for any other geometry shape. */
+export function polygonCentroid(geom: GeoJSON.Geometry | undefined): LngLat | null {
+  if (!geom) return null;
+  if (geom.type === 'Polygon') return ringCentroid(geom.coordinates[0] as LngLat[] | undefined);
+  if (geom.type === 'MultiPolygon') {
+    const poly = geom.coordinates[0];
+    if (!poly) return null;
+    return ringCentroid(poly[0] as LngLat[] | undefined);
+  }
+  return null;
+}
+
+function ringCentroid(ring: LngLat[] | undefined): LngLat | null {
+  if (!ring || ring.length === 0) return null;
+  let sumLng = 0;
+  let sumLat = 0;
+  let n = 0;
+  for (const [lng, lat] of ring) {
+    if (!Number.isFinite(lng) || !Number.isFinite(lat)) continue;
+    sumLng += lng;
+    sumLat += lat;
+    n++;
+  }
+  if (n === 0) return null;
+  return [sumLng / n, sumLat / n];
+}

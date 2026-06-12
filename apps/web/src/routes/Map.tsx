@@ -14,14 +14,14 @@ import {
   type SourceStatus,
 } from '@subterra/shared';
 import { cn } from '@/lib/cn';
-import { CrossSection, type CrossSectionMrds } from '@/components/CrossSection';
+import { CrossSection, type CrossSectionAgency, type CrossSectionClaim, type CrossSectionGeochem, type CrossSectionMrds } from '@/components/CrossSection';
 import { fetchManifest } from '@/lib/manifest';
 import { fetchMe, signOut } from '@/lib/auth';
 import { checkPmtilesCached, precachePmtiles } from '@/lib/sw';
 import { useLayerVisibility } from '@/stores/layers';
 import { useViewMode } from '@/stores/view-mode';
 import { geocode, type GeocodeHit } from '@/lib/geocode';
-import { pointInPolygon, polygonAreaAcres, ringBbox, type LngLat } from '@/lib/geo';
+import { pointInPolygon, polygonAreaAcres, polygonCentroid, ringBbox, type LngLat } from '@/lib/geo';
 import { columnImageUrl, fetchGeology, type GeologyAtPoint, type StratUnit } from '@/lib/macrostrat';
 import { fetchElevation, type ElevationResult } from '@/lib/elevation';
 import { estimateCosts, formatAmount, totalRange, type LineItem } from '@/lib/cost-estimate';
@@ -156,6 +156,9 @@ export function MapPage() {
   const [csA, setCsA] = useState<LngLat | null>(null);
   const [csB, setCsB] = useState<LngLat | null>(null);
   const [csMrds, setCsMrds] = useState<CrossSectionMrds[]>([]);
+  const [csClaims, setCsClaims] = useState<CrossSectionClaim[]>([]);
+  const [csGeochem, setCsGeochem] = useState<CrossSectionGeochem[]>([]);
+  const [csAgencies, setCsAgencies] = useState<CrossSectionAgency[]>([]);
   /** Mirror csMode + csA into refs so the mount-time click handler can
    *  read the latest value without re-binding. */
   const csModeRef = useRef<'off' | 'pickingA' | 'pickingB' | 'open'>('off');
@@ -350,13 +353,13 @@ export function MapPage() {
         const mrdsHits = map.getLayer('mrds')
           ? map.queryRenderedFeatures(bbox, { layers: ['mrds'] })
           : [];
-        const seen = new Set<string>();
+        const mrdsSeen = new Set<string>();
         const collected: CrossSectionMrds[] = [];
         for (const h of mrdsHits) {
           const attrs = (h.properties ?? {}) as Record<string, unknown>;
           const key = String(attrs.dep_id ?? attrs.id ?? `${h.geometry.type}-${collected.length}`);
-          if (seen.has(key)) continue;
-          seen.add(key);
+          if (mrdsSeen.has(key)) continue;
+          mrdsSeen.add(key);
           if (h.geometry.type !== 'Point') continue;
           const coords = h.geometry.coordinates as [number, number];
           collected.push({
@@ -367,6 +370,75 @@ export function MapPage() {
           });
         }
         setCsMrds(collected);
+
+        // Mining claims in the same bbox — projected to triangles
+        // above the topo line in the cross-section so the user sees
+        // competition without leaving the modal.
+        const claimHits = map.getLayer('mining-claims')
+          ? map.queryRenderedFeatures(bbox, { layers: ['mining-claims'] })
+          : [];
+        const claimSeen = new Set<string>();
+        const collectedClaims: CrossSectionClaim[] = [];
+        for (const h of claimHits) {
+          const attrs = (h.properties ?? {}) as Record<string, unknown>;
+          const serial = String(attrs.serial ?? '');
+          if (!serial || claimSeen.has(serial)) continue;
+          claimSeen.add(serial);
+          const c = polygonCentroid(h.geometry);
+          if (!c) continue;
+          collectedClaims.push({
+            lng: c[0],
+            lat: c[1],
+            serial,
+            claimant: String(attrs.claimant ?? '') || undefined,
+            acreage: String(attrs.acreage ?? '') || undefined,
+          });
+        }
+        setCsClaims(collectedClaims);
+
+        // Geochemistry points in the bbox — projected as anomaly
+        // markers above the topo line. May be empty if the layer
+        // hasn't been turned on yet.
+        const gcHits = map.getLayer('geochemistry')
+          ? map.queryRenderedFeatures(bbox, { layers: ['geochemistry'] })
+          : [];
+        const collectedGc: CrossSectionGeochem[] = [];
+        for (const h of gcHits) {
+          if (h.geometry.type !== 'Point') continue;
+          const attrs = (h.properties ?? {}) as Record<string, unknown>;
+          const coords = h.geometry.coordinates as [number, number];
+          const as = Number(attrs.as_ppm ?? attrs.as ?? NaN);
+          collectedGc.push({
+            lng: coords[0],
+            lat: coords[1],
+            asPpm: Number.isFinite(as) ? as : undefined,
+            element: String(attrs.element ?? 'As') || undefined,
+          });
+        }
+        setCsGeochem(collectedGc);
+
+        // Federal-lands polygon centroids in the bbox — the section
+        // uses these to color a surface-management strip beneath
+        // the geology band so stakeable BLM ground is visible at a
+        // glance even when the user hasn't toggled the layer on.
+        const flHits = map.getLayer('federal-lands')
+          ? map.queryRenderedFeatures(bbox, { layers: ['federal-lands'] })
+          : [];
+        const collectedAg: CrossSectionAgency[] = [];
+        const agSeen = new Set<string>();
+        for (const h of flHits) {
+          const attrs = (h.properties ?? {}) as Record<string, unknown>;
+          const c = polygonCentroid(h.geometry);
+          if (!c) continue;
+          const agency = String(attrs.agency ?? 'OTHER');
+          const name = String(attrs.name ?? '');
+          const key = `${agency}|${c[0].toFixed(4)},${c[1].toFixed(4)}`;
+          if (agSeen.has(key)) continue;
+          agSeen.add(key);
+          collectedAg.push({ lng: c[0], lat: c[1], agency, name: name || undefined });
+        }
+        setCsAgencies(collectedAg);
+
         setCsMode('open');
         csModeRef.current = 'open';
         return;
@@ -553,6 +625,9 @@ export function MapPage() {
         csARef.current = null;
         setCsB(null);
         setCsMrds([]);
+        setCsClaims([]);
+        setCsGeochem([]);
+        setCsAgencies([]);
       }
     };
     document.addEventListener('keydown', onKey);
@@ -1082,6 +1157,9 @@ export function MapPage() {
             csARef.current = null;
             setCsB(null);
             setCsMrds([]);
+            setCsClaims([]);
+            setCsGeochem([]);
+            setCsAgencies([]);
             setCsMode('pickingA');
             csModeRef.current = 'pickingA';
           }}
@@ -1092,6 +1170,9 @@ export function MapPage() {
             csARef.current = null;
             setCsB(null);
             setCsMrds([]);
+            setCsClaims([]);
+            setCsGeochem([]);
+            setCsAgencies([]);
           }}
         />
         <AoiControls
@@ -1149,6 +1230,9 @@ export function MapPage() {
             a={csA}
             b={csB}
             mrds={csMrds}
+            claims={csClaims}
+            geochem={csGeochem}
+            agencies={csAgencies}
             onClose={() => {
               setCsMode('off');
               csModeRef.current = 'off';
@@ -1156,6 +1240,9 @@ export function MapPage() {
               csARef.current = null;
               setCsB(null);
               setCsMrds([]);
+              setCsClaims([]);
+              setCsGeochem([]);
+              setCsAgencies([]);
             }}
           />
         )}
