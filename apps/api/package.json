@@ -5,7 +5,8 @@
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
-    "dev": "wrangler dev --port 8787",
+    "dev": "npm run db:migrate:local && wrangler dev --port 8787",
+    "db:migrate:local": "wrangler d1 migrations apply subterra --local",
     "build": "tsc --noEmit -p tsconfig.json",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit -p tsconfig.json"

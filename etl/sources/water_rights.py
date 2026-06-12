@@ -42,7 +42,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from etl.sources._arcgis import iter_features_concurrent
+from sources._arcgis import iter_features_concurrent
 
 
 @dataclass
