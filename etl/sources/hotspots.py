@@ -186,16 +186,64 @@ def _bin_polygons(
     return n
 
 
-def _score(deposits: int, blm: int, claims: int) -> float:
+# Per-element anomaly thresholds (ppm; Au in ppb). A sample exceeding any
+# of these counts as "anomalous" — a target-grade geochemical hit.
+GEOCHEM_ANOMALY_THRESHOLDS = {
+    "au_ppb": 50.0,    # 50 ppb Au in stream sediment is strongly anomalous
+    "ag_ppm": 1.0,
+    "cu_ppm": 100.0,
+    "pb_ppm": 100.0,
+    "zn_ppm": 200.0,
+    "li_ppm": 100.0,
+    "mo_ppm": 10.0,
+    "as_ppm": 50.0,    # classic gold pathfinder
+    "u_ppm": 10.0,
+    "ree_ppm": 200.0,
+}
+
+
+def _bin_geochem(path: Path, cells: dict, log: logging.Logger) -> int:
+    """Count geochemically anomalous samples per cell. A sample is
+    anomalous if any tracked element exceeds its threshold."""
+    if not path.exists():
+        log.warning("%s missing — hotspot geochem signal will be empty", path.name)
+        return 0
+    n = 0
+    with path.open("rb") as f:
+        for feat in ijson.items(f, "features.item", use_float=True):
+            props = feat.get("properties") or {}
+            anomalous = any(
+                isinstance(props.get(el), (int, float)) and props[el] >= thr
+                for el, thr in GEOCHEM_ANOMALY_THRESHOLDS.items()
+            )
+            if not anomalous:
+                continue
+            xy = _first_coord(feat.get("geometry") or {})
+            if not xy or not _in_bbox(*xy):
+                continue
+            cells[_cell_for(*xy)]["geochem_anom"] += 1
+            n += 1
+    log.info("binned %d anomalous geochem samples", n)
+    return n
+
+
+# Geochemical anomaly contribution cap. Anomalous stream-sediment is a
+# strong leading indicator, so it can add meaningfully but not dominate.
+GEOCHEM_SCORE_CAP = 25.0
+
+
+def _score(deposits: int, blm: int, claims: int, geochem_anom: int = 0) -> float:
     """Composite score 0–100. Scaled per signal so each contributes
-    proportionally — deposits + BLM area drive the score up, existing
-    claims drive it down (competition signal)."""
+    proportionally — deposits + BLM area + geochemical anomalies drive the
+    score up, existing claims drive it down (competition signal)."""
     deposit_score = min(deposits * 5.0, DEPOSIT_SCORE_CAP)
     # BLM polygon count caps at ~60 polygons = full coverage; scale to 30.
     blm_score = min(blm * 0.5, BLM_SCORE_CAP)
+    # Geochemical anomalies — each anomalous sample adds 2.5, capped at 25.
+    geochem_score = min(geochem_anom * 2.5, GEOCHEM_SCORE_CAP)
     # Claim penalty saturates quickly — 20+ claims in a 55 km cell is "busy"
     claim_penalty = min(claims * 0.5, CLAIM_PENALTY_CAP)
-    return max(0.0, min(100.0, deposit_score + blm_score - claim_penalty))
+    return max(0.0, min(100.0, deposit_score + blm_score + geochem_score - claim_penalty))
 
 
 def _revenue_range(commodities: dict[str, int]) -> tuple[int, int]:
@@ -222,6 +270,7 @@ def run(work_dir: Path) -> SourceResult:
             "deposits": 0,
             "claims": 0,
             "blm": 0,
+            "geochem_anom": 0,
             "commodities": defaultdict(int),
         }
     )
@@ -241,6 +290,8 @@ def run(work_dir: Path) -> SourceResult:
         log,
         filter_fn=lambda f: ((f.get("properties") or {}).get("agency") == "BLM"),
     )
+    # Geochemical anomalies — the strongest leading target signal.
+    _bin_geochem(work_dir / "geochemistry.geojson", cells, log)
 
     cost_estimate = _cost_estimate()
     out_features: list[dict] = []
@@ -248,11 +299,12 @@ def run(work_dir: Path) -> SourceResult:
         deposits = data["deposits"]
         claims = data["claims"]
         blm = data["blm"]
+        geochem_anom = data["geochem_anom"]
         # Drop cells with nothing actionable. A cell needs at least
-        # some signal (deposits OR BLM coverage) to be worth showing.
-        if deposits == 0 and blm == 0:
+        # some signal (deposits, BLM coverage, or a geochem anomaly).
+        if deposits == 0 and blm == 0 and geochem_anom == 0:
             continue
-        score = _score(deposits, blm, claims)
+        score = _score(deposits, blm, claims, geochem_anom)
         if score < 5:
             continue
         rev_lo, rev_hi = _revenue_range(data["commodities"])
@@ -268,6 +320,7 @@ def run(work_dir: Path) -> SourceResult:
                 "deposits": deposits,
                 "claims": claims,
                 "blm_polys": blm,
+                "geochem_anom": geochem_anom,
                 "top_commodities": ",".join(f"{c}:{n}" for c, n in top_commodities),
                 "cost_low": int(cost_estimate * 0.8),
                 "cost_high": int(cost_estimate * 1.5),

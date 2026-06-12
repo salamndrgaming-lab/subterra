@@ -10,6 +10,22 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
 
+import {
+  clearSessionCookie,
+  consumeMagicLink,
+  createSession,
+  invalidateSession,
+  issueMagicLink,
+  loadSessionUser,
+  looksLikeEmail,
+  readSessionCookie,
+  requireUser,
+  setSessionCookie,
+  upsertUser,
+  type AuthedUser,
+} from './auth';
+import { sendMagicLinkEmail } from './email';
+
 export interface Env {
   DB: D1Database;
   TILES: R2Bucket;
@@ -23,7 +39,9 @@ export interface Env {
   SENTRY_DSN_API?: string;
 }
 
-const app = new Hono<{ Bindings: Env }>();
+type AppEnv = { Bindings: Env; Variables: { user: AuthedUser } };
+
+const app = new Hono<AppEnv>();
 
 app.use('*', logger());
 // Read-only data routes (manifest + tiles + features.db) get a permissive
@@ -127,6 +145,8 @@ app.get('/manifest', async (c) => {
     'checksums',
     'counts',
     'topHotspots',
+    'commodityPrices',
+    'sources',
   ]);
   manifest = Object.fromEntries(
     Object.entries(manifest).filter(([k]) => ALLOWED_KEYS.has(k)),
@@ -206,21 +226,340 @@ const NOT_YET = (phase: string) => (c: { json: (b: unknown, s?: number) => Respo
     501,
   );
 
-// Phase 4 — auth via WebAuthn passkeys
-app.post('/auth/passkey/options', NOT_YET('4'));
-app.post('/auth/passkey/verify', NOT_YET('4'));
-app.post('/auth/logout', NOT_YET('4'));
-app.get('/auth/me', NOT_YET('4'));
+// Phase 4 — email magic-link authentication.
+// (Original Phase 4 design used passkeys; magic links shipped first as
+// the MVP — see infra/migrations/0003_magic_links.sql for rationale.
+// The passkeys table stays in 0001 so passkey routes can land later
+// without a schema change.)
 
-// Phase 4 — areas of interest
-app.get('/aois', NOT_YET('4'));
-app.post('/aois', NOT_YET('4'));
-app.patch('/aois/:id', NOT_YET('4'));
-app.delete('/aois/:id', NOT_YET('4'));
+app.post('/auth/request', async (c) => {
+  let body: { email?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'bad_request', message: 'JSON body required' }, 400);
+  }
+  const email = body.email;
+  if (!looksLikeEmail(email)) {
+    return c.json({ error: 'invalid_email' }, 400);
+  }
+  const token = await issueMagicLink(c.env, email);
+  // Build the verify URL on the API origin. The client passes its
+  // origin via the `return` query so we know where to redirect on
+  // successful verify; default to the API root if absent.
+  const apiOrigin = new URL(c.req.url).origin;
+  const reqUrl = new URL(c.req.url);
+  const returnTo = reqUrl.searchParams.get('return') ?? c.req.header('referer') ?? '';
+  const verifyUrl = new URL(`${apiOrigin}/auth/verify`);
+  verifyUrl.searchParams.set('token', token);
+  if (returnTo) verifyUrl.searchParams.set('return', returnTo);
+  try {
+    await sendMagicLinkEmail(c.env, email, verifyUrl.toString());
+  } catch (err) {
+    console.error('[auth] magic-link send failed', err);
+    return c.json({ error: 'email_send_failed' }, 502);
+  }
+  // Return 200 with no token-leak; the email is the only carrier of
+  // the raw token. The client just shows "check your email" on 200.
+  return c.json({ ok: true });
+});
+
+app.get('/auth/verify', async (c) => {
+  const token = c.req.query('token');
+  if (!token) {
+    return c.json({ error: 'missing_token' }, 400);
+  }
+  const email = await consumeMagicLink(c.env, token);
+  if (!email) {
+    return c.json({ error: 'invalid_or_expired_token' }, 400);
+  }
+  const user = await upsertUser(c.env, email);
+  const sessionToken = await createSession(c.env, user.id);
+  setSessionCookie(c, sessionToken);
+  // Redirect back to wherever the sign-in was initiated. If the
+  // `return` URL isn't an allowed origin, redirect to the API root
+  // (the client polls /auth/me on focus so it'll pick the user up
+  // either way).
+  const returnTo = c.req.query('return');
+  const target = returnTo && isAllowedReturnUrl(returnTo) ? returnTo : '/';
+  return c.redirect(target, 302);
+});
+
+app.post('/auth/logout', async (c) => {
+  const token = readSessionCookie(c);
+  if (token) {
+    await invalidateSession(c.env, token);
+  }
+  clearSessionCookie(c);
+  return c.json({ ok: true });
+});
+
+app.get('/auth/me', async (c) => {
+  const token = readSessionCookie(c);
+  if (!token) {
+    return c.json({ user: null });
+  }
+  const user = await loadSessionUser(c.env, token);
+  return c.json({ user });
+});
+
+/** Only allow redirects to localhost dev or any subterra.pages.dev
+ *  Pages alias. Prevents open-redirect abuse via the `return` param. */
+function isAllowedReturnUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (u.origin === 'http://localhost:5173') return true;
+    return /^https:\/\/([a-z0-9-]+\.)?subterra\.pages\.dev$/.test(u.origin);
+  } catch {
+    return false;
+  }
+}
+
+// Phase 4 — areas of interest. CRUD over the user's saved AOIs. All
+// routes are gated by requireUser so the session-cookie check happens
+// before any D1 query.
+
+app.get('/aois', requireUser, async (c) => {
+  const user = c.get('user');
+  const { results } = await c.env.DB.prepare(
+    `SELECT id, name, notes, geometry_json, bbox_west, bbox_south,
+            bbox_east, bbox_north, area_acres, created_at, updated_at
+       FROM aois
+      WHERE user_id = ?
+      ORDER BY updated_at DESC`,
+  )
+    .bind(user.id)
+    .all<{
+      id: string;
+      name: string;
+      notes: string | null;
+      geometry_json: string;
+      bbox_west: number;
+      bbox_south: number;
+      bbox_east: number;
+      bbox_north: number;
+      area_acres: number;
+      created_at: string;
+      updated_at: string;
+    }>();
+  return c.json({
+    aois: results.map((r) => ({
+      id: r.id,
+      name: r.name,
+      notes: r.notes,
+      geometry: JSON.parse(r.geometry_json),
+      bbox: [r.bbox_west, r.bbox_south, r.bbox_east, r.bbox_north],
+      areaAcres: r.area_acres,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    })),
+  });
+});
+
+app.post('/aois', requireUser, async (c) => {
+  const user = c.get('user');
+  let body: {
+    name?: unknown;
+    notes?: unknown;
+    geometry?: unknown;
+    areaAcres?: unknown;
+  };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'bad_request', message: 'JSON body required' }, 400);
+  }
+  const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : 'Untitled AOI';
+  const notes = typeof body.notes === 'string' ? body.notes : null;
+  const geometry = body.geometry;
+  const areaAcres = typeof body.areaAcres === 'number' && body.areaAcres > 0 ? body.areaAcres : 0;
+  const bbox = computeBboxFromPolygon(geometry);
+  if (!bbox) {
+    return c.json({ error: 'invalid_geometry', message: 'Expected GeoJSON Polygon' }, 400);
+  }
+  const id = crypto.randomUUID();
+  await c.env.DB.prepare(
+    `INSERT INTO aois
+       (id, user_id, name, notes, geometry_json,
+        bbox_west, bbox_south, bbox_east, bbox_north, area_acres)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(
+      id, user.id, name, notes, JSON.stringify(geometry),
+      bbox[0], bbox[1], bbox[2], bbox[3], areaAcres,
+    )
+    .run();
+  return c.json({ id }, 201);
+});
+
+app.patch('/aois/:id', requireUser, async (c) => {
+  const user = c.get('user');
+  const id = c.req.param('id');
+  let body: { name?: unknown; notes?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'bad_request' }, 400);
+  }
+  const updates: string[] = [];
+  const values: unknown[] = [];
+  if (typeof body.name === 'string' && body.name.trim()) {
+    updates.push('name = ?');
+    values.push(body.name.trim());
+  }
+  if (typeof body.notes === 'string' || body.notes === null) {
+    updates.push('notes = ?');
+    values.push(body.notes);
+  }
+  if (updates.length === 0) {
+    return c.json({ error: 'no_updates' }, 400);
+  }
+  updates.push("updated_at = datetime('now')");
+  values.push(id, user.id);
+  const result = await c.env.DB.prepare(
+    `UPDATE aois SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`,
+  )
+    .bind(...values)
+    .run();
+  if (result.meta.changes === 0) {
+    return c.json({ error: 'not_found' }, 404);
+  }
+  return c.json({ ok: true });
+});
+
+app.delete('/aois/:id', requireUser, async (c) => {
+  const user = c.get('user');
+  const id = c.req.param('id');
+  const result = await c.env.DB.prepare('DELETE FROM aois WHERE id = ? AND user_id = ?')
+    .bind(id, user.id)
+    .run();
+  if (result.meta.changes === 0) {
+    return c.json({ error: 'not_found' }, 404);
+  }
+  return c.json({ ok: true });
+});
+
+/** Extract bbox [west, south, east, north] from a GeoJSON Polygon. */
+function computeBboxFromPolygon(geom: unknown): [number, number, number, number] | null {
+  if (
+    !geom ||
+    typeof geom !== 'object' ||
+    (geom as { type?: unknown }).type !== 'Polygon'
+  ) {
+    return null;
+  }
+  const coords = (geom as { coordinates?: unknown }).coordinates;
+  if (!Array.isArray(coords) || !Array.isArray(coords[0])) return null;
+  const ring = coords[0];
+  let west = Infinity;
+  let east = -Infinity;
+  let south = Infinity;
+  let north = -Infinity;
+  for (const pt of ring) {
+    if (!Array.isArray(pt) || typeof pt[0] !== 'number' || typeof pt[1] !== 'number') {
+      return null;
+    }
+    const lng = pt[0];
+    const lat = pt[1];
+    if (lng < west) west = lng;
+    if (lng > east) east = lng;
+    if (lat < south) south = lat;
+    if (lat > north) north = lat;
+  }
+  if (!Number.isFinite(west)) return null;
+  return [west, south, east, north];
+}
+
+// Phase 4 — user-tracked claims (BLM maintenance-fee tracker). The
+// table stores claim serials a user has marked as theirs; the client
+// computes the countdown to Sept 1 (the BLM annual maintenance-fee
+// deadline) from the current date.
+
+app.get('/my-claims', requireUser, async (c) => {
+  const user = c.get('user');
+  const { results } = await c.env.DB.prepare(
+    'SELECT id, serial, name, notes, created_at FROM tracked_claims WHERE user_id = ? ORDER BY created_at DESC',
+  )
+    .bind(user.id)
+    .all<{ id: string; serial: string; name: string | null; notes: string | null; created_at: string }>();
+  return c.json({ claims: results });
+});
+
+app.post('/my-claims', requireUser, async (c) => {
+  const user = c.get('user');
+  let body: { serials?: unknown; name?: unknown; notes?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'bad_request' }, 400);
+  }
+  // Accept either { serial } (single) or { serials: [] } (bulk paste).
+  const rawSerials: string[] = [];
+  if (Array.isArray(body.serials)) {
+    for (const s of body.serials) if (typeof s === 'string') rawSerials.push(s);
+  } else if (typeof (body as { serial?: unknown }).serial === 'string') {
+    rawSerials.push((body as { serial: string }).serial);
+  }
+  const cleaned = Array.from(
+    new Set(
+      rawSerials
+        .map((s) => s.trim().toUpperCase())
+        .filter((s) => /^[A-Z0-9-]{4,32}$/.test(s)),
+    ),
+  );
+  if (cleaned.length === 0) {
+    return c.json({ error: 'no_valid_serials' }, 400);
+  }
+  const name = typeof body.name === 'string' ? body.name : null;
+  const notes = typeof body.notes === 'string' ? body.notes : null;
+  let added = 0;
+  let skipped = 0;
+  for (const serial of cleaned) {
+    const id = crypto.randomUUID();
+    try {
+      await c.env.DB.prepare(
+        'INSERT INTO tracked_claims (id, user_id, serial, name, notes) VALUES (?, ?, ?, ?, ?)',
+      )
+        .bind(id, user.id, serial, name, notes)
+        .run();
+      added += 1;
+    } catch (err) {
+      // UNIQUE(user_id, serial) — duplicate is the expected non-error
+      // path. Anything else surfaces.
+      if (String(err).includes('UNIQUE')) {
+        skipped += 1;
+      } else {
+        console.error('[my-claims] insert failed', err);
+        throw err;
+      }
+    }
+  }
+  return c.json({ added, skipped, total: cleaned.length }, 201);
+});
+
+app.delete('/my-claims/:id', requireUser, async (c) => {
+  const user = c.get('user');
+  const id = c.req.param('id');
+  const result = await c.env.DB.prepare(
+    'DELETE FROM tracked_claims WHERE id = ? AND user_id = ?',
+  )
+    .bind(id, user.id)
+    .run();
+  if (result.meta.changes === 0) {
+    return c.json({ error: 'not_found' }, 404);
+  }
+  return c.json({ ok: true });
+});
 
 // Phase 5 — opportunity scoring + NoL export
 app.get('/score', NOT_YET('5'));
 app.post('/aois/:id/nol-packet', NOT_YET('5'));
+
+// Phase 9 — stake-ability eligibility lookup. Full point-in-polygon
+// implementation arrives with the features.db build (Phase 3+). For now
+// this returns a deterministic 501 with the contract clients can code
+// against, so the web Eligibility card can render a placeholder state.
+app.get('/eligibility', NOT_YET('9'));
 
 // Phase 6 — alerts
 app.get('/alerts', NOT_YET('6'));

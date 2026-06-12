@@ -8,6 +8,16 @@
 
 import type { TileManifest } from '@subterra/shared';
 
+/** Phase-9 eligibility response. Mirrors the Worker's /eligibility shape. */
+export interface Eligibility {
+  surfaceMgmt: string | null;
+  mineralMgmt: 'Federal' | 'Private' | 'Split' | 'Unknown' | null;
+  withdrawal: string | null;
+  /** Coded blockers, e.g. ['critical_habitat','wsa','private_surface']. */
+  blockers: string[];
+  stakeable: boolean;
+}
+
 const BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8787';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -36,4 +46,8 @@ export const api = {
   health: () =>
     request<{ status: 'ok' | 'degraded'; components: { db: string; tiles: string } }>(`/health`),
   manifest: () => request<TileManifest>(`/manifest`),
+  eligibility: (lat: number, lng: number) =>
+    request<Eligibility>(
+      `/eligibility?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`,
+    ),
 };

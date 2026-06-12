@@ -24,3 +24,24 @@ bucket_name = "subterra-tiles"
 
 [vars]
 ENVIRONMENT = "production"
+
+# Preview environment — separate Worker name so it doesn't clobber prod,
+# but shares the same R2 bucket + D1 database. Sharing R2 is deliberate:
+# the whole point of preview is to test new code paths against the real
+# tiles + manifest. D1 is shared because nothing user-facing is in it yet
+# (auth/AOIs ship later); revisit isolation when those land.
+# Deployed by deploy.yml on push to any non-main feature branch.
+[env.preview]
+name = "subterra-api-preview"
+
+[[env.preview.d1_databases]]
+binding = "DB"
+database_name = "subterra"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[[env.preview.r2_buckets]]
+binding = "TILES"
+bucket_name = "subterra-tiles"
+
+[env.preview.vars]
+ENVIRONMENT = "preview"

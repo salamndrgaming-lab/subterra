@@ -45,6 +45,16 @@ SOURCES = [
     "pipelines_natgas", # Phase 2 — EIA natural-gas trunk pipelines
     "pipelines_crude",  # Phase 2 — EIA crude-oil trunk pipelines
     "wells",            # Phase 2 — HIFLD wells via NASA NCCS mirror (~1M points)
+    "geochemistry",  # Phase 9 — USGS NGDB stream-sediment/soil samples (~1.5M points)
+    "geophysics",    # Phase 9 — USGS Earth MRI airborne survey footprints
+    # Stake-ability constraint layers — needed for legally-correct
+    # "open BLM land" identification and the eligibility check in the
+    # detail drawer. Each is a polygon source consumed by both the
+    # tile layer (visualization) and the features-db PIP path.
+    "withdrawals",     # BLM National Withdrawn Lands (mineral entry blockers)
+    "critical_habitat",# USFWS ESA designated critical habitat
+    "indian_lands",    # Census TIGER AIANNH — tribal lands (hard exclusion)
+    "water_rights",    # Per-state water rights (NV + UT + AZ — first cluster)
     # hotspots reads other sources' GeoJSON from work_dir to score
     # cell-binned prospecting opportunity — MUST stay last so the
     # inputs are guaranteed to exist when it runs.
@@ -68,13 +78,31 @@ def configure_logging() -> None:
     )
 
 
+# Per-source status entry. Captured for the manifest so the web app can
+# show "this layer failed in the last ETL run because X" without anyone
+# needing to read Actions logs.
+@dataclass
+class SourceStatus:
+    name: str
+    status: str           # 'ok' | 'failed' | 'empty'
+    feature_count: int
+    elapsed_s: float
+    error: str | None = None
+
+
+# Mutable list collected by run_sources() and read by write_manifest().
+SOURCE_STATUSES: list[SourceStatus] = []
+
+
 def run_sources(only: set[str] | None, skip_set: set[str]) -> list[SourceResult]:
     """Run every enabled source module. A failure in one source is logged
     but doesn't abort the run — tippecanoe builds tiles from whatever
     succeeded so a single broken upstream doesn't blank the production
-    map. Failures are summarized at the end."""
+    map. Per-source status is recorded in SOURCE_STATUSES for the
+    manifest, which is how the web UI learns *why* a layer is empty."""
     results: list[SourceResult] = []
     failures: list[tuple[str, str]] = []
+    SOURCE_STATUSES.clear()
     for name in SOURCES:
         if only is not None and name not in only:
             continue
@@ -92,10 +120,24 @@ def run_sources(only: set[str] | None, skip_set: set[str]) -> list[SourceResult]
                 elapsed, result.feature_count, result.geojson_path.name,
             )
             results.append(result)
+            SOURCE_STATUSES.append(SourceStatus(
+                name=name,
+                status="ok" if result.feature_count > 0 else "empty",
+                feature_count=result.feature_count,
+                elapsed_s=round(elapsed, 1),
+            ))
         except Exception as exc:  # noqa: BLE001
             elapsed = time.monotonic() - t0
             log.error("FAILED after %.1fs — %s: %s", elapsed, type(exc).__name__, exc)
             failures.append((name, f"{type(exc).__name__}: {exc}"))
+            SOURCE_STATUSES.append(SourceStatus(
+                name=name,
+                status="failed",
+                feature_count=0,
+                elapsed_s=round(elapsed, 1),
+                # Truncate to keep the manifest under reasonable size.
+                error=f"{type(exc).__name__}: {str(exc)[:500]}",
+            ))
     if failures:
         logging.getLogger("etl").warning(
             "%d source(s) failed: %s",
@@ -189,6 +231,7 @@ def write_manifest(results: list[SourceResult], pmtiles_path: Path) -> Path:
                     "deposits": props.get("deposits"),
                     "claims": props.get("claims"),
                     "blmPolys": props.get("blm_polys"),
+                    "geochemAnom": props.get("geochem_anom"),
                     "topCommodities": props.get("top_commodities"),
                     "costLow": props.get("cost_low"),
                     "costHigh": props.get("cost_high"),
@@ -199,6 +242,16 @@ def write_manifest(results: list[SourceResult], pmtiles_path: Path) -> Path:
                 })
         except Exception:  # noqa: BLE001 — manifest must never fail to write
             pass
+
+    # Live commodity spot prices — advisory figures the client uses to
+    # show market-tracking dollar values. Never fails the manifest: the
+    # fetcher returns a static fallback table if every feed is down.
+    try:
+        from sources.commodity_prices import fetch_prices
+        commodity_prices = fetch_prices()
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger("etl").warning("commodity price fetch failed: %s", exc)
+        commodity_prices = None
 
     manifest = {
         "version": int(time.time()),
@@ -211,6 +264,19 @@ def write_manifest(results: list[SourceResult], pmtiles_path: Path) -> Path:
         },
         "counts": {r.layer_id: r.feature_count for r in results},
         "topHotspots": top_hotspots,
+        "commodityPrices": commodity_prices,
+        # Per-source ETL outcome. Turns silent "layer renders empty"
+        # failures into a visible signal the UI can surface.
+        "sources": [
+            {
+                "name": s.name,
+                "status": s.status,
+                "featureCount": s.feature_count,
+                "elapsedS": s.elapsed_s,
+                **({"error": s.error} if s.error else {}),
+            }
+            for s in SOURCE_STATUSES
+        ],
     }
     path = OUT / "manifest.json"
     path.write_text(json.dumps(manifest, indent=2))

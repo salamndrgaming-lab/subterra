@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Link } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   COMMODITIES,
   COMMODITY_CATEGORY_COLORS,
@@ -10,10 +10,16 @@ import {
   LAYER_GROUPS,
   type LayerDef,
   type TopHotspot,
+  type CommodityPrices,
+  type SourceStatus,
 } from '@subterra/shared';
 import { cn } from '@/lib/cn';
+import { CrossSection, type CrossSectionMrds } from '@/components/CrossSection';
 import { fetchManifest } from '@/lib/manifest';
+import { fetchMe, signOut } from '@/lib/auth';
+import { checkPmtilesCached, precachePmtiles } from '@/lib/sw';
 import { useLayerVisibility } from '@/stores/layers';
+import { useViewMode } from '@/stores/view-mode';
 import { geocode, type GeocodeHit } from '@/lib/geocode';
 import { pointInPolygon, polygonAreaAcres, ringBbox, type LngLat } from '@/lib/geo';
 import { columnImageUrl, fetchGeology, type GeologyAtPoint, type StratUnit } from '@/lib/macrostrat';
@@ -60,6 +66,39 @@ const FALLBACK_STYLE: maplibregl.StyleSpecification = {
   ],
 };
 
+/** Satellite basemap — Esri World Imagery raster tiles. Free for
+ *  low-volume / non-commercial use with the attribution surfaced via
+ *  the source `attribution`. When billing kicks in, swap the URL to a
+ *  keyed provider (MapTiler Satellite, etc.) — one constant change. */
+const IMAGERY_STYLE: maplibregl.StyleSpecification = {
+  version: 8,
+  sources: {
+    basemap: {
+      type: 'raster',
+      tiles: [
+        'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      ],
+      tileSize: 256,
+      attribution:
+        'Tiles © <a href="https://www.esri.com/" target="_blank" rel="noreferrer">Esri</a>, Maxar, Earthstar Geographics, and the GIS User Community',
+      maxzoom: 19,
+    },
+  },
+  layers: [
+    { id: 'bg', type: 'background', paint: { 'background-color': '#0a0c10' } },
+    { id: 'basemap', type: 'raster', source: 'basemap' },
+  ],
+};
+
+/** Mapzen Terrarium DEM hosted on AWS — free public bucket, no key,
+ *  no rate limit, well-attested for MapLibre `terrain` sources via the
+ *  `terrarium` encoding. Used by setTerrain when viewMode.terrain3d is on. */
+const DEM_TILES_URL =
+  'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png';
+const DEM_SOURCE_ID = 'dem';
+const TERRAIN_EXAGGERATION = 1.3;
+const TERRAIN_PITCH_DEG = 50;
+
 interface SelectedFeature {
   layerId: string;
   layerLabel: string;
@@ -88,19 +127,45 @@ interface SelectedFeature {
 export function MapPage() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
+  // Tracks the last-applied imagery state so the toggle effect can skip
+  // the no-op first run when the map's initial style already matches.
+  const lastImageryRef = useRef<boolean | undefined>(undefined);
   const [styleLoaded, setStyleLoaded] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
   const [selected, setSelected] = useState<SelectedFeature | null>(null);
   const [commodityFilter, setCommodityFilter] = useState<Set<string>>(new Set());
   const [drawMode, setDrawMode] = useState<'off' | 'drawing' | 'done'>('off');
   const [aoiVertices, setAoiVertices] = useState<LngLat[]>([]);
+  /** Offline cache state: 'unknown' before the SW reports; 'cached' if the
+   *  PMTiles file is in the SW cache; 'uncached' otherwise. 'saving'
+   *  while a Save-for-offline download is in flight. */
+  const [offlineState, setOfflineState] = useState<'unknown' | 'cached' | 'uncached' | 'saving'>(
+    'unknown',
+  );
+  const [offlineError, setOfflineError] = useState<string | null>(null);
+  const [layerSearch, setLayerSearch] = useState('');
   /** "Find Optimal Acre" wizard state. `wizardOpen` controls the modal;
    *  `optimalPick` holds the chosen pick so the map can paint the
    *  recommended 100-acre square + open the explainer drawer. */
   const [wizardOpen, setWizardOpen] = useState(false);
   const [optimalPick, setOptimalPick] = useState<OptimalPick | null>(null);
+  /** Cross-section picker state. 'off' = inactive; 'pickingA'/'pickingB'
+   *  = waiting for the next click; 'open' = modal visible with chosen
+   *  AB line + MRDS hits projected onto it. */
+  const [csMode, setCsMode] = useState<'off' | 'pickingA' | 'pickingB' | 'open'>('off');
+  const [csA, setCsA] = useState<LngLat | null>(null);
+  const [csB, setCsB] = useState<LngLat | null>(null);
+  const [csMrds, setCsMrds] = useState<CrossSectionMrds[]>([]);
+  /** Mirror csMode + csA into refs so the mount-time click handler can
+   *  read the latest value without re-binding. */
+  const csModeRef = useRef<'off' | 'pickingA' | 'pickingB' | 'open'>('off');
+  const csARef = useRef<LngLat | null>(null);
   const visibility = useLayerVisibility((s) => s.visibility);
   const toggle = useLayerVisibility((s) => s.toggle);
+  const terrain3d = useViewMode((s) => s.terrain3d);
+  const imagery = useViewMode((s) => s.imagery);
+  const setTerrain3d = useViewMode((s) => s.setTerrain3d);
+  const setImagery = useViewMode((s) => s.setImagery);
 
   const manifestQuery = useQuery({
     queryKey: ['manifest'],
@@ -196,8 +261,11 @@ export function MapPage() {
     };
   }, []);
 
-  // 2. When the manifest lands, add the pmtiles source + all registry layers,
-  //    plus click/hover handlers that open the detail drawer.
+  // 2. When the manifest lands, add the pmtiles source + all registry layers.
+  //    Idempotent: also re-runs on every `style.load` so the basemap-swap
+  //    effect (imagery toggle) gets its source+layers reinstalled after
+  //    setStyle wipes them. Click + hover handlers live in their own
+  //    effect (below) so re-install doesn't attach duplicates.
   useEffect(() => {
     const map = mapRef.current;
     const manifest = manifestQuery.data;
@@ -218,6 +286,11 @@ export function MapPage() {
         // main (def.id) layer; the outline is non-interactive.
         const specs = buildLayer(def, visibility[def.id] ?? def.defaultVisible);
         for (const spec of specs) map.addLayer(spec);
+        // Per-layer mouseenter/mouseleave handlers are re-attached on
+        // every install — maplibre drops layer-targeted listeners when
+        // setStyle wipes the layer. Safe to re-add because each install
+        // is gated on getLayer() above; we only get here when the layer
+        // was just (re)created, so there's no prior listener to dedupe.
         map.on('mouseenter', def.id, () => {
           map.getCanvas().style.cursor = 'pointer';
         });
@@ -225,85 +298,358 @@ export function MapPage() {
           map.getCanvas().style.cursor = '';
         });
       }
-
-      map.on('click', (e) => {
-        const liveLayerIds = LAYERS.map((l) => l.id).filter((id) => !!map.getLayer(id));
-        const hits = map.queryRenderedFeatures(e.point, { layers: liveLayerIds });
-
-        // Stake-ability check works whether or not a specific feature was
-        // clicked — we collect overlapping active claims at the click pixel.
-        const claimHits = map.getLayer('mining-claims')
-          ? map.queryRenderedFeatures(e.point, { layers: ['mining-claims'] })
-          : [];
-
-        // Surface managing agency — drives the cost panel's restricted
-        // (NPS/BIA) vs stakeable (BLM/USFS) branching. Read from
-        // federal-lands first, fall back to open-blm-land (same source).
-        const federalHits =
-          (map.getLayer('federal-lands')
-            ? map.queryRenderedFeatures(e.point, { layers: ['federal-lands'] })
-            : []) ||
-          (map.getLayer('open-blm-land')
-            ? map.queryRenderedFeatures(e.point, { layers: ['open-blm-land'] })
-            : []);
-        const surfaceAgency =
-          federalHits.length > 0
-            ? (federalHits[0]!.properties?.agency as string | undefined)
-            : undefined;
-        const f = hits[0];
-        const selfSerial = f?.layer.id === 'mining-claims' ? f.properties?.serial : undefined;
-        const seen = new Set<string>();
-        const overlappingClaims = claimHits
-          .filter((h) => {
-            const s = String(h.properties?.serial ?? '');
-            if (!s) return false;
-            if (selfSerial && s === String(selfSerial)) return false;
-            if (seen.has(s)) return false;
-            seen.add(s);
-            return true;
-          })
-          .slice(0, 8)
-          .map((h) => ({
-            serial: String(h.properties?.serial ?? ''),
-            claimant: String(h.properties?.claimant ?? ''),
-            acreage: String(h.properties?.acreage ?? ''),
-          }));
-
-        // If a specific feature was clicked, use its centroid + properties.
-        // Otherwise this is an empty-map click — still open the drawer at
-        // that lat/lng so the user can see the subsurface geology there.
-        if (f) {
-          const def = LAYERS.find((l) => l.id === f.layer.id);
-          const point =
-            f.geometry.type === 'Point'
-              ? (f.geometry.coordinates as [number, number])
-              : ([e.lngLat.lng, e.lngLat.lat] as [number, number]);
-          setSelected({
-            layerId: f.layer.id,
-            layerLabel: def?.label ?? f.layer.id,
-            properties: (f.properties ?? {}) as Record<string, unknown>,
-            lng: point[0],
-            lat: point[1],
-            overlappingClaims,
-            surfaceAgency,
-          });
-        } else {
-          setSelected({
-            layerId: '__point__',
-            layerLabel: 'Point inspection',
-            properties: {},
-            lng: e.lngLat.lng,
-            lat: e.lngLat.lat,
-            overlappingClaims,
-            surfaceAgency,
-          });
-        }
-      });
     };
     if (map.isStyleLoaded()) install();
     else map.once('load', install);
+    // Reinstall after every style swap. `style.load` fires whenever
+    // setStyle finishes loading — that's our re-install signal.
+    map.on('style.load', install);
+    return () => {
+      map.off('style.load', install);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- visibility is synced by a separate effect below; including it here would cause unnecessary re-installs of every layer on every toggle.
   }, [manifestQuery.data]);
+
+  // 2b. Click handler — attached once at mount (no layer target, so it
+  //     survives setStyle). Queries inside the handler against whatever
+  //     layers currently exist.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const onClick = (e: maplibregl.MapMouseEvent): void => {
+      // Cross-section picker intercepts feature clicks while picking
+      // points A and B. ESC clears the mode via the keydown effect below.
+      const csCur = csModeRef.current;
+      if (csCur === 'pickingA') {
+        const p: LngLat = [e.lngLat.lng, e.lngLat.lat];
+        csARef.current = p;
+        setCsA(p);
+        setCsMode('pickingB');
+        csModeRef.current = 'pickingB';
+        return;
+      }
+      if (csCur === 'pickingB') {
+        const aPt = csARef.current;
+        if (!aPt) {
+          setCsMode('off');
+          csModeRef.current = 'off';
+          return;
+        }
+        const bPt: LngLat = [e.lngLat.lng, e.lngLat.lat];
+        // Reject A==B (or near it — same pixel) so the SVG isn't degenerate.
+        if (Math.abs(bPt[0] - aPt[0]) < 1e-6 && Math.abs(bPt[1] - aPt[1]) < 1e-6) return;
+        setCsB(bPt);
+        // Sample MRDS within a generous queryRenderedFeatures rect over
+        // the bbox of AB (buffer-padded). projectOntoLine in the modal
+        // does the final distance-from-line filtering.
+        const padDeg = 0.05; // ~5 km at mid-latitudes — slop for the buffer
+        const bbox: [maplibregl.PointLike, maplibregl.PointLike] = [
+          map.project([Math.min(aPt[0], bPt[0]) - padDeg, Math.min(aPt[1], bPt[1]) - padDeg]),
+          map.project([Math.max(aPt[0], bPt[0]) + padDeg, Math.max(aPt[1], bPt[1]) + padDeg]),
+        ];
+        const mrdsHits = map.getLayer('mrds')
+          ? map.queryRenderedFeatures(bbox, { layers: ['mrds'] })
+          : [];
+        const seen = new Set<string>();
+        const collected: CrossSectionMrds[] = [];
+        for (const h of mrdsHits) {
+          const attrs = (h.properties ?? {}) as Record<string, unknown>;
+          const key = String(attrs.dep_id ?? attrs.id ?? `${h.geometry.type}-${collected.length}`);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          if (h.geometry.type !== 'Point') continue;
+          const coords = h.geometry.coordinates as [number, number];
+          collected.push({
+            lng: coords[0],
+            lat: coords[1],
+            name: String(attrs.name ?? attrs.site_name ?? '') || undefined,
+            commodity: String(attrs.commodity ?? '') || undefined,
+          });
+        }
+        setCsMrds(collected);
+        setCsMode('open');
+        csModeRef.current = 'open';
+        return;
+      }
+
+      const liveLayerIds = LAYERS.map((l) => l.id).filter((id) => !!map.getLayer(id));
+      const hits = map.queryRenderedFeatures(e.point, { layers: liveLayerIds });
+
+      // Stake-ability check works whether or not a specific feature was
+      // clicked — we collect overlapping active claims at the click pixel.
+      const claimHits = map.getLayer('mining-claims')
+        ? map.queryRenderedFeatures(e.point, { layers: ['mining-claims'] })
+        : [];
+
+      // Surface managing agency — drives the cost panel's restricted
+      // (NPS/BIA) vs stakeable (BLM/USFS) branching. Read from
+      // federal-lands first, fall back to open-blm-land (same source).
+      const federalHits =
+        (map.getLayer('federal-lands')
+          ? map.queryRenderedFeatures(e.point, { layers: ['federal-lands'] })
+          : []) ||
+        (map.getLayer('open-blm-land')
+          ? map.queryRenderedFeatures(e.point, { layers: ['open-blm-land'] })
+          : []);
+      const surfaceAgency =
+        federalHits.length > 0
+          ? (federalHits[0]!.properties?.agency as string | undefined)
+          : undefined;
+      const f = hits[0];
+      const selfSerial = f?.layer.id === 'mining-claims' ? f.properties?.serial : undefined;
+      const seen = new Set<string>();
+      const overlappingClaims = claimHits
+        .filter((h) => {
+          const s = String(h.properties?.serial ?? '');
+          if (!s) return false;
+          if (selfSerial && s === String(selfSerial)) return false;
+          if (seen.has(s)) return false;
+          seen.add(s);
+          return true;
+        })
+        .slice(0, 8)
+        .map((h) => ({
+          serial: String(h.properties?.serial ?? ''),
+          claimant: String(h.properties?.claimant ?? ''),
+          acreage: String(h.properties?.acreage ?? ''),
+        }));
+
+      // If a specific feature was clicked, use its centroid + properties.
+      // Otherwise this is an empty-map click — still open the drawer at
+      // that lat/lng so the user can see the subsurface geology there.
+      if (f) {
+        const def = LAYERS.find((l) => l.id === f.layer.id);
+        const point =
+          f.geometry.type === 'Point'
+            ? (f.geometry.coordinates as [number, number])
+            : ([e.lngLat.lng, e.lngLat.lat] as [number, number]);
+        setSelected({
+          layerId: f.layer.id,
+          layerLabel: def?.label ?? f.layer.id,
+          properties: (f.properties ?? {}) as Record<string, unknown>,
+          lng: point[0],
+          lat: point[1],
+          overlappingClaims,
+          surfaceAgency,
+        });
+      } else {
+        setSelected({
+          layerId: '__point__',
+          layerLabel: 'Point inspection',
+          properties: {},
+          lng: e.lngLat.lng,
+          lat: e.lngLat.lat,
+          overlappingClaims,
+          surfaceAgency,
+        });
+      }
+    };
+    map.on('click', onClick);
+    return () => {
+      map.off('click', onClick);
+    };
+  }, []);
+
+  // 2c. Imagery basemap toggle — setStyle swaps the basemap. The install
+  //     effect's `style.load` listener re-adds the PMTiles source + layers
+  //     once the new style finishes loading. Skips the no-op first render
+  //     when the desired state already matches the map's initial style.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const prev = lastImageryRef.current;
+    lastImageryRef.current = imagery;
+    if (prev === undefined && imagery === false) return; // already there
+    map.setStyle(imagery ? IMAGERY_STYLE : PRIMARY_STYLE);
+  }, [imagery]);
+
+  // 2d. 3D terrain toggle — add a DEM source + setTerrain, ease pitch.
+  //     Re-applied on every style.load so terrain survives basemap swaps.
+  //     `prefers-reduced-motion: reduce` collapses the easeTo into an
+  //     instant setPitch so we don't motion-sick anyone.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const reduceMotion =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    const apply = (): void => {
+      if (terrain3d) {
+        if (!map.getSource(DEM_SOURCE_ID)) {
+          map.addSource(DEM_SOURCE_ID, {
+            type: 'raster-dem',
+            tiles: [DEM_TILES_URL],
+            tileSize: 256,
+            encoding: 'terrarium',
+            maxzoom: 15,
+            attribution:
+              'DEM: <a href="https://github.com/tilezen/joerd" target="_blank" rel="noreferrer">Mapzen Terrarium</a> via AWS',
+          });
+        }
+        map.setTerrain({ source: DEM_SOURCE_ID, exaggeration: TERRAIN_EXAGGERATION });
+        if (reduceMotion) map.setPitch(TERRAIN_PITCH_DEG);
+        else map.easeTo({ pitch: TERRAIN_PITCH_DEG, duration: 600 });
+      } else {
+        // setTerrain(null) clears the DEM-driven elevation effect. Leave
+        // the source in place — cheap, and any re-toggle skips re-add.
+        map.setTerrain(null);
+        if (reduceMotion) map.setPitch(0);
+        else map.easeTo({ pitch: 0, duration: 600 });
+      }
+    };
+    if (map.isStyleLoaded()) apply();
+    else map.once('load', apply);
+    map.on('style.load', apply);
+    return () => {
+      map.off('style.load', apply);
+    };
+  }, [terrain3d]);
+
+  // 2e. Poll the service worker for offline-cache status on mount. The
+  //     SW activates async; if it isn't ready on first call we retry
+  //     once after a beat. Re-checks when the manifest version changes
+  //     so a fresh ETL refresh demotes "cached" back to "uncached"
+  //     (the old version's URL no longer matches the new ?v=N).
+  useEffect(() => {
+    const manifest = manifestQuery.data;
+    if (!manifest) return;
+    let cancelled = false;
+    const check = async (): Promise<void> => {
+      const status = await checkPmtilesCached();
+      if (cancelled) return;
+      if (status.cached && status.url === manifest.pmtilesUrl) {
+        setOfflineState('cached');
+      } else {
+        setOfflineState('uncached');
+      }
+    };
+    void check();
+    // Re-check after a short delay — SW controller may be null on the
+    // very first page load (registration is async + the page wasn't
+    // controlled when this load started).
+    const t = setTimeout(() => void check(), 1500);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [manifestQuery.data]);
+
+  // Cross-section: ESC cancels at any non-'off' state; sync csMode ref
+  // for the click handler. The cursor effect uses the mode too — same
+  // override pattern as drawMode below.
+  useEffect(() => {
+    csModeRef.current = csMode;
+  }, [csMode]);
+
+  useEffect(() => {
+    if (csMode === 'off') return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') {
+        setCsMode('off');
+        csModeRef.current = 'off';
+        setCsA(null);
+        csARef.current = null;
+        setCsB(null);
+        setCsMrds([]);
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [csMode]);
+
+  // Temp AB-line map layer for visual feedback while picking + after
+  // capture. Uses a dedicated source ID; rebuilt on each csA/csB change
+  // and torn down when csMode returns to 'off'.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const SRC = 'cs-line';
+    const apply = (): void => {
+      const removeAll = (): void => {
+        if (map.getLayer(`${SRC}-line`)) map.removeLayer(`${SRC}-line`);
+        if (map.getLayer(`${SRC}-endpoints`)) map.removeLayer(`${SRC}-endpoints`);
+        if (map.getSource(SRC)) map.removeSource(SRC);
+      };
+      if (csMode === 'off' || !csA) {
+        removeAll();
+        return;
+      }
+      const lineCoords: LngLat[] = csB ? [csA, csB] : [csA, csA];
+      const data: GeoJSON.FeatureCollection = {
+        type: 'FeatureCollection',
+        features: [
+          {
+            type: 'Feature',
+            geometry: { type: 'LineString', coordinates: lineCoords },
+            properties: { kind: 'line' },
+          },
+          ...[csA, csB].filter((p): p is LngLat => p != null).map((p) => ({
+            type: 'Feature' as const,
+            geometry: { type: 'Point' as const, coordinates: p },
+            properties: { kind: 'endpoint' },
+          })),
+        ],
+      };
+      const existing = map.getSource(SRC) as maplibregl.GeoJSONSource | undefined;
+      if (existing) {
+        existing.setData(data);
+      } else {
+        map.addSource(SRC, { type: 'geojson', data });
+        map.addLayer({
+          id: `${SRC}-line`,
+          source: SRC,
+          type: 'line',
+          filter: ['==', ['get', 'kind'], 'line'],
+          paint: {
+            'line-color': '#f59e0b',
+            'line-width': 2.4,
+            'line-dasharray': [2, 1.5],
+          },
+        });
+        map.addLayer({
+          id: `${SRC}-endpoints`,
+          source: SRC,
+          type: 'circle',
+          filter: ['==', ['get', 'kind'], 'endpoint'],
+          paint: {
+            'circle-radius': 5,
+            'circle-color': '#f59e0b',
+            'circle-stroke-color': '#0a0c10',
+            'circle-stroke-width': 1.5,
+          },
+        });
+      }
+    };
+    if (map.isStyleLoaded()) apply();
+    else map.once('load', apply);
+  }, [csMode, csA, csB]);
+
+  // Cursor cue while picking — crosshair through point-B click.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (csMode === 'pickingA' || csMode === 'pickingB') {
+      map.getCanvas().style.cursor = 'crosshair';
+    } else if (drawMode !== 'drawing') {
+      map.getCanvas().style.cursor = '';
+    }
+  }, [csMode, drawMode]);
+
+  const handleSaveForOffline = async (): Promise<void> => {
+    const url = manifestQuery.data?.pmtilesUrl;
+    if (!url) return;
+    setOfflineError(null);
+    setOfflineState('saving');
+    const result = await precachePmtiles(url);
+    if (result.ok) {
+      setOfflineState('cached');
+    } else {
+      setOfflineState('uncached');
+      setOfflineError(result.error ?? 'precache failed');
+    }
+  };
 
   // 3. Sync visibility — flip `layout.visibility` whenever the user toggles.
   useEffect(() => {
@@ -545,19 +891,59 @@ export function MapPage() {
               ok={claimsLoaded}
             />
           )}
+          {manifestQuery.data && (
+            <OfflineControl
+              state={offlineState}
+              error={offlineError}
+              onSave={handleSaveForOffline}
+            />
+          )}
         </div>
+
+        {manifestQuery.data?.commodityPrices && (
+          <PriceTicker prices={manifestQuery.data.commodityPrices} />
+        )}
+
+        <AuthBadge />
       </header>
 
       <aside className="flex h-full min-h-0 flex-col border-r border-border bg-bg-surface">
         <div className="border-b border-border px-4 py-3">
-          <div className="font-mono text-[10px] uppercase tracking-wider text-text-muted">Layers</div>
+          <div className="flex items-center justify-between">
+            <div className="font-mono text-[10px] uppercase tracking-wider text-text-muted">Layers</div>
+            {manifestQuery.data?.publishedAt && (
+              <span
+                data-testid="layers-freshness"
+                title={`Tileset v${manifestQuery.data.version} published ${manifestQuery.data.publishedAt}`}
+                className="font-mono text-[9px] text-text-muted"
+              >
+                refreshed {humanizeAgo(manifestQuery.data.publishedAt)}
+              </span>
+            )}
+          </div>
           <div className="mt-1 font-mono text-sm text-text">Map controls</div>
+          <input
+            type="search"
+            value={layerSearch}
+            onChange={(e) => setLayerSearch(e.target.value)}
+            placeholder="Search layers…"
+            data-testid="layer-search"
+            className="mt-2 w-full rounded-md border border-border bg-bg-panel px-2 py-1 font-mono text-[11px] text-text placeholder:text-text-muted focus:border-accent focus:outline-none"
+          />
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
           {Object.entries(LAYER_GROUPS).map(([group, label]) => {
-            const layersInGroup = LAYERS.filter((l) => l.group === group);
+            const layersInGroup = LAYERS.filter((l) => {
+              if (l.group !== group) return false;
+              if (!layerSearch.trim()) return true;
+              return l.label.toLowerCase().includes(layerSearch.trim().toLowerCase());
+            });
             if (layersInGroup.length === 0) return null;
+            // Index per-source status by source name (matches tilesetLayer).
+            const sourceStatus = new Map(
+              (manifestQuery.data?.sources ?? []).map((s) => [s.name, s]),
+            );
             return (
               <Section key={group} title={label}>
                 {layersInGroup.map((l) => (
@@ -568,12 +954,24 @@ export function MapPage() {
                     color={l.color ?? '#94a3b8'}
                     visible={visibility[l.id] ?? false}
                     count={manifestQuery.data?.counts[l.tilesetLayer] ?? 0}
+                    status={sourceStatus.get(l.tilesetLayer)}
                     onToggle={() => toggle(l.id)}
                   />
                 ))}
               </Section>
             );
           })}
+          {layerSearch.trim() &&
+            LAYERS.every(
+              (l) => !l.label.toLowerCase().includes(layerSearch.trim().toLowerCase()),
+            ) && (
+              <div
+                data-testid="layer-search-empty"
+                className="px-1 py-4 text-center font-mono text-[11px] text-text-muted"
+              >
+                No layers match &ldquo;{layerSearch}&rdquo;
+              </div>
+            )}
 
           {/* Top resource hotspots, precomputed by the ETL and shipped
               in the manifest. Click flies the map + opens the drawer
@@ -604,6 +1002,7 @@ export function MapPage() {
                             deposits: h.deposits,
                             claims: h.claims,
                             blm_polys: h.blmPolys,
+                            geochem_anom: h.geochemAnom ?? 0,
                             top_commodities: h.topCommodities,
                             cost_low: h.costLow,
                             cost_high: h.costHigh,
@@ -670,6 +1069,31 @@ export function MapPage() {
           </div>
         )}
         <Legend mrdsVisible={visibility['mrds'] ?? true} />
+        <ViewModeControls
+          terrain3d={terrain3d}
+          imagery={imagery}
+          onToggleTerrain={() => setTerrain3d(!terrain3d)}
+          onToggleImagery={() => setImagery(!imagery)}
+        />
+        <CrossSectionControls
+          mode={csMode}
+          onStart={() => {
+            setCsA(null);
+            csARef.current = null;
+            setCsB(null);
+            setCsMrds([]);
+            setCsMode('pickingA');
+            csModeRef.current = 'pickingA';
+          }}
+          onCancel={() => {
+            setCsMode('off');
+            csModeRef.current = 'off';
+            setCsA(null);
+            csARef.current = null;
+            setCsB(null);
+            setCsMrds([]);
+          }}
+        />
         <AoiControls
           mode={drawMode}
           vertexCount={aoiVertices.length}
@@ -720,6 +1144,21 @@ export function MapPage() {
             }}
           />
         )}
+        {csMode === 'open' && csA && csB && (
+          <CrossSection
+            a={csA}
+            b={csB}
+            mrds={csMrds}
+            onClose={() => {
+              setCsMode('off');
+              csModeRef.current = 'off';
+              setCsA(null);
+              csARef.current = null;
+              setCsB(null);
+              setCsMrds([]);
+            }}
+          />
+        )}
       </div>
     </div>
   );
@@ -744,6 +1183,7 @@ function LayerRow({
   color,
   visible,
   count,
+  status,
   onToggle,
 }: {
   id: string;
@@ -751,14 +1191,24 @@ function LayerRow({
   color: string;
   visible: boolean;
   count: number;
+  status?: SourceStatus;
   onToggle: () => void;
 }) {
+  // 'failed' or 'empty' from the last ETL run are both reasons a toggled
+  // layer paints nothing. Surfacing them inline turns a silent
+  // "nothing happens when I click this" into a one-glance diagnosis.
+  const isBroken = status?.status === 'failed' || status?.status === 'empty';
+  const brokenTitle = isBroken
+    ? `Last ETL run: ${status!.status}${status!.error ? ` — ${status!.error}` : ''}`
+    : undefined;
   return (
     <button
       type="button"
       onClick={onToggle}
       data-layer-id={id}
       data-visible={visible}
+      data-source-status={status?.status}
+      title={brokenTitle}
       className={cn(
         'flex w-full items-center justify-between gap-2 rounded-md border px-2.5 py-1.5 text-left font-mono text-xs transition',
         visible
@@ -778,7 +1228,22 @@ function LayerRow({
         />
         <span className="truncate">{label}</span>
       </span>
-      <span className="font-mono text-[10px] text-text-muted">{count > 0 ? count.toLocaleString() : '·'}</span>
+      <span className="flex shrink-0 items-center gap-1 font-mono text-[10px] text-text-muted">
+        {isBroken && (
+          <span
+            aria-hidden
+            className={cn(
+              'rounded px-1 py-px text-[9px]',
+              status!.status === 'failed'
+                ? 'bg-red-500/20 text-red-300'
+                : 'bg-amber-500/20 text-amber-300',
+            )}
+          >
+            {status!.status === 'failed' ? 'ETL ✕' : 'empty'}
+          </span>
+        )}
+        <span>{count > 0 ? count.toLocaleString() : '·'}</span>
+      </span>
     </button>
   );
 }
@@ -801,12 +1266,257 @@ function StatusPill({ label, ok }: { label: string; ok: boolean }) {
   );
 }
 
+/** Compact offline-cache widget for the header status row. Three visible
+ *  states:
+ *    - 'cached'   → green pill "offline ready", no button
+ *    - 'saving'   → amber pill "downloading…" with a spinner
+ *    - 'uncached' / 'unknown' → grey pill + "Save tiles for offline" button
+ *  Errors surface as a small red tooltip-style line below the row. */
+function OfflineControl({
+  state,
+  error,
+  onSave,
+}: {
+  state: 'unknown' | 'cached' | 'uncached' | 'saving';
+  error: string | null;
+  onSave: () => void | Promise<void>;
+}) {
+  if (state === 'cached') {
+    return (
+      <span
+        data-testid="pill-offline"
+        data-state="cached"
+        className="flex items-center gap-1.5 rounded-md border border-success/30 bg-bg-panel px-2 py-1 text-success"
+      >
+        <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-success" />
+        offline ready
+      </span>
+    );
+  }
+  if (state === 'saving') {
+    return (
+      <span
+        data-testid="pill-offline"
+        data-state="saving"
+        className="flex items-center gap-1.5 rounded-md border border-amber-500/40 bg-bg-panel px-2 py-1 text-amber-300"
+      >
+        <span aria-hidden className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" />
+        downloading tiles…
+      </span>
+    );
+  }
+  return (
+    <span className="flex items-center gap-1.5">
+      <button
+        type="button"
+        onClick={() => void onSave()}
+        title={error ?? 'Download tiles so the map keeps working offline'}
+        data-testid="btn-save-offline"
+        data-state={state}
+        className={cn(
+          'rounded-md border bg-bg-panel px-2 py-1 transition hover:border-accent hover:text-accent',
+          error ? 'border-red-500/40 text-red-300' : 'border-border text-text-muted',
+        )}
+      >
+        {error ? 'retry offline save' : 'save tiles for offline'}
+      </button>
+    </span>
+  );
+}
+
 function Logo() {
   return (
     <svg width="18" height="18" viewBox="0 0 22 22" fill="none" aria-hidden>
       <path d="M11 2 L20 18 L2 18 Z" stroke="#f59e0b" strokeWidth="1.5" />
       <circle cx="11" cy="11" r="1.2" fill="#f59e0b" />
     </svg>
+  );
+}
+
+/** Header auth badge — three states:
+ *    - loading      → muted dot, no text
+ *    - signed out   → "Sign in" link to /signin
+ *    - signed in    → email + "sign out" button
+ *
+ *  Uses react-query so the badge auto-updates when sign-in completes
+ *  (the redirect after /auth/verify lands back on /map and the query
+ *  re-runs on mount). Refetches on window focus so a sign-out in
+ *  another tab takes effect when the user comes back. */
+function AuthBadge() {
+  const queryClient = useQueryClient();
+  const meQuery = useQuery({
+    queryKey: ['auth', 'me'],
+    queryFn: fetchMe,
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
+    retry: 0,
+  });
+  if (meQuery.isLoading) {
+    return (
+      <span
+        aria-hidden
+        className="ml-2 flex items-center gap-1.5 font-mono text-[10px] text-text-muted"
+      >
+        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-text-muted" />
+        loading…
+      </span>
+    );
+  }
+  if (!meQuery.data) {
+    return (
+      <a
+        href="/signin"
+        data-testid="auth-signin-link"
+        className="ml-2 rounded-md border border-border bg-bg-panel px-2 py-1 font-mono text-[10px] text-text-muted hover:border-accent hover:text-accent"
+      >
+        Sign in
+      </a>
+    );
+  }
+  return (
+    <span
+      data-testid="auth-signed-in"
+      className="ml-2 flex items-center gap-2 font-mono text-[10px]"
+    >
+      <Link
+        to="/claims"
+        data-testid="auth-claims-link"
+        className="rounded-md border border-border bg-bg-panel px-2 py-1 text-text-muted hover:border-accent hover:text-accent"
+        title="My BLM mining claims + Sept 1 countdown"
+      >
+        My claims
+      </Link>
+      <span title={meQuery.data.email} className="max-w-[160px] truncate text-text">
+        {meQuery.data.email}
+      </span>
+      <button
+        type="button"
+        onClick={async () => {
+          await signOut();
+          await queryClient.invalidateQueries({ queryKey: ['auth', 'me'] });
+        }}
+        data-testid="auth-signout"
+        className="rounded-md border border-border bg-bg-panel px-2 py-1 text-text-muted hover:text-text"
+      >
+        sign out
+      </button>
+    </span>
+  );
+}
+
+// ─── View mode toggles ────────────────────────────────────────────────
+
+/** Floating top-left control group: 3D terrain + satellite imagery
+ *  toggles. Independent toggles — either, both, or neither. Stored in
+ *  the persisted view-mode Zustand store so the choice survives reloads. */
+function ViewModeControls({
+  terrain3d,
+  imagery,
+  onToggleTerrain,
+  onToggleImagery,
+}: {
+  terrain3d: boolean;
+  imagery: boolean;
+  onToggleTerrain: () => void;
+  onToggleImagery: () => void;
+}) {
+  return (
+    <div className="absolute left-3 top-3 z-10 flex gap-1 rounded-md border border-border bg-bg-surface/90 p-1 font-mono text-[11px] shadow-lg backdrop-blur">
+      <ViewModeButton
+        active={imagery}
+        onClick={onToggleImagery}
+        label="Imagery"
+        title={imagery ? 'Switch to dark vector basemap' : 'Switch to satellite imagery'}
+        testId="toggle-imagery"
+      />
+      <ViewModeButton
+        active={terrain3d}
+        onClick={onToggleTerrain}
+        label="3D"
+        title={terrain3d ? 'Return to flat top-down view' : 'Enable 3D terrain'}
+        testId="toggle-terrain3d"
+      />
+    </div>
+  );
+}
+
+function ViewModeButton({
+  active,
+  onClick,
+  label,
+  title,
+  testId,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+  title: string;
+  testId: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      aria-pressed={active}
+      data-testid={testId}
+      data-active={active}
+      className={cn(
+        'rounded px-2.5 py-1 transition',
+        active
+          ? 'bg-accent/20 text-accent shadow-inner ring-1 ring-accent/40'
+          : 'text-text-muted hover:bg-bg-panel hover:text-text',
+      )}
+    >
+      {label}
+    </button>
+  );
+}
+
+/** Floating top-left toolbar — Cross-section picker.
+ *
+ *  - 'off'      → idle button "Cross-section"
+ *  - 'pickingA' → highlighted button + banner "Click point A"
+ *  - 'pickingB' → highlighted button + banner "Click point B"
+ *  - 'open'     → idle button (modal handles its own state)
+ *
+ *  Sits just below ViewModeControls (which is at top:3). */
+function CrossSectionControls({
+  mode,
+  onStart,
+  onCancel,
+}: {
+  mode: 'off' | 'pickingA' | 'pickingB' | 'open';
+  onStart: () => void;
+  onCancel: () => void;
+}) {
+  const picking = mode === 'pickingA' || mode === 'pickingB';
+  return (
+    <div className="absolute left-3 top-14 z-10 flex items-center gap-2">
+      <button
+        type="button"
+        onClick={picking ? onCancel : onStart}
+        data-testid="toggle-cross-section"
+        data-mode={mode}
+        title={picking ? 'Cancel cross-section picking' : 'Click two points on the map to draw a cross-section'}
+        className={cn(
+          'rounded-md border bg-bg-surface/90 px-2.5 py-1 font-mono text-[11px] shadow-lg backdrop-blur transition',
+          picking
+            ? 'border-accent/60 bg-accent/15 text-accent ring-1 ring-accent/40'
+            : 'border-border text-text-muted hover:border-accent hover:text-accent',
+        )}
+      >
+        {picking ? 'Cancel section' : 'Cross-section'}
+      </button>
+      {picking && (
+        <span
+          data-testid="cs-picker-banner"
+          className="rounded-md border border-accent/40 bg-accent/10 px-2 py-1 font-mono text-[11px] text-accent shadow-lg backdrop-blur"
+        >
+          {mode === 'pickingA' ? 'Click point A' : 'Click point B (ESC to cancel)'}
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -1011,6 +1721,53 @@ function computeAoiSummary(map: maplibregl.Map | null, vertices: LngLat[]): AoiS
     year1CostHigh,
     annualCost,
   };
+}
+
+// ─── Live commodity price ticker ───────────────────────────────────────
+
+/** Compact spot-price strip under the header. Shows the headline metals
+ *  with a live/stale indicator. Prices come from the manifest (fetched at
+ *  ETL time), so they refresh on each ETL run, not continuously. */
+function PriceTicker({ prices }: { prices: CommodityPrices }) {
+  // Display order — the commodities prospectors care about most first.
+  const order = ['AU', 'AG', 'CU', 'LI', 'NI', 'ZN', 'PB', 'U', 'MO', 'PT', 'PD'];
+  const items = order
+    .filter((sym) => prices.prices[sym])
+    .map((sym) => ({ sym, ...prices.prices[sym]! }));
+  if (items.length === 0) return null;
+
+  const fmt = (usd: number, unit: string): string => {
+    if (unit === 'oz') return `$${usd.toLocaleString(undefined, { maximumFractionDigits: 0 })}/oz`;
+    if (usd >= 1000) return `$${(usd / 1000).toFixed(1)}k/t`;
+    return `$${usd.toFixed(0)}/t`;
+  };
+  const date = prices.fetchedAt.slice(0, 10);
+
+  return (
+    <div className="flex items-center gap-1 overflow-x-auto border-t border-border bg-bg/40 px-4 py-1.5">
+      <span
+        className="shrink-0 font-mono text-[9px] uppercase tracking-wider"
+        style={{ color: prices.live ? '#22c55e' : '#f59e0b' }}
+        title={
+          prices.live
+            ? `Live spot prices via ${prices.source}, ${date}`
+            : `Static fallback (no live feed reachable), ${date}`
+        }
+      >
+        {prices.live ? '● spot' : '○ est'}
+      </span>
+      {items.map((it) => (
+        <span
+          key={it.sym}
+          className="shrink-0 rounded border border-border bg-bg-panel px-1.5 py-0.5 font-mono text-[10px]"
+          title={`${it.sym} — ${prices.live ? 'live' : 'estimated'} ${date}`}
+        >
+          <span className="text-text-muted">{it.sym}</span>{' '}
+          <span className="text-text">{fmt(it.usd, it.unit)}</span>
+        </span>
+      ))}
+    </div>
+  );
 }
 
 // ─── Optimal Acre wizard + recommendation drawer ──────────────────────
@@ -1727,6 +2484,8 @@ const PROPERTY_LABELS: Record<string, string> = {
   depth_ft: 'Total depth (ft)',
 };
 
+type DrawerTab = 'summary' | 'eligibility' | 'geology' | 'economics';
+
 function DetailDrawer({
   feature,
   geology,
@@ -1749,6 +2508,26 @@ function DetailDrawer({
     (feature.properties.name as string | undefined) ||
     (feature.properties.serial as string | undefined) ||
     feature.layerLabel;
+
+  // Tabs are only shown when they have meaningful content for the
+  // clicked feature. Eligibility hides for federal-lands clicks (the
+  // panel would render nothing — see StakeAbility's early-return).
+  const showEligibility = feature.layerId !== 'federal-lands';
+  const isHotspot = feature.layerId === 'hotspots';
+  const availableTabs: DrawerTab[] = ['summary'];
+  if (showEligibility) availableTabs.push('eligibility');
+  availableTabs.push('geology');
+  availableTabs.push('economics');
+
+  // Default tab persists per feature-click via React's natural state
+  // reset on key change (no key here, so it persists across clicks of
+  // the same point but resets when DetailDrawer mounts fresh).
+  const [tab, setTab] = useState<DrawerTab>('summary');
+  // If the previously-active tab is no longer available for this feature
+  // (e.g. user goes from a claim to a federal-lands click), fall back
+  // to summary.
+  const activeTab: DrawerTab = availableTabs.includes(tab) ? tab : 'summary';
+
   return (
     <aside
       data-testid="detail-drawer"
@@ -1776,23 +2555,62 @@ function DetailDrawer({
         </button>
       </header>
 
-      <div className="flex-1 overflow-y-auto px-4 py-3">
-        <StakeAbility feature={feature} />
-        {feature.layerId === 'hotspots' && <HotspotPanel feature={feature} />}
-        {entries.length > 0 && feature.layerId !== 'hotspots' && (
-          <dl className="mt-4 grid grid-cols-[120px_minmax(0,1fr)] gap-y-1 font-mono text-[11px]">
-            {entries.map(([key, value]) => (
-              <Row key={key} label={PROPERTY_LABELS[key] ?? key} value={value} />
-            ))}
-          </dl>
+      <nav
+        data-testid="drawer-tabs"
+        className="flex items-stretch gap-0.5 border-b border-border bg-bg-panel/30 px-1.5 py-1 font-mono text-[11px]"
+      >
+        {availableTabs.map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => setTab(t)}
+            aria-pressed={activeTab === t}
+            data-testid={`drawer-tab-${t}`}
+            data-active={activeTab === t}
+            className={cn(
+              'flex-1 rounded px-2 py-1 capitalize transition',
+              activeTab === t
+                ? 'bg-bg-surface text-accent shadow-inner ring-1 ring-accent/30'
+                : 'text-text-muted hover:bg-bg-panel hover:text-text',
+            )}
+          >
+            {t}
+          </button>
+        ))}
+      </nav>
+
+      <div data-testid={`drawer-pane-${activeTab}`} className="flex-1 overflow-y-auto px-4 py-3">
+        {activeTab === 'summary' && (
+          <>
+            {entries.length === 0 ? (
+              <p className="font-mono text-[11px] text-text-muted">
+                Point inspection — no feature attributes at this pixel. Geology + cost
+                heuristics still available in the other tabs.
+              </p>
+            ) : (
+              <dl className="grid grid-cols-[120px_minmax(0,1fr)] gap-y-1 font-mono text-[11px]">
+                {entries.map(([key, value]) => (
+                  <Row key={key} label={PROPERTY_LABELS[key] ?? key} value={value} />
+                ))}
+              </dl>
+            )}
+          </>
         )}
-        <CostPanel feature={feature} />
-        <SubsurfaceGeology
-          geology={geology}
-          loading={geologyLoading}
-          error={geologyError}
-          elevation={elevation}
-        />
+        {activeTab === 'eligibility' && <StakeAbility feature={feature} />}
+        {activeTab === 'geology' && (
+          <SubsurfaceGeology
+            geology={geology}
+            loading={geologyLoading}
+            error={geologyError}
+            elevation={elevation}
+          />
+        )}
+        {activeTab === 'economics' && (
+          <>
+            {isHotspot && <HotspotPanel feature={feature} />}
+            <CostPanel feature={feature} />
+          </>
+        )}
       </div>
 
       <footer className="flex items-center justify-between gap-2 border-t border-border px-4 py-2 font-mono text-[10px] text-text-muted">
@@ -1968,6 +2786,24 @@ function hotspotScoreColor(score: number): string {
   return '#475569'; // slate-600
 }
 
+/** Humanize an ISO timestamp as "5m ago" / "2h ago" / "3d ago" — used by
+ *  the sidebar freshness badge so the user can tell at a glance whether
+ *  they're looking at this week's tileset or last month's. */
+function humanizeAgo(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return 'unknown';
+  const seconds = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  const months = Math.floor(days / 30);
+  return `${months}mo ago`;
+}
+
 /** Format a dollar amount as $1.2M / $850K / $42 etc. */
 function fmtMoney(n: number): string {
   if (!Number.isFinite(n) || n <= 0) return '—';
@@ -1997,6 +2833,7 @@ function HotspotPanel({ feature }: { feature: SelectedFeature }) {
   const deposits = Number(feature.properties.deposits ?? 0);
   const claims = Number(feature.properties.claims ?? 0);
   const blmPolys = Number(feature.properties.blm_polys ?? 0);
+  const geochemAnom = Number(feature.properties.geochem_anom ?? 0);
   const topCommoditiesRaw = String(feature.properties.top_commodities ?? '');
   const costLow = Number(feature.properties.cost_low ?? 0);
   const costHigh = Number(feature.properties.cost_high ?? 0);
@@ -2037,10 +2874,14 @@ function HotspotPanel({ feature }: { feature: SelectedFeature }) {
       </div>
 
       {/* Signal breakdown */}
-      <dl className="mb-3 grid grid-cols-3 gap-2 font-mono text-[10px]">
+      <dl className="mb-3 grid grid-cols-2 gap-2 font-mono text-[10px]">
         <div className="rounded border border-border bg-bg-panel px-2 py-1.5">
           <div className="text-text-muted">Deposits</div>
           <div className="text-text">{deposits}</div>
+        </div>
+        <div className="rounded border border-border bg-bg-panel px-2 py-1.5">
+          <div className="text-text-muted">Geochem anomalies</div>
+          <div className="text-text">{geochemAnom}</div>
         </div>
         <div className="rounded border border-border bg-bg-panel px-2 py-1.5">
           <div className="text-text-muted">BLM coverage</div>
@@ -2357,10 +3198,15 @@ function buildLayer(
 
   if (def.geometry === 'point') {
     // MRDS dots are color-coded by commodity category so the most useful
-    // signal (what mineral) is visible at a glance. Other point layers
-    // just use their registry color.
+    // signal (what mineral) is visible at a glance. Geochemistry samples
+    // are graduated by a pathfinder element (As — classic gold vectoring)
+    // so anomalies pop. Other point layers just use their registry color.
     const circleColor: maplibregl.DataDrivenPropertyValueSpecification<string> =
-      def.tilesetLayer === 'mrds' ? mrdsCommodityColorExpr() : color;
+      def.tilesetLayer === 'mrds'
+        ? mrdsCommodityColorExpr()
+        : def.tilesetLayer === 'geochemistry'
+          ? geochemColorExpr()
+          : color;
     return [{
       ...common,
       type: 'circle',
@@ -2411,6 +3257,29 @@ function buildLayer(
     }];
   }
 
+  // Geophysics survey footprints — low-fill coverage overlay with a
+  // prominent dashed-feel outline. The point is to show WHERE modern
+  // subsurface data exists, so a light teal wash + crisp border reads as
+  // "this ground has been flown" without obscuring what's underneath.
+  if (def.id === 'geophysics') {
+    const fill: maplibregl.LayerSpecification = {
+      ...common,
+      type: 'fill',
+      paint: { 'fill-color': color, 'fill-opacity': 0.12 },
+    };
+    const outline: maplibregl.LayerSpecification = {
+      ...common,
+      id: def.id + OUTLINE_SUFFIX,
+      type: 'line',
+      paint: {
+        'line-color': color,
+        'line-width': ['interpolate', ['linear'], ['zoom'], 4, 0.8, 9, 1.6, 14, 2.4],
+        'line-opacity': 0.9,
+      },
+    };
+    return [fill, outline];
+  }
+
   // polygon — federal_lands paints multi-color by agency; hotspots
   // paints a 0-100 score heatmap; everything else uses the registry color.
   if (def.id === 'hotspots') {
@@ -2422,16 +3291,16 @@ function buildLayer(
         // the same break points used in the sidebar Top Hotspots list.
         'fill-color': [
           'interpolate', ['linear'], ['get', 'score'],
-          0, '#475569',   // slate-600 — barely visible
-          20, '#facc15',  // yellow-400
-          45, '#f97316',  // orange-500
-          70, '#dc2626',  // red-600
-          90, '#7f1d1d',  // red-900 — hottest
+          0, '#64748b',   // slate-500 — slightly brighter floor so low cells still read
+          15, '#fde047',  // yellow-300 — kicks in earlier so warm cells are obvious
+          40, '#f97316',  // orange-500
+          65, '#dc2626',  // red-600
+          85, '#7f1d1d',  // red-900 — hottest
         ],
         'fill-opacity': [
           'interpolate', ['linear'], ['get', 'score'],
-          0, 0.10,
-          100, 0.55,
+          0, 0.28,    // bumped floor: heatmap stays visible even on cold cells
+          100, 0.75,  // bumped ceiling: hot cells dominate the green underlay
         ],
       },
     };
@@ -2521,5 +3390,26 @@ function mrdsCommodityColorExpr(): maplibregl.DataDrivenPropertyValueSpecificati
     matchAny(['Potash', 'Phosphate', 'Sand', 'Gravel', 'Gypsum', 'Sulfur']),
     COMMODITY_CATEGORY_COLORS.industrial!,
     COMMODITY_CATEGORY_COLORS.unknown!,
+  ] as unknown as maplibregl.DataDrivenPropertyValueSpecification<string>;
+}
+
+/** Graduated color for a geochemistry sample by its arsenic concentration
+ *  (ppm). As is the classic gold pathfinder — high values vector toward
+ *  buried mineralization. Cool→hot ramp surfaces anomalies. Samples with
+ *  no As reading fall back to the registry violet so they're still
+ *  visible as "sampled here, no anomaly". */
+function geochemColorExpr(): maplibregl.DataDrivenPropertyValueSpecification<string> {
+  return [
+    'case',
+    ['has', 'as_ppm'],
+    [
+      'interpolate', ['linear'], ['to-number', ['get', 'as_ppm'], 0],
+      0, '#1e3a8a',    // blue-900 background
+      10, '#0891b2',   // cyan-600
+      30, '#facc15',   // yellow-400
+      80, '#f97316',   // orange-500
+      200, '#dc2626',  // red-600 — strong anomaly
+    ],
+    '#a78bfa', // violet fallback (no As reading)
   ] as unknown as maplibregl.DataDrivenPropertyValueSpecification<string>;
 }

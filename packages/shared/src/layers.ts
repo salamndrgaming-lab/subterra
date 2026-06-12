@@ -1,12 +1,23 @@
 /** Layer registry. Single source of truth for both the web app's sidebar
  * and the ETL pipeline — the ETL emits one tippecanoe layer per entry
  * with the matching `tilesetLayer` id, and the web app's MapLibre style
- * references the same id. */
+ * references the same id.
+ *
+ * Groups are task-based, not data-taxonomy: each group asks a question
+ * the user is trying to answer, rather than describing what kind of
+ * dataset the layer is. That keeps the sidebar discoverable as the
+ * layer count grows — a prospector wants to know "what's already
+ * here?" more often than "what is this dataset's federal source?"
+ */
 
 export interface LayerDef {
   id: string;
   label: string;
-  group: 'federal' | 'cadastral' | 'oilgas' | 'mining' | 'infrastructure' | 'analysis';
+  /** Task-based grouping. See LAYER_GROUPS below for the question each
+   *  group answers. 'risk' is reserved for future hazard layers (fire
+   *  perimeters, seismic, Superfund) and is intentionally absent until
+   *  any layer needs it — sidebar empty groups stay hidden. */
+  group: 'stake' | 'present' | 'economic' | 'subsurface' | 'reference';
   defaultVisible: boolean;
   /** Tippecanoe layer id inside the PMTiles file. */
   tilesetLayer: string;
@@ -25,11 +36,12 @@ export interface LayerDef {
 
 export const LAYERS: readonly LayerDef[] = [
   // federal lands — painted multi-color by agency (special case in Map.tsx),
-  // the `color` field here is ignored.
+  // the `color` field here is ignored. Surface-management ownership is
+  // the first stake-ability question — who owns the dirt above the deposit.
   {
     id: 'federal-lands',
     label: 'Federal Lands (BLM · USFS · NPS · BIA)',
-    group: 'federal',
+    group: 'stake',
     defaultVisible: true,
     tilesetLayer: 'federal_lands',
     geometry: 'polygon',
@@ -37,11 +49,12 @@ export const LAYERS: readonly LayerDef[] = [
     color: '#22c55e',
   },
 
-  // cadastral
+  // cadastral — surveyor's reference grid, useful for locating
+  // section corners but not a constraint or signal.
   {
     id: 'plss',
     label: 'PLSS Townships',
-    group: 'cadastral',
+    group: 'reference',
     defaultVisible: false,
     tilesetLayer: 'plss',
     geometry: 'line',
@@ -49,11 +62,12 @@ export const LAYERS: readonly LayerDef[] = [
     color: '#64748b', // slate
   },
 
-  // mining
+  // existing rights / sites — what's already been staked, drilled, or
+  // documented as mineral-bearing here.
   {
     id: 'mining-claims',
     label: 'BLM Mining Claims (active)',
-    group: 'mining',
+    group: 'present',
     defaultVisible: true,
     tilesetLayer: 'mining_claims',
     geometry: 'polygon',
@@ -63,7 +77,7 @@ export const LAYERS: readonly LayerDef[] = [
   {
     id: 'mrds',
     label: 'USGS Mineral Occurrences',
-    group: 'mining',
+    group: 'present',
     defaultVisible: true,
     tilesetLayer: 'mrds',
     geometry: 'point',
@@ -75,7 +89,7 @@ export const LAYERS: readonly LayerDef[] = [
   {
     id: 'open-blm-land',
     label: 'Open BLM Land (stake-able)',
-    group: 'mining',
+    group: 'stake',
     defaultVisible: false,
     // Shares the federal_lands source-layer + filters to BLM-only. Real
     // "open" stakeability (subtracting active claims) is checked at click
@@ -88,12 +102,29 @@ export const LAYERS: readonly LayerDef[] = [
     minZoom: 6,
     color: '#a3e635', // lime — the staking target
   },
+  {
+    id: 'water-rights',
+    label: 'Water Rights (NV, UT, AZ)',
+    group: 'economic',
+    // Off by default — the layer is dense (tens of thousands of points
+    // per state) and answers a specific "can I get water?" question
+    // rather than a baseline-map need.
+    defaultVisible: false,
+    tilesetLayer: 'water_rights',
+    geometry: 'point',
+    // Only meaningful at basin / sub-basin zoom; at continental zoom
+    // the points coalesce into noise.
+    minZoom: 6,
+    color: '#0ea5e9', // sky blue — water
+  },
 
-  // oilgas
+  // oil & gas — wells and leases are also "what's already here" for
+  // an O&G evaluator. Pipelines further down are about access /
+  // economics for an O&G or mining play.
   {
     id: 'wells',
     label: 'Oil & Gas Wells',
-    group: 'oilgas',
+    group: 'present',
     defaultVisible: true,
     tilesetLayer: 'wells',
     geometry: 'point',
@@ -105,7 +136,7 @@ export const LAYERS: readonly LayerDef[] = [
   {
     id: 'well-laterals',
     label: 'Wellbore Laterals',
-    group: 'oilgas',
+    group: 'present',
     defaultVisible: false,
     tilesetLayer: 'well_laterals',
     geometry: 'line',
@@ -115,7 +146,7 @@ export const LAYERS: readonly LayerDef[] = [
   {
     id: 'leases',
     label: 'BLM Federal O&G Leases',
-    group: 'oilgas',
+    group: 'present',
     defaultVisible: false,
     tilesetLayer: 'leases',
     geometry: 'polygon',
@@ -124,11 +155,12 @@ export const LAYERS: readonly LayerDef[] = [
                      // fill stands apart from the sky-blue gas pipelines
   },
 
-  // infrastructure
+  // infrastructure — proximity to pipelines drives haul economics
+  // for both O&G output and mining concentrate.
   {
     id: 'pipelines-natgas',
     label: 'Natural Gas Pipelines',
-    group: 'infrastructure',
+    group: 'economic',
     defaultVisible: false,
     tilesetLayer: 'pipelines_natgas',
     geometry: 'line',
@@ -138,7 +170,7 @@ export const LAYERS: readonly LayerDef[] = [
   {
     id: 'pipelines-crude',
     label: 'Crude Oil Pipelines',
-    group: 'infrastructure',
+    group: 'economic',
     defaultVisible: false,
     tilesetLayer: 'pipelines_crude',
     geometry: 'line',
@@ -146,13 +178,71 @@ export const LAYERS: readonly LayerDef[] = [
     color: '#dc2626', // red
   },
 
+  // subsurface signal — raw science datasets the pros vector targets from.
+  // Geochemistry is painted graduated-by-element in Map.tsx; geophysics
+  // is a coverage footprint overlay.
+  {
+    id: 'geochemistry',
+    label: 'Geochemistry (NGDB samples)',
+    group: 'subsurface',
+    defaultVisible: false,
+    tilesetLayer: 'geochemistry',
+    geometry: 'point',
+    minZoom: 6,
+    color: '#a78bfa', // violet — Map.tsx overrides with element-graduated ramp
+  },
+  {
+    id: 'geophysics',
+    label: 'Geophysical Survey Coverage',
+    group: 'subsurface',
+    defaultVisible: false,
+    tilesetLayer: 'geophysics',
+    geometry: 'polygon',
+    minZoom: 4,
+    color: '#2dd4bf', // teal — airborne survey footprints
+  },
+
+  // Stake-ability constraints — eligibility blockers a clicked point can hit.
+  {
+    id: 'withdrawals',
+    label: 'Mineral Withdrawals (BLM)',
+    group: 'stake',
+    defaultVisible: false,
+    tilesetLayer: 'withdrawals',
+    geometry: 'polygon',
+    minZoom: 5,
+    color: '#ef4444', // red — "do not stake here" signal
+  },
+  {
+    id: 'critical-habitat',
+    label: 'USFWS Critical Habitat',
+    group: 'stake',
+    defaultVisible: false,
+    tilesetLayer: 'critical_habitat',
+    geometry: 'polygon',
+    minZoom: 5,
+    color: '#f97316', // orange — strong caution, not hard-block
+  },
+  {
+    id: 'indian-lands',
+    label: 'Tribal Lands (AIANNH)',
+    group: 'stake',
+    defaultVisible: false,
+    tilesetLayer: 'indian_lands',
+    geometry: 'polygon',
+    minZoom: 4,
+    color: '#a855f7', // purple — distinct from BLM/USFS/NPS agency colors
+  },
+
   // analysis — precomputed prospecting overlays. Score-driven, click for
   // cost/revenue heuristics. Painted in Map.tsx with a graduated fill
-  // expression keyed off the `score` property.
+  // expression keyed off the `score` property. Lands in 'economic'
+  // because the score is a feasibility/opportunity signal, not a
+  // primary data layer.
   {
     id: 'hotspots',
     label: 'Resource Hotspots (heatmap)',
-    group: 'analysis',
+    group: 'economic',
     defaultVisible: false,
     tilesetLayer: 'hotspots',
     geometry: 'polygon',
@@ -161,13 +251,15 @@ export const LAYERS: readonly LayerDef[] = [
   },
 ] as const;
 
+/** Task-based group registry. Order = display order in the sidebar.
+ *  Each group is "what question does this answer?" — chosen for
+ *  discoverability over data taxonomy. */
 export const LAYER_GROUPS: Record<LayerDef['group'], string> = {
-  federal: 'Federal Lands',
-  cadastral: 'Cadastral',
-  oilgas: 'Oil & Gas',
-  mining: 'Mining',
-  infrastructure: 'Infrastructure',
-  analysis: 'Analysis',
+  stake: 'Where can I stake?',
+  present: "What's already here?",
+  economic: 'Is it economical?',
+  subsurface: "What's underground?",
+  reference: 'Reference',
 };
 
 /** Commodity-category colors used by MRDS (matched at render time). */
