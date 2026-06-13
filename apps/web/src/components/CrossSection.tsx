@@ -43,11 +43,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { fetchElevation } from '@/lib/elevation';
-import { fetchGeology } from '@/lib/macrostrat';
+import { fetchGeology, type StratUnit } from '@/lib/macrostrat';
 import {
   bearingDeg,
   distanceMeters,
   interpolateLine,
+  polylineCrossings,
   projectOntoLine,
   type LngLat,
 } from '@/lib/section-math';
@@ -61,6 +62,11 @@ const MAX_BUFFER_M = 8000;
 const DEFAULT_VE = 4; // vertical exaggeration on first open
 const MIN_VE = 1;
 const MAX_VE = 30;
+/** Subsurface depth-window options (meters below lowest surface point).
+ *  Macrostrat columns can stack 5-10 km of section; rendering all of it
+ *  squashes the interesting near-surface units. Default 1 km. */
+const DEPTH_OPTIONS = [500, 1000, 2000, 4000] as const;
+const DEFAULT_DEPTH_M = 1000;
 
 export interface CrossSectionMrds {
   lng: number;
@@ -91,6 +97,17 @@ export interface CrossSectionAgency {
   name?: string;
 }
 
+/** A fault trace from the quaternary-faults layer — raw polyline
+ *  coordinates plus display attributes. The modal computes exact
+ *  crossings with the AB line itself (buffer-independent). */
+export interface CrossSectionFault {
+  coords: LngLat[];
+  name?: string;
+  slipSense?: string;
+  slipRate?: string;
+  age?: string;
+}
+
 interface ElevSample {
   t: number;
   distM: number;
@@ -104,6 +121,19 @@ interface GeoSample {
   label: string;
   age?: string;
   lithology?: string;
+  /** Macrostrat column id at this sample — used to group adjacent
+   *  samples into column blocks for the subsurface section. */
+  columnId?: number;
+  /** Full stratigraphic column (ordered top → bottom) at this sample. */
+  strat: StratUnit[];
+}
+
+interface FaultCrossing {
+  t: number; // fraction along AB
+  name: string;
+  slipSense: string;
+  slipRate: string;
+  age: string;
 }
 
 interface ProjectedPoint {
@@ -137,6 +167,7 @@ export function CrossSection({
   claims = [],
   geochem = [],
   agencies = [],
+  faults = [],
   onClose,
 }: {
   a: LngLat;
@@ -145,6 +176,7 @@ export function CrossSection({
   claims?: CrossSectionClaim[];
   geochem?: CrossSectionGeochem[];
   agencies?: CrossSectionAgency[];
+  faults?: CrossSectionFault[];
   onClose: () => void;
 }) {
   // Reversible endpoints — local state so the modal can swap A/B
@@ -153,6 +185,7 @@ export function CrossSection({
   const [pair, setPair] = useState<{ a: LngLat; b: LngLat }>({ a, b });
   const [bufferM, setBufferM] = useState(DEFAULT_BUFFER_M);
   const [ve, setVe] = useState(DEFAULT_VE);
+  const [depthM, setDepthM] = useState<number>(DEFAULT_DEPTH_M);
 
   const totalDistM = useMemo(() => distanceMeters(pair.a, pair.b), [pair]);
   const bearing = useMemo(() => bearingDeg(pair.a, pair.b), [pair]);
@@ -228,6 +261,25 @@ export function CrossSection({
     agencies, pair, totalDistM,
   ]);
 
+  // Fault crossings — exact polyline∩AB intersections (no buffer:
+  // a fault either crosses the section plane or it doesn't).
+  const faultCrossings: FaultCrossing[] = useMemo(() => {
+    const out: FaultCrossing[] = [];
+    for (const f of faults) {
+      const ts = polylineCrossings(pair.a, pair.b, f.coords);
+      for (const t of ts) {
+        out.push({
+          t,
+          name: f.name ?? '(unnamed fault)',
+          slipSense: f.slipSense ?? '',
+          slipRate: f.slipRate ?? '',
+          age: f.age ?? '',
+        });
+      }
+    }
+    return out.sort((x, y) => x.t - y.t);
+  }, [faults, pair]);
+
   // ─── data fetching (re-runs only when AB actually changes) ──────
   useEffect(() => {
     cancelRef.current = false;
@@ -254,6 +306,8 @@ export function CrossSection({
         let label = 'unknown';
         let age: string | undefined;
         let lithology: string | undefined;
+        let columnId: number | undefined;
+        let strat: StratUnit[] = [];
         if (s.status === 'fulfilled') {
           const top = s.value.units[0];
           if (top) {
@@ -262,8 +316,10 @@ export function CrossSection({
             age = top.age;
             lithology = top.lithology;
           }
+          columnId = s.value.columnId;
+          strat = s.value.strat;
         }
-        return { t, distM: t * totalDistM, color, label, age, lithology };
+        return { t, distM: t * totalDistM, color, label, age, lithology, columnId, strat };
       });
       setGeology(out);
       setLoading((p) => ({ ...p, geology: false }));
@@ -324,10 +380,13 @@ export function CrossSection({
           onVeChange={setVe}
           bufferM={bufferM}
           onBufferChange={setBufferM}
+          depthM={depthM}
+          onDepthChange={setDepthM}
           counts={{
             mrds: projectedMrds.length,
             claims: projectedClaims.length,
             geochem: projectedGeochem.length,
+            faults: faultCrossings.length,
           }}
         />
 
@@ -347,9 +406,11 @@ export function CrossSection({
               claims={projectedClaims}
               geochem={projectedGeochem}
               agencyStrip={agencyStrip}
+              faultCrossings={faultCrossings}
               stats={stats}
               ve={ve}
               bufferM={bufferM}
+              depthM={depthM}
             />
           )}
         </div>
@@ -451,18 +512,22 @@ function Toolbar({
   onVeChange,
   bufferM,
   onBufferChange,
+  depthM,
+  onDepthChange,
   counts,
 }: {
   ve: number;
   onVeChange: (v: number) => void;
   bufferM: number;
   onBufferChange: (m: number) => void;
-  counts: { mrds: number; claims: number; geochem: number };
+  depthM: number;
+  onDepthChange: (m: number) => void;
+  counts: { mrds: number; claims: number; geochem: number; faults: number };
 }) {
   return (
     <div className="flex flex-wrap items-center gap-4 border-b border-border bg-bg-panel/30 px-4 py-2 font-mono text-[10px]">
       <label className="flex items-center gap-2 text-text-muted">
-        <span>Vertical exaggeration</span>
+        <span>Vertical stretch</span>
         <input
           type="range"
           min={MIN_VE}
@@ -471,9 +536,9 @@ function Toolbar({
           value={ve}
           onChange={(e) => onVeChange(Number(e.target.value))}
           data-testid="cs-ve-slider"
-          className="h-1 w-32 accent-accent"
+          className="h-1 w-28 accent-accent"
         />
-        <span className="w-10 text-accent">{ve}×</span>
+        <span className="w-8 text-accent">{ve}×</span>
       </label>
       <label className="flex items-center gap-2 text-text-muted">
         <span>Buffer ±</span>
@@ -485,16 +550,32 @@ function Toolbar({
           value={bufferM}
           onChange={(e) => onBufferChange(Number(e.target.value))}
           data-testid="cs-buffer-slider"
-          className="h-1 w-32 accent-accent"
+          className="h-1 w-28 accent-accent"
         />
-        <span className="w-16 text-accent">
+        <span className="w-14 text-accent">
           {(bufferM / 1609.34).toFixed(2)} mi
         </span>
+      </label>
+      <label className="flex items-center gap-2 text-text-muted">
+        <span>Depth</span>
+        <select
+          value={depthM}
+          onChange={(e) => onDepthChange(Number(e.target.value))}
+          data-testid="cs-depth-select"
+          className="rounded border border-border bg-bg-panel px-1.5 py-0.5 text-accent focus:border-accent focus:outline-none"
+        >
+          {DEPTH_OPTIONS.map((d) => (
+            <option key={d} value={d}>
+              {d >= 1000 ? `${d / 1000} km` : `${d} m`}
+            </option>
+          ))}
+        </select>
       </label>
       <div className="ml-auto flex items-center gap-3 text-text-muted">
         <CountBadge label="MRDS" value={counts.mrds} color="#fbbf24" />
         <CountBadge label="Claims" value={counts.claims} color="#f59e0b" />
         <CountBadge label="Geochem" value={counts.geochem} color="#a78bfa" />
+        <CountBadge label="Faults" value={counts.faults} color="#ef4444" />
       </div>
     </div>
   );
@@ -583,9 +664,11 @@ function SectionSvg({
   claims,
   geochem,
   agencyStrip,
+  faultCrossings,
   stats,
   ve,
   bufferM,
+  depthM,
 }: {
   svgRef: React.MutableRefObject<SVGSVGElement | null>;
   totalDistM: number;
@@ -596,12 +679,14 @@ function SectionSvg({
   claims: ProjectedClaim[];
   geochem: ProjectedGeochem[];
   agencyStrip: AgencySegment[];
+  faultCrossings: FaultCrossing[];
   stats: SectionStats;
   ve: number;
   bufferM: number;
+  depthM: number;
 }) {
   const W = 1200;
-  const H = 520;
+  const H = 640;
   const PADDING = { l: 70, r: 24, t: 28, b: 92 };
   const innerW = W - PADDING.l - PADDING.r;
   const innerH = H - PADDING.t - PADDING.b;
@@ -609,22 +694,24 @@ function SectionSvg({
   const AGENCY_BAND_H = 12;
   const STRIP_GAP = 4;
 
-  // ── elevation domain ──────────────────────────────────────────────
+  // ── elevation domain (continuous through the subsurface) ─────────
+  // Industry "hung section" convention: one elevation axis spans the
+  // highest surface point down to (lowest surface − depth window).
+  // The VE slider stretches the axis around the data midpoint —
+  // effective vertical exaggeration relative to the horizontal scale
+  // is computed below for honest labeling.
   const elevValid = elev.filter((e): e is ElevSample & { elevM: number } => e.elevM != null);
   const dataMin = elevValid.length ? Math.min(...elevValid.map((e) => e.elevM)) : 0;
   const dataMax = elevValid.length ? Math.max(...elevValid.map((e) => e.elevM)) : 100;
-  const dataRange = Math.max(50, dataMax - dataMin);
-  // True scale would be (dataRange / totalDistM) — at 10km / 500m
-  // relief that's a 5% slope, barely visible. VE multiplies that to
-  // make terrain readable. The visible "elevation domain" stays the
-  // real elevations; only the y-mapping stretches via ve.
-  const visibleRange = dataRange / ve;
-  // Center the data inside the visibleRange so the topo stays vertically
-  // balanced even when ve makes it look tiny.
-  const elevMid = (dataMin + dataMax) / 2;
-  const yDomainMin = elevMid - visibleRange / 2 - dataRange * 0.05;
-  const yDomainMax = elevMid + visibleRange / 2 + dataRange * 0.05;
+  const subsurfaceFloor = dataMin - depthM;
+  const fullRange = Math.max(50, dataMax - subsurfaceFloor);
+  const visibleRange = fullRange / Math.max(1, ve / 4); // ve=4 default → full window
+  const elevMid = (dataMax + subsurfaceFloor) / 2;
+  const yDomainMin = elevMid - visibleRange / 2 - fullRange * 0.02;
+  const yDomainMax = elevMid + visibleRange / 2 + fullRange * 0.02;
   const yDomainSpan = Math.max(1, yDomainMax - yDomainMin);
+  // Effective VE = horizontal meters-per-px ÷ vertical meters-per-px.
+  const effectiveVe = (totalDistM / innerW) / (yDomainSpan / innerH);
 
   const xOf = (distM: number): number => PADDING.l + (distM / totalDistM) * innerW;
   const yOf = (elevM: number): number =>
@@ -633,6 +720,17 @@ function SectionSvg({
   const topoBottomY = PADDING.t + innerH;
   const geoTopY = topoBottomY + STRIP_GAP;
   const agencyTopY = geoTopY + GEO_BAND_H + STRIP_GAP;
+
+  // ── subsurface column blocks ──────────────────────────────────────
+  // Group adjacent geology samples sharing a Macrostrat column id into
+  // one block; each block renders its strat units hung from the topo
+  // surface at the block midpoint. Column boundaries get a dashed
+  // divider — that's where the data resolution changes, and drawing a
+  // fake smooth transition would imply structure we don't know.
+  const columnBlocks = useMemo(
+    () => buildColumnBlocks(geology, totalDistM),
+    [geology, totalDistM],
+  );
 
   // ── topo path (contiguous segments) ───────────────────────────────
   const topoSegments = buildPolySegments(elev, xOf, yOf);
@@ -662,13 +760,22 @@ function SectionSvg({
   const hoverGeo = hoverDist != null ? geoAt(geology, hoverDist) : null;
   const hoverAgency = hoverDist != null ? agencyAt(agencyStrip, hoverDist) : null;
   const hoverSlope = hoverDist != null ? slopeAt(elev, hoverDist) : null;
+  // Unit at the hovered DEPTH — convert cursor y back to elevation,
+  // then walk the column block's stack. Null when above the surface.
+  const hoverCursorElev = hover
+    ? yDomainMin + ((PADDING.t + innerH - hover.y) / innerH) * yDomainSpan
+    : null;
+  const hoverUnit =
+    hoverDist != null && hoverCursorElev != null && hoverElev != null && hoverCursorElev < hoverElev
+      ? unitAtDepth(columnBlocks, elev, hoverDist, hoverElev - hoverCursorElev)
+      : null;
 
-  // ── y-axis ticks ──────────────────────────────────────────────────
-  const yTickCount = 6;
-  const yTickStep = niceStep((dataMax - dataMin) / yTickCount);
+  // ── y-axis ticks (span surface + subsurface window) ───────────────
+  const yTickCount = 8;
+  const yTickStep = niceStep((dataMax - subsurfaceFloor) / yTickCount);
   const yTicks: number[] = [];
   if (yTickStep > 0) {
-    const start = Math.ceil(dataMin / yTickStep) * yTickStep;
+    const start = Math.ceil(subsurfaceFloor / yTickStep) * yTickStep;
     for (let v = start; v <= dataMax + 0.5; v += yTickStep) yTicks.push(v);
   }
 
@@ -718,6 +825,146 @@ function SectionSvg({
           strokeDasharray="2 3"
         />
       ))}
+
+      {/* ── subsurface stratigraphy (hung section) ──
+          Units hang from the topo surface, stacked downward by
+          Macrostrat thickness. Clipped to below-the-surface so unit
+          rects never poke above the terrain. */}
+      <defs>
+        <clipPath id="cs-subsurface-clip">
+          <path d={buildBelowSurfaceClip(elev, xOf, yOf, PADDING.l, W - PADDING.r, topoBottomY)} />
+        </clipPath>
+      </defs>
+      <g clipPath="url(#cs-subsurface-clip)">
+        {columnBlocks.map((block, bi) => {
+          const x0 = xOf(block.startM);
+          const x1 = xOf(block.endM);
+          const w = Math.max(1, x1 - x0);
+          // Hang from the surface elevation at the block midpoint.
+          const midDist = (block.startM + block.endM) / 2;
+          const surfElev = interpElev(elev, midDist) ?? dataMax;
+          let cum = 0;
+          return (
+            <g key={`col-${bi}`}>
+              {block.units.map((u, ui) => {
+                const thick = u.thicknessM && u.thicknessM > 0 ? u.thicknessM : 50;
+                const topElev = surfElev - cum;
+                const botElev = topElev - thick;
+                cum += thick;
+                if (topElev < subsurfaceFloor) return null; // below depth window
+                const yTop = yOf(topElev);
+                const yBot = Math.min(yOf(Math.max(botElev, subsurfaceFloor)), topoBottomY);
+                const h = Math.max(0.5, yBot - yTop);
+                const showLabel = h > 13 && w > 90;
+                return (
+                  <g key={`u-${bi}-${ui}`}>
+                    <rect
+                      x={x0}
+                      y={yTop}
+                      width={w}
+                      height={h}
+                      fill={u.color ?? '#475569'}
+                      opacity={0.82}
+                      stroke="#0a0c10"
+                      strokeWidth={0.6}
+                    >
+                      <title>
+                        {`${u.name}${u.age ? ` · ${u.age}` : ''}${u.lithology ? ` · ${u.lithology}` : ''}` +
+                          `\nthickness ~${Math.round(thick)} m · top ~${Math.round(cum - thick)} m below surface` +
+                          `${u.environment ? `\nenvironment: ${u.environment}` : ''}`}
+                      </title>
+                    </rect>
+                    {showLabel && (
+                      <text
+                        x={x0 + w / 2}
+                        y={yTop + h / 2 + 3}
+                        textAnchor="middle"
+                        fontFamily="ui-monospace, monospace"
+                        fontSize={9}
+                        fill={contrastTextColor(u.color ?? '#475569')}
+                        pointerEvents="none"
+                      >
+                        {truncate(u.name, Math.max(6, Math.floor(w / 6.5)))}
+                      </text>
+                    )}
+                  </g>
+                );
+              })}
+              {/* column boundary divider (skip leading edge of first block) */}
+              {bi > 0 && (
+                <line
+                  x1={x0}
+                  y1={PADDING.t}
+                  x2={x0}
+                  y2={topoBottomY}
+                  stroke="#0a0c10"
+                  strokeWidth={2}
+                  strokeDasharray="6 4"
+                  opacity={0.9}
+                />
+              )}
+            </g>
+          );
+        })}
+      </g>
+      {columnBlocks.length === 0 && (
+        <text
+          x={PADDING.l + innerW / 2}
+          y={topoBottomY - 30}
+          textAnchor="middle"
+          fontFamily="ui-monospace, monospace"
+          fontSize={10}
+          fill="#64748b"
+        >
+          no stratigraphic column coverage along this line (Macrostrat)
+        </text>
+      )}
+
+      {/* ── fault traces crossing the section ──
+          Quaternary fault traces give the surface crossing point but
+          not the dip — drawn vertical-dashed per convention for
+          unknown dip, with the name + slip data in the tooltip. */}
+      {faultCrossings.map((f, i) => {
+        const x = PADDING.l + f.t * innerW;
+        const surfY = (() => {
+          const e = interpElev(elev, f.t * totalDistM);
+          return e != null ? yOf(e) : PADDING.t + 40;
+        })();
+        return (
+          <g key={`fault-${i}`}>
+            <line
+              x1={x}
+              y1={surfY}
+              x2={x}
+              y2={topoBottomY}
+              stroke="#ef4444"
+              strokeWidth={2}
+              strokeDasharray="8 4"
+              opacity={0.9}
+            >
+              <title>
+                {`${f.name}${f.slipSense ? `\nslip sense: ${f.slipSense}` : ''}` +
+                  `${f.slipRate ? `\nslip rate: ${f.slipRate}` : ''}` +
+                  `${f.age ? `\nage: ${f.age}` : ''}\n(dip unknown — drawn vertical)`}
+              </title>
+            </line>
+            {/* surface tick + label */}
+            <polygon
+              points={`${x - 5},${surfY - 9} ${x + 5},${surfY - 9} ${x},${surfY - 2}`}
+              fill="#ef4444"
+            />
+            <text
+              x={x + 4}
+              y={surfY - 14}
+              fontFamily="ui-monospace, monospace"
+              fontSize={9}
+              fill="#ef4444"
+            >
+              {truncate(f.name, 26)}
+            </text>
+          </g>
+        );
+      })}
 
       {/* ── topo fill (gradient) + line ── */}
       {topoFillPath && (
@@ -904,7 +1151,7 @@ function SectionSvg({
             rx={3}
           />
           <text x={0} y={0} fill="#94a3b8">VE</text>
-          <text x={50} y={0} fill="#fbbf24">{ve}×</text>
+          <text x={50} y={0} fill="#fbbf24">{effectiveVe.toFixed(1)}×</text>
           <text x={90} y={0} fill="#94a3b8">Relief</text>
           <text x={150} y={0}>{Math.round(stats.reliefM)} m</text>
           <text x={0} y={14} fill="#94a3b8">Slope</text>
@@ -1027,6 +1274,7 @@ function SectionSvg({
             geoLabel={hoverGeo?.label ?? null}
             geoAge={hoverGeo?.age ?? null}
             agency={hoverAgency?.agency ?? null}
+            unitAtCursor={hoverUnit}
             W={W}
             PADDING={PADDING}
           />
@@ -1045,6 +1293,7 @@ function HoverReadout({
   geoLabel,
   geoAge,
   agency,
+  unitAtCursor,
   W,
   PADDING,
 }: {
@@ -1056,12 +1305,13 @@ function HoverReadout({
   geoLabel: string | null;
   geoAge: string | null;
   agency: string | null;
+  unitAtCursor: { name: string; depthM: number } | null;
   W: number;
   PADDING: { l: number; r: number; t: number; b: number };
 }) {
   // Pin the readout to whichever side of the cursor has more space.
-  const boxW = 200;
-  const boxH = 78;
+  const boxW = 210;
+  const boxH = unitAtCursor ? 92 : 78;
   const placeRight = hover.x < W - PADDING.r - boxW - 8;
   const x = placeRight ? hover.x + 10 : hover.x - boxW - 10;
   const y = Math.min(hover.y + 10, PADDING.t + 6);
@@ -1087,14 +1337,22 @@ function HoverReadout({
       <text x={boxW - 8} y={42} textAnchor="end" fill="#f8fafc">
         {slopePct != null ? `${slopePct.toFixed(1)}%` : '—'}
       </text>
-      <text x={8} y={56} fill="#94a3b8">formation</text>
+      <text x={8} y={56} fill="#94a3b8">surface geo</text>
       <text x={boxW - 8} y={56} textAnchor="end" fill="#f8fafc">
         {truncate(geoLabel ?? '—', 22)}{geoAge ? `, ${truncate(geoAge, 8)}` : ''}
       </text>
-      <text x={8} y={70} fill="#94a3b8">surface</text>
+      <text x={8} y={70} fill="#94a3b8">surface mgmt</text>
       <text x={boxW - 8} y={70} textAnchor="end" fill="#f8fafc">
         {agency ?? '—'}
       </text>
+      {unitAtCursor && (
+        <>
+          <text x={8} y={84} fill="#94a3b8">at cursor</text>
+          <text x={boxW - 8} y={84} textAnchor="end" fill="#2dd4bf">
+            {truncate(unitAtCursor.name, 18)} ({Math.round(unitAtCursor.depthM)} m)
+          </text>
+        </>
+      )}
       {/* invariant: keeps positional info accessible if the cursor is
           past the section's full span (clamped to totalDistM). */}
       {distM > totalDistM && <title>past end of section</title>}
@@ -1234,6 +1492,83 @@ function mergeGeoBands(geology: GeoSample[], _xOf: (m: number) => number): Merge
     }
   }
   return out;
+}
+
+interface ColumnBlock {
+  startM: number;
+  endM: number;
+  columnId: number | undefined;
+  /** Ordered top → bottom stratigraphic units for this column. */
+  units: StratUnit[];
+}
+
+/** Group adjacent geology samples sharing a Macrostrat column id into
+ *  contiguous blocks. Each block renders one hung column. Samples with
+ *  no column coverage produce no block (gap in the section — honest
+ *  about missing data rather than smearing a neighbor sideways). */
+function buildColumnBlocks(geology: GeoSample[], totalDistM: number): ColumnBlock[] {
+  const out: ColumnBlock[] = [];
+  for (let i = 0; i < geology.length; i++) {
+    const g = geology[i]!;
+    if (g.columnId == null || g.strat.length === 0) continue;
+    const next = geology[i + 1];
+    const segEnd = next?.distM ?? totalDistM;
+    const last = out[out.length - 1];
+    if (last && last.columnId === g.columnId && Math.abs(last.endM - g.distM) < 1) {
+      last.endM = segEnd;
+    } else {
+      out.push({ startM: g.distM, endM: segEnd, columnId: g.columnId, units: g.strat });
+    }
+  }
+  return out;
+}
+
+/** Clip path covering the region BELOW the topo surface (down to the
+ *  chart bottom). Subsurface unit rects are clipped to this so they
+ *  never paint above the terrain line. Where elevation data is missing
+ *  the clip follows the chart top (no masking) — units in those spans
+ *  simply won't render, which matches the missing-topo gap. */
+function buildBelowSurfaceClip(
+  elev: ElevSample[],
+  xOf: (m: number) => number,
+  yOf: (e: number) => number,
+  leftX: number,
+  rightX: number,
+  bottomY: number,
+): string {
+  const valid = elev.filter((e): e is ElevSample & { elevM: number } => e.elevM != null);
+  if (valid.length < 2) {
+    return `M ${leftX} ${bottomY} L ${rightX} ${bottomY} L ${rightX} ${bottomY} Z`;
+  }
+  let d = `M ${xOf(valid[0]!.distM).toFixed(1)} ${yOf(valid[0]!.elevM).toFixed(1)} `;
+  for (const e of valid.slice(1)) {
+    d += `L ${xOf(e.distM).toFixed(1)} ${yOf(e.elevM).toFixed(1)} `;
+  }
+  d += `L ${xOf(valid[valid.length - 1]!.distM).toFixed(1)} ${bottomY} `;
+  d += `L ${xOf(valid[0]!.distM).toFixed(1)} ${bottomY} Z`;
+  return d;
+}
+
+/** Find the stratigraphic unit at `depthM` below the surface at
+ *  `distM` along the section. Walks the column block covering that
+ *  distance, accumulating unit thicknesses. */
+function unitAtDepth(
+  blocks: ColumnBlock[],
+  _elev: ElevSample[],
+  distM: number,
+  depthM: number,
+): { name: string; depthM: number } | null {
+  const block = blocks.find((bl) => distM >= bl.startM && distM <= bl.endM);
+  if (!block) return null;
+  let cum = 0;
+  for (const u of block.units) {
+    const thick = u.thicknessM && u.thicknessM > 0 ? u.thicknessM : 50;
+    if (depthM >= cum && depthM < cum + thick) {
+      return { name: u.name, depthM };
+    }
+    cum += thick;
+  }
+  return null;
 }
 
 interface AgencySegment {

@@ -14,7 +14,7 @@ import {
   type SourceStatus,
 } from '@subterra/shared';
 import { cn } from '@/lib/cn';
-import { CrossSection, type CrossSectionAgency, type CrossSectionClaim, type CrossSectionGeochem, type CrossSectionMrds } from '@/components/CrossSection';
+import { CrossSection, type CrossSectionAgency, type CrossSectionClaim, type CrossSectionFault, type CrossSectionGeochem, type CrossSectionMrds } from '@/components/CrossSection';
 import { fetchManifest } from '@/lib/manifest';
 import { fetchMe, signOut } from '@/lib/auth';
 import { checkPmtilesCached, precachePmtiles } from '@/lib/sw';
@@ -159,6 +159,7 @@ export function MapPage() {
   const [csClaims, setCsClaims] = useState<CrossSectionClaim[]>([]);
   const [csGeochem, setCsGeochem] = useState<CrossSectionGeochem[]>([]);
   const [csAgencies, setCsAgencies] = useState<CrossSectionAgency[]>([]);
+  const [csFaults, setCsFaults] = useState<CrossSectionFault[]>([]);
   /** Mirror csMode + csA into refs so the mount-time click handler can
    *  read the latest value without re-binding. */
   const csModeRef = useRef<'off' | 'pickingA' | 'pickingB' | 'open'>('off');
@@ -169,6 +170,8 @@ export function MapPage() {
   const imagery = useViewMode((s) => s.imagery);
   const setTerrain3d = useViewMode((s) => s.setTerrain3d);
   const setImagery = useViewMode((s) => s.setImagery);
+  const stakeClarity = useViewMode((s) => s.stakeClarity);
+  const setStakeClarity = useViewMode((s) => s.setStakeClarity);
 
   const manifestQuery = useQuery({
     queryKey: ['manifest'],
@@ -439,6 +442,34 @@ export function MapPage() {
         }
         setCsAgencies(collectedAg);
 
+        // Quaternary fault traces in the bbox — the modal computes the
+        // exact crossings with the AB line. LineString + MultiLineString
+        // both flatten to coordinate arrays.
+        const faultHits = map.getLayer('quaternary-faults')
+          ? map.queryRenderedFeatures(bbox, { layers: ['quaternary-faults'] })
+          : [];
+        const collectedFaults: CrossSectionFault[] = [];
+        for (const h of faultHits) {
+          const attrs = (h.properties ?? {}) as Record<string, unknown>;
+          const lines: LngLat[][] =
+            h.geometry.type === 'LineString'
+              ? [h.geometry.coordinates as LngLat[]]
+              : h.geometry.type === 'MultiLineString'
+                ? (h.geometry.coordinates as LngLat[][])
+                : [];
+          for (const coords of lines) {
+            if (coords.length < 2) continue;
+            collectedFaults.push({
+              coords,
+              name: String(attrs.name ?? attrs.fault_name ?? '') || undefined,
+              slipSense: String(attrs.slip_sense ?? '') || undefined,
+              slipRate: String(attrs.slip_rate ?? '') || undefined,
+              age: String(attrs.age ?? '') || undefined,
+            });
+          }
+        }
+        setCsFaults(collectedFaults);
+
         setCsMode('open');
         csModeRef.current = 'open';
         return;
@@ -628,6 +659,7 @@ export function MapPage() {
         setCsClaims([]);
         setCsGeochem([]);
         setCsAgencies([]);
+        setCsFaults([]);
       }
     };
     document.addEventListener('keydown', onKey);
@@ -727,12 +759,22 @@ export function MapPage() {
   };
 
   // 3. Sync visibility — flip `layout.visibility` whenever the user toggles.
+  //    When stake-clarity is on, four layers (open-blm-land, withdrawals,
+  //    critical-habitat, indian-lands) are force-visible regardless of
+  //    their per-layer toggle so the overlay actually paints what users
+  //    asked for. The clarity paint overrides land in their own effect
+  //    below to avoid double-applying on every visibility flip.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
+    const CLARITY_FORCED = new Set<string>([
+      'open-blm-land', 'withdrawals', 'critical-habitat', 'indian-lands',
+    ]);
     const apply = (): void => {
       for (const def of LAYERS) {
-        const vis = visibility[def.id] ? 'visible' : 'none';
+        const userVisible = visibility[def.id] ?? false;
+        const force = stakeClarity && CLARITY_FORCED.has(def.id);
+        const vis = userVisible || force ? 'visible' : 'none';
         // Main layer + paired outline (polygons + hotspots) flip in
         // lockstep. getLayer() guards against the outline not being
         // present (e.g. point + line layers don't emit one).
@@ -744,7 +786,85 @@ export function MapPage() {
     };
     if (map.isStyleLoaded()) apply();
     else map.once('load', apply);
-  }, [visibility]);
+  }, [visibility, stakeClarity]);
+
+  // 3b. Stake-clarity paint overrides. Strong saturated fills on the
+  //     four eligibility-relevant layers; fade non-relevant layers so
+  //     the answer to "can I stake here" reads at a glance. Restores
+  //     original paint when toggled off (cached on the layer's
+  //     paint-original metadata via the registry color).
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    type Override = {
+      id: string;
+      fillColor: string;
+      fillOpacity: number;
+      outline?: string;
+    };
+    const CLARITY: Override[] = [
+      // BLM-open: a vivid lime so it pops against satellite + dark basemap.
+      { id: 'open-blm-land',   fillColor: '#84cc16', fillOpacity: 0.42, outline: '#bef264' },
+      // Withdrawals: hard red — straight "no" zone.
+      { id: 'withdrawals',     fillColor: '#dc2626', fillOpacity: 0.55, outline: '#fecaca' },
+      // Critical habitat: orange — strong caution.
+      { id: 'critical-habitat',fillColor: '#f97316', fillOpacity: 0.45, outline: '#fed7aa' },
+      // Tribal lands: purple — distinct from withdrawals/habitat.
+      { id: 'indian-lands',    fillColor: '#a855f7', fillOpacity: 0.45, outline: '#e9d5ff' },
+    ];
+    // Layers to dim while clarity mode is on — they're not part of the
+    // stakeability answer and otherwise compete visually with the bold
+    // overlay fills.
+    const DIM = ['federal-lands', 'mrds', 'wells', 'pipelines-natgas', 'pipelines-crude', 'plss'];
+
+    const apply = (): void => {
+      for (const ov of CLARITY) {
+        if (!map.getLayer(ov.id)) continue;
+        if (stakeClarity) {
+          map.setPaintProperty(ov.id, 'fill-color', ov.fillColor);
+          map.setPaintProperty(ov.id, 'fill-opacity', ov.fillOpacity);
+          const outlineId = ov.id + OUTLINE_SUFFIX;
+          if (ov.outline && map.getLayer(outlineId)) {
+            map.setPaintProperty(outlineId, 'line-color', ov.outline);
+            map.setPaintProperty(outlineId, 'line-width', 1.4);
+          }
+        } else {
+          // Restore registry colors — buildLayer reads these from
+          // LAYERS so paint values match the original spec.
+          const def = LAYERS.find((l) => l.id === ov.id);
+          if (def?.color) {
+            map.setPaintProperty(ov.id, 'fill-color', def.color);
+            map.setPaintProperty(ov.id, 'fill-opacity', 0.22);
+            const outlineId = ov.id + OUTLINE_SUFFIX;
+            if (map.getLayer(outlineId)) {
+              map.setPaintProperty(outlineId, 'line-color', def.color);
+              map.setPaintProperty(outlineId, 'line-width', 0.8);
+            }
+          }
+        }
+      }
+      for (const id of DIM) {
+        if (!map.getLayer(id)) continue;
+        // Dim by lowering whichever paint key the layer uses for its
+        // primary fill/stroke. setPaintProperty no-ops on missing keys.
+        if (stakeClarity) {
+          map.setPaintProperty(id, 'fill-opacity', 0.05);
+          map.setPaintProperty(id, 'circle-opacity', 0.25);
+          map.setPaintProperty(id, 'line-opacity', 0.2);
+        } else {
+          map.setPaintProperty(id, 'fill-opacity', 0.22);
+          map.setPaintProperty(id, 'circle-opacity', 0.9);
+          map.setPaintProperty(id, 'line-opacity', 0.85);
+        }
+      }
+    };
+    if (map.isStyleLoaded()) apply();
+    else map.once('load', apply);
+    map.on('style.load', apply);
+    return () => {
+      map.off('style.load', apply);
+    };
+  }, [stakeClarity]);
 
   // 4. Sync commodity filter — applied as a MapLibre filter on the MRDS
   //    layer (case-insensitive substring match per selected commodity).
@@ -1147,8 +1267,10 @@ export function MapPage() {
         <ViewModeControls
           terrain3d={terrain3d}
           imagery={imagery}
+          stakeClarity={stakeClarity}
           onToggleTerrain={() => setTerrain3d(!terrain3d)}
           onToggleImagery={() => setImagery(!imagery)}
+          onToggleStakeClarity={() => setStakeClarity(!stakeClarity)}
         />
         <CrossSectionControls
           mode={csMode}
@@ -1160,6 +1282,7 @@ export function MapPage() {
             setCsClaims([]);
             setCsGeochem([]);
             setCsAgencies([]);
+            setCsFaults([]);
             setCsMode('pickingA');
             csModeRef.current = 'pickingA';
           }}
@@ -1173,6 +1296,7 @@ export function MapPage() {
             setCsClaims([]);
             setCsGeochem([]);
             setCsAgencies([]);
+            setCsFaults([]);
           }}
         />
         <AoiControls
@@ -1233,6 +1357,7 @@ export function MapPage() {
             claims={csClaims}
             geochem={csGeochem}
             agencies={csAgencies}
+            faults={csFaults}
             onClose={() => {
               setCsMode('off');
               csModeRef.current = 'off';
@@ -1243,6 +1368,7 @@ export function MapPage() {
               setCsClaims([]);
               setCsGeochem([]);
               setCsAgencies([]);
+              setCsFaults([]);
             }}
           />
         )}
@@ -1499,13 +1625,17 @@ function AuthBadge() {
 function ViewModeControls({
   terrain3d,
   imagery,
+  stakeClarity,
   onToggleTerrain,
   onToggleImagery,
+  onToggleStakeClarity,
 }: {
   terrain3d: boolean;
   imagery: boolean;
+  stakeClarity: boolean;
   onToggleTerrain: () => void;
   onToggleImagery: () => void;
+  onToggleStakeClarity: () => void;
 }) {
   return (
     <div className="absolute left-3 top-3 z-10 flex gap-1 rounded-md border border-border bg-bg-surface/90 p-1 font-mono text-[11px] shadow-lg backdrop-blur">
@@ -1522,6 +1652,17 @@ function ViewModeControls({
         label="3D"
         title={terrain3d ? 'Return to flat top-down view' : 'Enable 3D terrain'}
         testId="toggle-terrain3d"
+      />
+      <ViewModeButton
+        active={stakeClarity}
+        onClick={onToggleStakeClarity}
+        label="Stakeable"
+        title={
+          stakeClarity
+            ? 'Restore normal layer styling'
+            : 'Highlight BLM-open ground and red-flag withdrawals / habitat / tribal lands'
+        }
+        testId="toggle-stake-clarity"
       />
     </div>
   );
@@ -2569,6 +2710,18 @@ const PROPERTY_LABELS: Record<string, string> = {
   spud_at: 'Spud date',
   first_prod_at: 'First production',
   depth_ft: 'Total depth (ft)',
+  // Parcels
+  apn: 'APN (parcel #)',
+  land_use: 'Land use',
+  acres: 'Acres',
+  assessed_value: 'Assessed value',
+  sale_price: 'Last sale price',
+  sale_date: 'Last sale date',
+  address: 'Site address',
+  // Faults
+  slip_sense: 'Slip sense',
+  slip_rate: 'Slip rate',
+  age: 'Age',
 };
 
 type DrawerTab = 'summary' | 'eligibility' | 'geology' | 'economics';
@@ -2669,13 +2822,14 @@ function DetailDrawer({
       <div data-testid={`drawer-pane-${activeTab}`} className="flex-1 overflow-y-auto px-4 py-3">
         {activeTab === 'summary' && (
           <>
+            {feature.layerId === 'parcels' && <ParcelCard feature={feature} />}
             {entries.length === 0 ? (
               <p className="font-mono text-[11px] text-text-muted">
                 Point inspection — no feature attributes at this pixel. Geology + cost
                 heuristics still available in the other tabs.
               </p>
             ) : (
-              <dl className="grid grid-cols-[120px_minmax(0,1fr)] gap-y-1 font-mono text-[11px]">
+              <dl className="mt-3 grid grid-cols-[120px_minmax(0,1fr)] gap-y-1 font-mono text-[11px]">
                 {entries.map(([key, value]) => (
                   <Row key={key} label={PROPERTY_LABELS[key] ?? key} value={value} />
                 ))}
@@ -2712,6 +2866,82 @@ function DetailDrawer({
         <span>Click another point to inspect</span>
       </footer>
     </aside>
+  );
+}
+
+/** Headline panel for clicked parcels. Pulls the dollar fields out of
+ *  feature.properties and surfaces them with derived $/acre values so
+ *  the user can size up a parcel without doing math. Renders nothing
+ *  when the necessary fields are absent (caller still falls through
+ *  to the generic key/value table). */
+function ParcelCard({ feature }: { feature: SelectedFeature }) {
+  const attrs = feature.properties;
+  const assessed =
+    typeof attrs.assessed_value === 'number' && attrs.assessed_value > 0
+      ? attrs.assessed_value
+      : null;
+  const sale =
+    typeof attrs.sale_price === 'number' && attrs.sale_price > 0
+      ? attrs.sale_price
+      : null;
+  const acres =
+    typeof attrs.acres === 'number' && attrs.acres > 0
+      ? attrs.acres
+      : null;
+  const apn = String(attrs.apn ?? '');
+  const owner = String(attrs.owner ?? '');
+  const county = String(attrs.county ?? '');
+  const landUse = String(attrs.land_use ?? '');
+  const address = String(attrs.address ?? '');
+  const saleDate = String(attrs.sale_date ?? '');
+  const dollarsPerAcre =
+    assessed != null && acres != null ? assessed / acres : null;
+  if (!apn && !owner && !assessed && !sale) return null;
+  return (
+    <section
+      data-testid="parcel-card"
+      className="mb-3 rounded-md border border-amber-400/30 bg-amber-400/5 p-3 font-mono text-[11px]"
+    >
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-amber-300">{apn || 'Parcel'}</span>
+        {county && (
+          <span className="text-[10px] uppercase tracking-wider text-text-muted">{county}</span>
+        )}
+      </div>
+      {owner && <div className="mt-0.5 truncate text-text" title={owner}>{owner}</div>}
+      {address && <div className="text-text-muted">{address}</div>}
+      {landUse && <div className="text-text-muted">Use · {landUse}</div>}
+      <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1">
+        {acres != null && (
+          <>
+            <span className="text-text-muted">Acres</span>
+            <span className="text-text">{acres.toFixed(2)}</span>
+          </>
+        )}
+        {assessed != null && (
+          <>
+            <span className="text-text-muted">Assessed</span>
+            <span className="text-text">${assessed.toLocaleString()}</span>
+          </>
+        )}
+        {sale != null && (
+          <>
+            <span className="text-text-muted">Last sale</span>
+            <span className="text-text">
+              ${sale.toLocaleString()}{saleDate ? ` · ${saleDate}` : ''}
+            </span>
+          </>
+        )}
+        {dollarsPerAcre != null && Number.isFinite(dollarsPerAcre) && (
+          <>
+            <span className="text-text-muted">$/acre</span>
+            <span className="text-text">
+              ${Math.round(dollarsPerAcre).toLocaleString()}
+            </span>
+          </>
+        )}
+      </div>
+    </section>
   );
 }
 
