@@ -14,14 +14,14 @@ import {
   type SourceStatus,
 } from '@subterra/shared';
 import { cn } from '@/lib/cn';
-import { CrossSection, type CrossSectionMrds } from '@/components/CrossSection';
+import { CrossSection, type CrossSectionAgency, type CrossSectionClaim, type CrossSectionFault, type CrossSectionGeochem, type CrossSectionMrds } from '@/components/CrossSection';
 import { fetchManifest } from '@/lib/manifest';
 import { fetchMe, signOut } from '@/lib/auth';
 import { checkPmtilesCached, precachePmtiles } from '@/lib/sw';
 import { useLayerVisibility } from '@/stores/layers';
 import { useViewMode } from '@/stores/view-mode';
 import { geocode, type GeocodeHit } from '@/lib/geocode';
-import { pointInPolygon, polygonAreaAcres, ringBbox, type LngLat } from '@/lib/geo';
+import { pointInPolygon, polygonAreaAcres, polygonCentroid, ringBbox, type LngLat } from '@/lib/geo';
 import { columnImageUrl, fetchGeology, type GeologyAtPoint, type StratUnit } from '@/lib/macrostrat';
 import { fetchElevation, type ElevationResult } from '@/lib/elevation';
 import { estimateCosts, formatAmount, totalRange, type LineItem } from '@/lib/cost-estimate';
@@ -156,16 +156,26 @@ export function MapPage() {
   const [csA, setCsA] = useState<LngLat | null>(null);
   const [csB, setCsB] = useState<LngLat | null>(null);
   const [csMrds, setCsMrds] = useState<CrossSectionMrds[]>([]);
+  const [csClaims, setCsClaims] = useState<CrossSectionClaim[]>([]);
+  const [csGeochem, setCsGeochem] = useState<CrossSectionGeochem[]>([]);
+  const [csAgencies, setCsAgencies] = useState<CrossSectionAgency[]>([]);
+  const [csFaults, setCsFaults] = useState<CrossSectionFault[]>([]);
   /** Mirror csMode + csA into refs so the mount-time click handler can
    *  read the latest value without re-binding. */
   const csModeRef = useRef<'off' | 'pickingA' | 'pickingB' | 'open'>('off');
   const csARef = useRef<LngLat | null>(null);
+  /** Mobile sidebar: hidden by default on small screens, always visible
+   *  on md+. Auto-closes when the user picks a search result or starts
+   *  drawing so the map is unobstructed. */
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const visibility = useLayerVisibility((s) => s.visibility);
   const toggle = useLayerVisibility((s) => s.toggle);
   const terrain3d = useViewMode((s) => s.terrain3d);
   const imagery = useViewMode((s) => s.imagery);
   const setTerrain3d = useViewMode((s) => s.setTerrain3d);
   const setImagery = useViewMode((s) => s.setImagery);
+  const stakeClarity = useViewMode((s) => s.stakeClarity);
+  const setStakeClarity = useViewMode((s) => s.setStakeClarity);
 
   const manifestQuery = useQuery({
     queryKey: ['manifest'],
@@ -350,13 +360,13 @@ export function MapPage() {
         const mrdsHits = map.getLayer('mrds')
           ? map.queryRenderedFeatures(bbox, { layers: ['mrds'] })
           : [];
-        const seen = new Set<string>();
+        const mrdsSeen = new Set<string>();
         const collected: CrossSectionMrds[] = [];
         for (const h of mrdsHits) {
           const attrs = (h.properties ?? {}) as Record<string, unknown>;
           const key = String(attrs.dep_id ?? attrs.id ?? `${h.geometry.type}-${collected.length}`);
-          if (seen.has(key)) continue;
-          seen.add(key);
+          if (mrdsSeen.has(key)) continue;
+          mrdsSeen.add(key);
           if (h.geometry.type !== 'Point') continue;
           const coords = h.geometry.coordinates as [number, number];
           collected.push({
@@ -367,6 +377,103 @@ export function MapPage() {
           });
         }
         setCsMrds(collected);
+
+        // Mining claims in the same bbox — projected to triangles
+        // above the topo line in the cross-section so the user sees
+        // competition without leaving the modal.
+        const claimHits = map.getLayer('mining-claims')
+          ? map.queryRenderedFeatures(bbox, { layers: ['mining-claims'] })
+          : [];
+        const claimSeen = new Set<string>();
+        const collectedClaims: CrossSectionClaim[] = [];
+        for (const h of claimHits) {
+          const attrs = (h.properties ?? {}) as Record<string, unknown>;
+          const serial = String(attrs.serial ?? '');
+          if (!serial || claimSeen.has(serial)) continue;
+          claimSeen.add(serial);
+          const c = polygonCentroid(h.geometry);
+          if (!c) continue;
+          collectedClaims.push({
+            lng: c[0],
+            lat: c[1],
+            serial,
+            claimant: String(attrs.claimant ?? '') || undefined,
+            acreage: String(attrs.acreage ?? '') || undefined,
+          });
+        }
+        setCsClaims(collectedClaims);
+
+        // Geochemistry points in the bbox — projected as anomaly
+        // markers above the topo line. May be empty if the layer
+        // hasn't been turned on yet.
+        const gcHits = map.getLayer('geochemistry')
+          ? map.queryRenderedFeatures(bbox, { layers: ['geochemistry'] })
+          : [];
+        const collectedGc: CrossSectionGeochem[] = [];
+        for (const h of gcHits) {
+          if (h.geometry.type !== 'Point') continue;
+          const attrs = (h.properties ?? {}) as Record<string, unknown>;
+          const coords = h.geometry.coordinates as [number, number];
+          const as = Number(attrs.as_ppm ?? attrs.as ?? NaN);
+          collectedGc.push({
+            lng: coords[0],
+            lat: coords[1],
+            asPpm: Number.isFinite(as) ? as : undefined,
+            element: String(attrs.element ?? 'As') || undefined,
+          });
+        }
+        setCsGeochem(collectedGc);
+
+        // Federal-lands polygon centroids in the bbox — the section
+        // uses these to color a surface-management strip beneath
+        // the geology band so stakeable BLM ground is visible at a
+        // glance even when the user hasn't toggled the layer on.
+        const flHits = map.getLayer('federal-lands')
+          ? map.queryRenderedFeatures(bbox, { layers: ['federal-lands'] })
+          : [];
+        const collectedAg: CrossSectionAgency[] = [];
+        const agSeen = new Set<string>();
+        for (const h of flHits) {
+          const attrs = (h.properties ?? {}) as Record<string, unknown>;
+          const c = polygonCentroid(h.geometry);
+          if (!c) continue;
+          const agency = String(attrs.agency ?? 'OTHER');
+          const name = String(attrs.name ?? '');
+          const key = `${agency}|${c[0].toFixed(4)},${c[1].toFixed(4)}`;
+          if (agSeen.has(key)) continue;
+          agSeen.add(key);
+          collectedAg.push({ lng: c[0], lat: c[1], agency, name: name || undefined });
+        }
+        setCsAgencies(collectedAg);
+
+        // Quaternary fault traces in the bbox — the modal computes the
+        // exact crossings with the AB line. LineString + MultiLineString
+        // both flatten to coordinate arrays.
+        const faultHits = map.getLayer('quaternary-faults')
+          ? map.queryRenderedFeatures(bbox, { layers: ['quaternary-faults'] })
+          : [];
+        const collectedFaults: CrossSectionFault[] = [];
+        for (const h of faultHits) {
+          const attrs = (h.properties ?? {}) as Record<string, unknown>;
+          const lines: LngLat[][] =
+            h.geometry.type === 'LineString'
+              ? [h.geometry.coordinates as LngLat[]]
+              : h.geometry.type === 'MultiLineString'
+                ? (h.geometry.coordinates as LngLat[][])
+                : [];
+          for (const coords of lines) {
+            if (coords.length < 2) continue;
+            collectedFaults.push({
+              coords,
+              name: String(attrs.name ?? attrs.fault_name ?? '') || undefined,
+              slipSense: String(attrs.slip_sense ?? '') || undefined,
+              slipRate: String(attrs.slip_rate ?? '') || undefined,
+              age: String(attrs.age ?? '') || undefined,
+            });
+          }
+        }
+        setCsFaults(collectedFaults);
+
         setCsMode('open');
         csModeRef.current = 'open';
         return;
@@ -553,6 +660,10 @@ export function MapPage() {
         csARef.current = null;
         setCsB(null);
         setCsMrds([]);
+        setCsClaims([]);
+        setCsGeochem([]);
+        setCsAgencies([]);
+        setCsFaults([]);
       }
     };
     document.addEventListener('keydown', onKey);
@@ -652,12 +763,22 @@ export function MapPage() {
   };
 
   // 3. Sync visibility — flip `layout.visibility` whenever the user toggles.
+  //    When stake-clarity is on, four layers (open-blm-land, withdrawals,
+  //    critical-habitat, indian-lands) are force-visible regardless of
+  //    their per-layer toggle so the overlay actually paints what users
+  //    asked for. The clarity paint overrides land in their own effect
+  //    below to avoid double-applying on every visibility flip.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
+    const CLARITY_FORCED = new Set<string>([
+      'open-blm-land', 'withdrawals', 'critical-habitat', 'indian-lands',
+    ]);
     const apply = (): void => {
       for (const def of LAYERS) {
-        const vis = visibility[def.id] ? 'visible' : 'none';
+        const userVisible = visibility[def.id] ?? false;
+        const force = stakeClarity && CLARITY_FORCED.has(def.id);
+        const vis = userVisible || force ? 'visible' : 'none';
         // Main layer + paired outline (polygons + hotspots) flip in
         // lockstep. getLayer() guards against the outline not being
         // present (e.g. point + line layers don't emit one).
@@ -669,7 +790,85 @@ export function MapPage() {
     };
     if (map.isStyleLoaded()) apply();
     else map.once('load', apply);
-  }, [visibility]);
+  }, [visibility, stakeClarity]);
+
+  // 3b. Stake-clarity paint overrides. Strong saturated fills on the
+  //     four eligibility-relevant layers; fade non-relevant layers so
+  //     the answer to "can I stake here" reads at a glance. Restores
+  //     original paint when toggled off (cached on the layer's
+  //     paint-original metadata via the registry color).
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    type Override = {
+      id: string;
+      fillColor: string;
+      fillOpacity: number;
+      outline?: string;
+    };
+    const CLARITY: Override[] = [
+      // BLM-open: a vivid lime so it pops against satellite + dark basemap.
+      { id: 'open-blm-land',   fillColor: '#84cc16', fillOpacity: 0.42, outline: '#bef264' },
+      // Withdrawals: hard red — straight "no" zone.
+      { id: 'withdrawals',     fillColor: '#dc2626', fillOpacity: 0.55, outline: '#fecaca' },
+      // Critical habitat: orange — strong caution.
+      { id: 'critical-habitat',fillColor: '#f97316', fillOpacity: 0.45, outline: '#fed7aa' },
+      // Tribal lands: purple — distinct from withdrawals/habitat.
+      { id: 'indian-lands',    fillColor: '#a855f7', fillOpacity: 0.45, outline: '#e9d5ff' },
+    ];
+    // Layers to dim while clarity mode is on — they're not part of the
+    // stakeability answer and otherwise compete visually with the bold
+    // overlay fills.
+    const DIM = ['federal-lands', 'mrds', 'wells', 'pipelines-natgas', 'pipelines-crude', 'plss'];
+
+    const apply = (): void => {
+      for (const ov of CLARITY) {
+        if (!map.getLayer(ov.id)) continue;
+        if (stakeClarity) {
+          map.setPaintProperty(ov.id, 'fill-color', ov.fillColor);
+          map.setPaintProperty(ov.id, 'fill-opacity', ov.fillOpacity);
+          const outlineId = ov.id + OUTLINE_SUFFIX;
+          if (ov.outline && map.getLayer(outlineId)) {
+            map.setPaintProperty(outlineId, 'line-color', ov.outline);
+            map.setPaintProperty(outlineId, 'line-width', 1.4);
+          }
+        } else {
+          // Restore registry colors — buildLayer reads these from
+          // LAYERS so paint values match the original spec.
+          const def = LAYERS.find((l) => l.id === ov.id);
+          if (def?.color) {
+            map.setPaintProperty(ov.id, 'fill-color', def.color);
+            map.setPaintProperty(ov.id, 'fill-opacity', 0.22);
+            const outlineId = ov.id + OUTLINE_SUFFIX;
+            if (map.getLayer(outlineId)) {
+              map.setPaintProperty(outlineId, 'line-color', def.color);
+              map.setPaintProperty(outlineId, 'line-width', 0.8);
+            }
+          }
+        }
+      }
+      for (const id of DIM) {
+        if (!map.getLayer(id)) continue;
+        // Dim by lowering whichever paint key the layer uses for its
+        // primary fill/stroke. setPaintProperty no-ops on missing keys.
+        if (stakeClarity) {
+          map.setPaintProperty(id, 'fill-opacity', 0.05);
+          map.setPaintProperty(id, 'circle-opacity', 0.25);
+          map.setPaintProperty(id, 'line-opacity', 0.2);
+        } else {
+          map.setPaintProperty(id, 'fill-opacity', 0.22);
+          map.setPaintProperty(id, 'circle-opacity', 0.9);
+          map.setPaintProperty(id, 'line-opacity', 0.85);
+        }
+      }
+    };
+    if (map.isStyleLoaded()) apply();
+    else map.once('load', apply);
+    map.on('style.load', apply);
+    return () => {
+      map.off('style.load', apply);
+    };
+  }, [stakeClarity]);
 
   // 4. Sync commodity filter — applied as a MapLibre filter on the MRDS
   //    layer (case-insensitive substring match per selected commodity).
@@ -845,23 +1044,39 @@ export function MapPage() {
     } else {
       map.flyTo({ center: [hit.lng, hit.lat], zoom: 10, duration: 1200 });
     }
+    // Mobile UX: dismiss the slide-in sidebar so the search result is
+    // visible. No-op on desktop because the sidebar is in-flow there.
+    setSidebarOpen(false);
   }
 
   return (
-    <div className="grid h-full w-full grid-cols-[280px_minmax(0,1fr)] grid-rows-[48px_minmax(0,1fr)] overflow-hidden bg-bg text-text">
-      <header className="col-span-2 flex h-12 items-center justify-between gap-3 border-b border-border bg-bg-surface px-3">
-        <Link to="/" className="flex items-center gap-2 px-1.5">
+    <div className="flex h-full w-full flex-col overflow-hidden bg-bg text-text">
+      <header className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-border bg-bg-surface px-2 md:gap-3 md:px-3">
+        <button
+          type="button"
+          onClick={() => setSidebarOpen((v) => !v)}
+          aria-label={sidebarOpen ? 'Close layer panel' : 'Open layer panel'}
+          data-testid="mobile-sidebar-toggle"
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-bg-panel text-text-muted hover:text-text md:hidden"
+        >
+          {/* Three-bar / X icon — purely decorative; the aria-label
+              carries the meaning for AT. */}
+          <span aria-hidden className="text-base leading-none">{sidebarOpen ? '✕' : '☰'}</span>
+        </button>
+        <Link to="/" className="flex shrink-0 items-center gap-2 px-1.5">
           <Logo />
-          <span className="font-mono text-sm tracking-tight text-text">Subterra</span>
+          <span className="hidden font-mono text-sm tracking-tight text-text sm:inline">Subterra</span>
         </Link>
 
-        <SearchBox onPick={flyTo} />
+        <div className="min-w-0 flex-1">
+          <SearchBox onPick={flyTo} />
+        </div>
 
         <button
           type="button"
           onClick={() => setWizardOpen(true)}
           disabled={!manifestQuery.data?.topHotspots?.length}
-          className="mt-2 w-full rounded-md border border-fuchsia-400/60 bg-fuchsia-500/10 px-3 py-2 font-mono text-[11px] text-fuchsia-100 hover:bg-fuchsia-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+          className="hidden shrink-0 rounded-md border border-fuchsia-400/60 bg-fuchsia-500/10 px-3 py-2 font-mono text-[11px] text-fuchsia-100 hover:bg-fuchsia-500/20 disabled:cursor-not-allowed disabled:opacity-50 lg:inline-block"
           title={
             manifestQuery.data?.topHotspots?.length
               ? 'Pick the best 100-acre stake for a commodity + budget'
@@ -871,9 +1086,11 @@ export function MapPage() {
           ★ Find Optimal Acre
         </button>
 
-        <CommodityFilter selected={commodityFilter} onChange={setCommodityFilter} />
+        <div className="hidden lg:block">
+          <CommodityFilter selected={commodityFilter} onChange={setCommodityFilter} />
+        </div>
 
-        <div className="flex items-center gap-3 font-mono text-[10px]">
+        <div className="hidden items-center gap-3 font-mono text-[10px] md:flex">
           <StatusPill label={styleLoaded ? 'basemap loaded' : 'loading basemap…'} ok={styleLoaded} />
           <StatusPill
             label={
@@ -901,13 +1118,37 @@ export function MapPage() {
         </div>
 
         {manifestQuery.data?.commodityPrices && (
-          <PriceTicker prices={manifestQuery.data.commodityPrices} />
+          <div className="hidden lg:block">
+            <PriceTicker prices={manifestQuery.data.commodityPrices} />
+          </div>
         )}
 
         <AuthBadge />
       </header>
 
-      <aside className="flex h-full min-h-0 flex-col border-r border-border bg-bg-surface">
+      <div className="relative flex min-h-0 flex-1">
+      {/* Mobile-only backdrop — taps close the slide-in sidebar so users
+          can dismiss it without finding the hamburger again. */}
+      {sidebarOpen && (
+        <div
+          aria-hidden
+          onClick={() => setSidebarOpen(false)}
+          data-testid="sidebar-backdrop"
+          className="absolute inset-0 z-20 bg-black/50 md:hidden"
+        />
+      )}
+      <aside
+        data-testid="sidebar"
+        data-open={sidebarOpen}
+        className={cn(
+          // Mobile: absolutely positioned, slide in from the left.
+          // md+: normal flex item with fixed width — no transform.
+          'absolute inset-y-0 left-0 z-30 flex w-72 min-h-0 flex-col border-r border-border bg-bg-surface',
+          'transition-transform duration-200 ease-out',
+          'md:relative md:w-[280px] md:translate-x-0',
+          sidebarOpen ? 'translate-x-0' : '-translate-x-full',
+        )}
+      >
         <div className="border-b border-border px-4 py-3">
           <div className="flex items-center justify-between">
             <div className="font-mono text-[10px] uppercase tracking-wider text-text-muted">Layers</div>
@@ -1050,7 +1291,7 @@ export function MapPage() {
         )}
       </aside>
 
-      <div className="relative h-full w-full">
+      <div className="relative h-full min-w-0 flex-1">
         <div ref={containerRef} className="absolute inset-0 h-full w-full" data-testid="map-container" />
         {mapError && (
           <div
@@ -1072,8 +1313,10 @@ export function MapPage() {
         <ViewModeControls
           terrain3d={terrain3d}
           imagery={imagery}
+          stakeClarity={stakeClarity}
           onToggleTerrain={() => setTerrain3d(!terrain3d)}
           onToggleImagery={() => setImagery(!imagery)}
+          onToggleStakeClarity={() => setStakeClarity(!stakeClarity)}
         />
         <CrossSectionControls
           mode={csMode}
@@ -1082,6 +1325,10 @@ export function MapPage() {
             csARef.current = null;
             setCsB(null);
             setCsMrds([]);
+            setCsClaims([]);
+            setCsGeochem([]);
+            setCsAgencies([]);
+            setCsFaults([]);
             setCsMode('pickingA');
             csModeRef.current = 'pickingA';
           }}
@@ -1092,6 +1339,10 @@ export function MapPage() {
             csARef.current = null;
             setCsB(null);
             setCsMrds([]);
+            setCsClaims([]);
+            setCsGeochem([]);
+            setCsAgencies([]);
+            setCsFaults([]);
           }}
         />
         <AoiControls
@@ -1149,6 +1400,10 @@ export function MapPage() {
             a={csA}
             b={csB}
             mrds={csMrds}
+            claims={csClaims}
+            geochem={csGeochem}
+            agencies={csAgencies}
+            faults={csFaults}
             onClose={() => {
               setCsMode('off');
               csModeRef.current = 'off';
@@ -1156,9 +1411,14 @@ export function MapPage() {
               csARef.current = null;
               setCsB(null);
               setCsMrds([]);
+              setCsClaims([]);
+              setCsGeochem([]);
+              setCsAgencies([]);
+              setCsFaults([]);
             }}
           />
         )}
+      </div>
       </div>
     </div>
   );
@@ -1412,13 +1672,17 @@ function AuthBadge() {
 function ViewModeControls({
   terrain3d,
   imagery,
+  stakeClarity,
   onToggleTerrain,
   onToggleImagery,
+  onToggleStakeClarity,
 }: {
   terrain3d: boolean;
   imagery: boolean;
+  stakeClarity: boolean;
   onToggleTerrain: () => void;
   onToggleImagery: () => void;
+  onToggleStakeClarity: () => void;
 }) {
   return (
     <div className="absolute left-3 top-3 z-10 flex gap-1 rounded-md border border-border bg-bg-surface/90 p-1 font-mono text-[11px] shadow-lg backdrop-blur">
@@ -1435,6 +1699,17 @@ function ViewModeControls({
         label="3D"
         title={terrain3d ? 'Return to flat top-down view' : 'Enable 3D terrain'}
         testId="toggle-terrain3d"
+      />
+      <ViewModeButton
+        active={stakeClarity}
+        onClick={onToggleStakeClarity}
+        label="Stakeable"
+        title={
+          stakeClarity
+            ? 'Restore normal layer styling'
+            : 'Highlight BLM-open ground and red-flag withdrawals / habitat / tribal lands'
+        }
+        testId="toggle-stake-clarity"
       />
     </div>
   );
@@ -1462,7 +1737,10 @@ function ViewModeButton({
       data-testid={testId}
       data-active={active}
       className={cn(
-        'rounded px-2.5 py-1 transition',
+        // Min-height 36px gets close to the iOS 44px tap target without
+        // making the desktop buttons feel chunky. The map area is small
+        // enough on mobile that a few px matters for readability.
+        'min-h-[36px] rounded px-3 py-1.5 transition',
         active
           ? 'bg-accent/20 text-accent shadow-inner ring-1 ring-accent/40'
           : 'text-text-muted hover:bg-bg-panel hover:text-text',
@@ -1965,7 +2243,7 @@ function RecommendedStakeDrawer({
   const margin = revMid - costMid;
   return (
     <aside
-      className="absolute right-3 top-3 bottom-3 z-10 flex w-[360px] flex-col rounded-lg border border-fuchsia-400/40 bg-bg-surface/95 shadow-2xl backdrop-blur"
+      className="absolute inset-x-2 bottom-2 z-10 flex max-h-[70vh] flex-col rounded-lg border border-fuchsia-400/40 bg-bg-surface/95 shadow-2xl backdrop-blur md:inset-x-auto md:bottom-3 md:right-3 md:top-3 md:max-h-none md:w-[360px]"
     >
       <header className="flex items-start justify-between gap-2 border-b border-border px-4 py-3">
         <div className="min-w-0">
@@ -2080,7 +2358,11 @@ function AoiControls({
   return (
     <div
       data-testid="aoi-controls"
-      className="absolute right-3 top-3 z-10 flex flex-col items-end gap-2"
+      // Top-right on desktop, top-right under the hamburger on mobile —
+      // stays visible because users may want to start drawing an AOI
+      // from a phone (the typical "I'm standing on a corner, mark it"
+      // use case).
+      className="absolute right-2 top-2 z-10 flex flex-col items-end gap-2 md:right-3 md:top-3"
     >
       {mode === 'off' && (
         <button
@@ -2146,7 +2428,7 @@ function AoiPanel({ summary, onClose }: { summary: AoiSummary; onClose: () => vo
   return (
     <aside
       data-testid="aoi-panel"
-      className="absolute right-3 top-16 bottom-3 z-10 flex w-[360px] flex-col rounded-lg border border-border bg-bg-surface/95 shadow-2xl backdrop-blur"
+      className="absolute inset-x-2 bottom-2 z-10 flex max-h-[70vh] flex-col rounded-lg border border-border bg-bg-surface/95 shadow-2xl backdrop-blur md:inset-x-auto md:bottom-3 md:right-3 md:top-16 md:max-h-none md:w-[360px]"
     >
       <header className="flex items-start justify-between gap-2 border-b border-border px-4 py-3">
         <div className="min-w-0">
@@ -2267,7 +2549,9 @@ function Legend({ mrdsVisible }: { mrdsVisible: boolean }) {
   return (
     <div
       data-testid="legend"
-      className="absolute bottom-3 left-3 z-10 max-w-[220px] rounded-md border border-border bg-bg-surface/90 p-2 font-mono text-[10px] shadow-xl backdrop-blur"
+      // Hidden on mobile — competes with the bottom-sheet drawer; users
+      // can still hover the layer toggle for the same color cue.
+      className="absolute bottom-3 left-3 z-10 hidden max-w-[220px] rounded-md border border-border bg-bg-surface/90 p-2 font-mono text-[10px] shadow-xl backdrop-blur md:block"
     >
       <div className="mb-1 flex items-center justify-between">
         <span className="uppercase tracking-wider text-text-muted">legend</span>
@@ -2482,6 +2766,18 @@ const PROPERTY_LABELS: Record<string, string> = {
   spud_at: 'Spud date',
   first_prod_at: 'First production',
   depth_ft: 'Total depth (ft)',
+  // Parcels
+  apn: 'APN (parcel #)',
+  land_use: 'Land use',
+  acres: 'Acres',
+  assessed_value: 'Assessed value',
+  sale_price: 'Last sale price',
+  sale_date: 'Last sale date',
+  address: 'Site address',
+  // Faults
+  slip_sense: 'Slip sense',
+  slip_rate: 'Slip rate',
+  age: 'Age',
 };
 
 type DrawerTab = 'summary' | 'eligibility' | 'geology' | 'economics';
@@ -2531,7 +2827,7 @@ function DetailDrawer({
   return (
     <aside
       data-testid="detail-drawer"
-      className="absolute right-3 top-3 bottom-3 z-10 flex w-[360px] flex-col rounded-lg border border-border bg-bg-surface/95 shadow-2xl backdrop-blur"
+      className="absolute inset-x-2 bottom-2 z-10 flex max-h-[70vh] flex-col rounded-lg border border-border bg-bg-surface/95 shadow-2xl backdrop-blur md:inset-x-auto md:bottom-3 md:right-3 md:top-3 md:max-h-none md:w-[360px]"
     >
       <header className="flex items-start justify-between gap-2 border-b border-border px-4 py-3">
         <div className="min-w-0">
@@ -2582,13 +2878,14 @@ function DetailDrawer({
       <div data-testid={`drawer-pane-${activeTab}`} className="flex-1 overflow-y-auto px-4 py-3">
         {activeTab === 'summary' && (
           <>
+            {feature.layerId === 'parcels' && <ParcelCard feature={feature} />}
             {entries.length === 0 ? (
               <p className="font-mono text-[11px] text-text-muted">
                 Point inspection — no feature attributes at this pixel. Geology + cost
                 heuristics still available in the other tabs.
               </p>
             ) : (
-              <dl className="grid grid-cols-[120px_minmax(0,1fr)] gap-y-1 font-mono text-[11px]">
+              <dl className="mt-3 grid grid-cols-[120px_minmax(0,1fr)] gap-y-1 font-mono text-[11px]">
                 {entries.map(([key, value]) => (
                   <Row key={key} label={PROPERTY_LABELS[key] ?? key} value={value} />
                 ))}
@@ -2625,6 +2922,82 @@ function DetailDrawer({
         <span>Click another point to inspect</span>
       </footer>
     </aside>
+  );
+}
+
+/** Headline panel for clicked parcels. Pulls the dollar fields out of
+ *  feature.properties and surfaces them with derived $/acre values so
+ *  the user can size up a parcel without doing math. Renders nothing
+ *  when the necessary fields are absent (caller still falls through
+ *  to the generic key/value table). */
+function ParcelCard({ feature }: { feature: SelectedFeature }) {
+  const attrs = feature.properties;
+  const assessed =
+    typeof attrs.assessed_value === 'number' && attrs.assessed_value > 0
+      ? attrs.assessed_value
+      : null;
+  const sale =
+    typeof attrs.sale_price === 'number' && attrs.sale_price > 0
+      ? attrs.sale_price
+      : null;
+  const acres =
+    typeof attrs.acres === 'number' && attrs.acres > 0
+      ? attrs.acres
+      : null;
+  const apn = String(attrs.apn ?? '');
+  const owner = String(attrs.owner ?? '');
+  const county = String(attrs.county ?? '');
+  const landUse = String(attrs.land_use ?? '');
+  const address = String(attrs.address ?? '');
+  const saleDate = String(attrs.sale_date ?? '');
+  const dollarsPerAcre =
+    assessed != null && acres != null ? assessed / acres : null;
+  if (!apn && !owner && !assessed && !sale) return null;
+  return (
+    <section
+      data-testid="parcel-card"
+      className="mb-3 rounded-md border border-amber-400/30 bg-amber-400/5 p-3 font-mono text-[11px]"
+    >
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-amber-300">{apn || 'Parcel'}</span>
+        {county && (
+          <span className="text-[10px] uppercase tracking-wider text-text-muted">{county}</span>
+        )}
+      </div>
+      {owner && <div className="mt-0.5 truncate text-text" title={owner}>{owner}</div>}
+      {address && <div className="text-text-muted">{address}</div>}
+      {landUse && <div className="text-text-muted">Use · {landUse}</div>}
+      <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1">
+        {acres != null && (
+          <>
+            <span className="text-text-muted">Acres</span>
+            <span className="text-text">{acres.toFixed(2)}</span>
+          </>
+        )}
+        {assessed != null && (
+          <>
+            <span className="text-text-muted">Assessed</span>
+            <span className="text-text">${assessed.toLocaleString()}</span>
+          </>
+        )}
+        {sale != null && (
+          <>
+            <span className="text-text-muted">Last sale</span>
+            <span className="text-text">
+              ${sale.toLocaleString()}{saleDate ? ` · ${saleDate}` : ''}
+            </span>
+          </>
+        )}
+        {dollarsPerAcre != null && Number.isFinite(dollarsPerAcre) && (
+          <>
+            <span className="text-text-muted">$/acre</span>
+            <span className="text-text">
+              ${Math.round(dollarsPerAcre).toLocaleString()}
+            </span>
+          </>
+        )}
+      </div>
+    </section>
   );
 }
 

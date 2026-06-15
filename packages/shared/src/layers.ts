@@ -103,6 +103,28 @@ export const LAYERS: readonly LayerDef[] = [
     color: '#a3e635', // lime — the staking target
   },
   {
+    id: 'quaternary-faults',
+    label: 'Quaternary Faults (USGS)',
+    group: 'subsurface',
+    defaultVisible: false,
+    tilesetLayer: 'quaternary_faults',
+    geometry: 'line',
+    minZoom: 5,
+    color: '#ef4444', // red — seismic-hazard signal + cross-section feed
+  },
+  {
+    id: 'parcels',
+    label: 'County Parcels (NV: Washoe·Clark·Elko·Lyon)',
+    group: 'present',
+    // Off by default — parcel layers are dense at city zooms; the
+    // user enables them when zoomed into a target area.
+    defaultVisible: false,
+    tilesetLayer: 'parcels',
+    geometry: 'polygon',
+    minZoom: 11,
+    color: '#fde68a', // pale yellow — surveyed-private signal
+  },
+  {
     id: 'water-rights',
     label: 'Water Rights (NV, UT, AZ)',
     group: 'economic',

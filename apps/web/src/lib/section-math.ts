@@ -117,3 +117,48 @@ export function perpendicularBufferRing(
   const b2: LngLat = [b[0] - ox, b[1] - oy];
   return [a1, b1, b2, a2, a1];
 }
+
+/** Intersection point of segments AB and CD, or null when they don't
+ *  cross. Works in a local plane with cos(midLat) longitude correction
+ *  — accurate for the short distances cross-sections cover. Endpoint
+ *  touches count as intersections. Used to find where a fault trace
+ *  crosses the section line. */
+export function segmentIntersection(
+  a: LngLat,
+  b: LngLat,
+  c: LngLat,
+  d: LngLat,
+): LngLat | null {
+  const midLat = (a[1] + b[1] + c[1] + d[1]) / 4;
+  const kx = EARTH_RADIUS_M * DEG * Math.cos(midLat * DEG);
+  const ky = EARTH_RADIUS_M * DEG;
+  const ax = a[0] * kx, ay = a[1] * ky;
+  const bx = b[0] * kx, by = b[1] * ky;
+  const cx = c[0] * kx, cy = c[1] * ky;
+  const dx2 = d[0] * kx, dy2 = d[1] * ky;
+
+  const r = { x: bx - ax, y: by - ay };
+  const s = { x: dx2 - cx, y: dy2 - cy };
+  const denom = r.x * s.y - r.y * s.x;
+  if (Math.abs(denom) < 1e-12) return null; // parallel / collinear
+  const t = ((cx - ax) * s.y - (cy - ay) * s.x) / denom;
+  const u = ((cx - ax) * r.y - (cy - ay) * r.x) / denom;
+  if (t < 0 || t > 1 || u < 0 || u > 1) return null;
+  const ix = ax + t * r.x;
+  const iy = ay + t * r.y;
+  return [ix / kx, iy / ky];
+}
+
+/** All crossings of a polyline with segment AB, as fractional positions
+ *  t (0..1) along AB, sorted ascending. A fault trace can wiggle across
+ *  the section line more than once. */
+export function polylineCrossings(a: LngLat, b: LngLat, line: LngLat[]): number[] {
+  const out: number[] = [];
+  for (let i = 0; i + 1 < line.length; i++) {
+    const hit = segmentIntersection(a, b, line[i]!, line[i + 1]!);
+    if (!hit) continue;
+    const { t } = projectOntoLine(hit, a, b);
+    out.push(t);
+  }
+  return out.sort((x, y) => x - y);
+}

@@ -5,7 +5,9 @@ import {
   distanceMeters,
   interpolateLine,
   perpendicularBufferRing,
+  polylineCrossings,
   projectOntoLine,
+  segmentIntersection,
   type LngLat,
 } from '../../apps/web/src/lib/section-math';
 
@@ -89,6 +91,56 @@ describe('projectOntoLine', () => {
     expect(t).toBe(0);
     expect(distanceAlong).toBe(0);
     expect(distanceFrom).toBeGreaterThan(0);
+  });
+});
+
+describe('segmentIntersection', () => {
+  it('finds the crossing of two perpendicular segments', () => {
+    const hit = segmentIntersection([-117.1, 38.0], [-116.9, 38.0], [-117.0, 37.9], [-117.0, 38.1]);
+    expect(hit).not.toBeNull();
+    expect(hit![0]).toBeCloseTo(-117.0, 6);
+    expect(hit![1]).toBeCloseTo(38.0, 6);
+  });
+  it('returns null for parallel segments', () => {
+    expect(
+      segmentIntersection([-117.1, 38.0], [-116.9, 38.0], [-117.1, 38.1], [-116.9, 38.1]),
+    ).toBeNull();
+  });
+  it('returns null when segments would only cross if extended', () => {
+    expect(
+      segmentIntersection([-117.1, 38.0], [-117.05, 38.0], [-117.0, 37.9], [-117.0, 38.1]),
+    ).toBeNull();
+  });
+});
+
+describe('polylineCrossings', () => {
+  it('finds two crossings of a zigzag fault trace', () => {
+    const a: LngLat = [-117.2, 38.0];
+    const b: LngLat = [-116.8, 38.0];
+    // Trace dips below the AB line, comes back up, crossing twice.
+    const trace: LngLat[] = [
+      [-117.15, 38.05],
+      [-117.1, 37.95],
+      [-117.0, 38.05],
+    ];
+    const ts = polylineCrossings(a, b, trace);
+    expect(ts).toHaveLength(2);
+    expect(ts[0]!).toBeLessThan(ts[1]!);
+    for (const t of ts) {
+      expect(t).toBeGreaterThan(0);
+      expect(t).toBeLessThan(1);
+    }
+  });
+  it('returns empty for a trace that never crosses', () => {
+    const ts = polylineCrossings(
+      [-117.2, 38.0],
+      [-116.8, 38.0],
+      [
+        [-117.1, 38.2],
+        [-117.0, 38.3],
+      ],
+    );
+    expect(ts).toHaveLength(0);
   });
 });
 

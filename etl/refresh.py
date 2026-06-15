@@ -55,6 +55,8 @@ SOURCES = [
     "critical_habitat",# USFWS ESA designated critical habitat
     "indian_lands",    # Census TIGER AIANNH — tribal lands (hard exclusion)
     "water_rights",    # Per-state water rights (NV + UT + AZ — first cluster)
+    "quaternary_faults", # USGS Quaternary Faults and Folds (seismic + cross-sect)
+    "parcels",         # Per-county assessor parcels (NV: Washoe/Clark/Elko/Lyon)
     # hotspots reads other sources' GeoJSON from work_dir to score
     # cell-binned prospecting opportunity — MUST stay last so the
     # inputs are guaranteed to exist when it runs.

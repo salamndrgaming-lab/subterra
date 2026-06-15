@@ -91,6 +91,25 @@ interface MacrostratColumnsResponse {
   };
 }
 
+/** Column-units cache — Macrostrat columns are ~50 km wide, so a
+ *  cross-section's 25 sample points usually share one or two columns.
+ *  Caching the units promise per col_id collapses 25 unit fetches into
+ *  1-2 and also speeds up repeated drawer clicks in the same area. */
+const columnUnitsCache = new Map<number, Promise<StratUnit[]>>();
+
+function fetchColumnUnitsCached(columnId: number): Promise<StratUnit[]> {
+  let p = columnUnitsCache.get(columnId);
+  if (!p) {
+    p = fetchColumnUnits(columnId).catch((err) => {
+      // Don't cache failures — next call retries.
+      columnUnitsCache.delete(columnId);
+      throw err;
+    });
+    columnUnitsCache.set(columnId, p);
+  }
+  return p;
+}
+
 export async function fetchGeology(lng: number, lat: number): Promise<GeologyAtPoint> {
   const [mapUnits, columnId] = await Promise.all([
     fetchMapUnits(lng, lat),
@@ -98,7 +117,7 @@ export async function fetchGeology(lng: number, lat: number): Promise<GeologyAtP
   ]);
   // Fetch full unit detail only if we have a column to query against.
   const strat = columnId !== undefined
-    ? await fetchColumnUnits(columnId).catch(() => [])
+    ? await fetchColumnUnitsCached(columnId).catch(() => [])
     : [];
   const macrostratUrl = `https://macrostrat.org/map/dev#x=${lng.toFixed(4)}&y=${lat.toFixed(4)}&z=10`;
   const ngmdbUrl = `https://ngmdb.usgs.gov/mapview/?center=${lng.toFixed(4)},${lat.toFixed(4)}&zoom=11`;
