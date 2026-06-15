@@ -63,6 +63,34 @@ wrangler deploy --config apps/api/wrangler.toml   # API → Cloudflare Workers
 wrangler d1 migrations apply             # only if migrations/*.sql changed
 ```
 
+## Mobile / Vercel preview deploy
+
+The web app also deploys to Vercel as a static SPA — gives you a
+mobile-friendly URL on `*.vercel.app` for testing on a phone without
+waiting for Cloudflare Pages. The Cloudflare Pages deploy stays
+primary; Vercel is a secondary target.
+
+Setup is a one-time hook in the Vercel dashboard:
+
+1. Vercel dashboard → Add New → Project → import the GitHub repo
+2. Framework preset: **Other** (`vercel.json` configures the rest)
+3. Root directory: leave at repo root
+4. Build settings, output directory, install command — all read from
+   `vercel.json` at the repo root.
+5. No environment variables required: the runtime API resolver
+   (`apps/web/src/lib/api-base.ts`) targets the production
+   Cloudflare Worker by default for any host that isn't localhost or
+   `*.subterra.pages.dev`.
+
+Every push to a branch then auto-deploys a Vercel preview at
+`<branch-slug>-<account>.vercel.app`. The API lives on Cloudflare
+Workers and is shared by both Pages and Vercel deploys.
+
+The layout is responsive — sidebar slides in via a hamburger
+button, drawers become bottom-sheets, and floating controls
+have 36px+ tap targets — so the phone UX is usable, not just
+pinch-zoomable.
+
 ## Weekly ETL refresh
 
 GitHub Actions cron job at `Sun 02:00 UTC` (`.github/workflows/etl.yml`)

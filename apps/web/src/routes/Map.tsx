@@ -164,6 +164,10 @@ export function MapPage() {
    *  read the latest value without re-binding. */
   const csModeRef = useRef<'off' | 'pickingA' | 'pickingB' | 'open'>('off');
   const csARef = useRef<LngLat | null>(null);
+  /** Mobile sidebar: hidden by default on small screens, always visible
+   *  on md+. Auto-closes when the user picks a search result or starts
+   *  drawing so the map is unobstructed. */
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const visibility = useLayerVisibility((s) => s.visibility);
   const toggle = useLayerVisibility((s) => s.toggle);
   const terrain3d = useViewMode((s) => s.terrain3d);
@@ -1040,23 +1044,39 @@ export function MapPage() {
     } else {
       map.flyTo({ center: [hit.lng, hit.lat], zoom: 10, duration: 1200 });
     }
+    // Mobile UX: dismiss the slide-in sidebar so the search result is
+    // visible. No-op on desktop because the sidebar is in-flow there.
+    setSidebarOpen(false);
   }
 
   return (
-    <div className="grid h-full w-full grid-cols-[280px_minmax(0,1fr)] grid-rows-[48px_minmax(0,1fr)] overflow-hidden bg-bg text-text">
-      <header className="col-span-2 flex h-12 items-center justify-between gap-3 border-b border-border bg-bg-surface px-3">
-        <Link to="/" className="flex items-center gap-2 px-1.5">
+    <div className="flex h-full w-full flex-col overflow-hidden bg-bg text-text">
+      <header className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-border bg-bg-surface px-2 md:gap-3 md:px-3">
+        <button
+          type="button"
+          onClick={() => setSidebarOpen((v) => !v)}
+          aria-label={sidebarOpen ? 'Close layer panel' : 'Open layer panel'}
+          data-testid="mobile-sidebar-toggle"
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-bg-panel text-text-muted hover:text-text md:hidden"
+        >
+          {/* Three-bar / X icon — purely decorative; the aria-label
+              carries the meaning for AT. */}
+          <span aria-hidden className="text-base leading-none">{sidebarOpen ? '✕' : '☰'}</span>
+        </button>
+        <Link to="/" className="flex shrink-0 items-center gap-2 px-1.5">
           <Logo />
-          <span className="font-mono text-sm tracking-tight text-text">Subterra</span>
+          <span className="hidden font-mono text-sm tracking-tight text-text sm:inline">Subterra</span>
         </Link>
 
-        <SearchBox onPick={flyTo} />
+        <div className="min-w-0 flex-1">
+          <SearchBox onPick={flyTo} />
+        </div>
 
         <button
           type="button"
           onClick={() => setWizardOpen(true)}
           disabled={!manifestQuery.data?.topHotspots?.length}
-          className="mt-2 w-full rounded-md border border-fuchsia-400/60 bg-fuchsia-500/10 px-3 py-2 font-mono text-[11px] text-fuchsia-100 hover:bg-fuchsia-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+          className="hidden shrink-0 rounded-md border border-fuchsia-400/60 bg-fuchsia-500/10 px-3 py-2 font-mono text-[11px] text-fuchsia-100 hover:bg-fuchsia-500/20 disabled:cursor-not-allowed disabled:opacity-50 lg:inline-block"
           title={
             manifestQuery.data?.topHotspots?.length
               ? 'Pick the best 100-acre stake for a commodity + budget'
@@ -1066,9 +1086,11 @@ export function MapPage() {
           ★ Find Optimal Acre
         </button>
 
-        <CommodityFilter selected={commodityFilter} onChange={setCommodityFilter} />
+        <div className="hidden lg:block">
+          <CommodityFilter selected={commodityFilter} onChange={setCommodityFilter} />
+        </div>
 
-        <div className="flex items-center gap-3 font-mono text-[10px]">
+        <div className="hidden items-center gap-3 font-mono text-[10px] md:flex">
           <StatusPill label={styleLoaded ? 'basemap loaded' : 'loading basemap…'} ok={styleLoaded} />
           <StatusPill
             label={
@@ -1096,13 +1118,37 @@ export function MapPage() {
         </div>
 
         {manifestQuery.data?.commodityPrices && (
-          <PriceTicker prices={manifestQuery.data.commodityPrices} />
+          <div className="hidden lg:block">
+            <PriceTicker prices={manifestQuery.data.commodityPrices} />
+          </div>
         )}
 
         <AuthBadge />
       </header>
 
-      <aside className="flex h-full min-h-0 flex-col border-r border-border bg-bg-surface">
+      <div className="relative flex min-h-0 flex-1">
+      {/* Mobile-only backdrop — taps close the slide-in sidebar so users
+          can dismiss it without finding the hamburger again. */}
+      {sidebarOpen && (
+        <div
+          aria-hidden
+          onClick={() => setSidebarOpen(false)}
+          data-testid="sidebar-backdrop"
+          className="absolute inset-0 z-20 bg-black/50 md:hidden"
+        />
+      )}
+      <aside
+        data-testid="sidebar"
+        data-open={sidebarOpen}
+        className={cn(
+          // Mobile: absolutely positioned, slide in from the left.
+          // md+: normal flex item with fixed width — no transform.
+          'absolute inset-y-0 left-0 z-30 flex w-72 min-h-0 flex-col border-r border-border bg-bg-surface',
+          'transition-transform duration-200 ease-out',
+          'md:relative md:w-[280px] md:translate-x-0',
+          sidebarOpen ? 'translate-x-0' : '-translate-x-full',
+        )}
+      >
         <div className="border-b border-border px-4 py-3">
           <div className="flex items-center justify-between">
             <div className="font-mono text-[10px] uppercase tracking-wider text-text-muted">Layers</div>
@@ -1245,7 +1291,7 @@ export function MapPage() {
         )}
       </aside>
 
-      <div className="relative h-full w-full">
+      <div className="relative h-full min-w-0 flex-1">
         <div ref={containerRef} className="absolute inset-0 h-full w-full" data-testid="map-container" />
         {mapError && (
           <div
@@ -1372,6 +1418,7 @@ export function MapPage() {
             }}
           />
         )}
+      </div>
       </div>
     </div>
   );
@@ -1690,7 +1737,10 @@ function ViewModeButton({
       data-testid={testId}
       data-active={active}
       className={cn(
-        'rounded px-2.5 py-1 transition',
+        // Min-height 36px gets close to the iOS 44px tap target without
+        // making the desktop buttons feel chunky. The map area is small
+        // enough on mobile that a few px matters for readability.
+        'min-h-[36px] rounded px-3 py-1.5 transition',
         active
           ? 'bg-accent/20 text-accent shadow-inner ring-1 ring-accent/40'
           : 'text-text-muted hover:bg-bg-panel hover:text-text',
@@ -2193,7 +2243,7 @@ function RecommendedStakeDrawer({
   const margin = revMid - costMid;
   return (
     <aside
-      className="absolute right-3 top-3 bottom-3 z-10 flex w-[360px] flex-col rounded-lg border border-fuchsia-400/40 bg-bg-surface/95 shadow-2xl backdrop-blur"
+      className="absolute inset-x-2 bottom-2 z-10 flex max-h-[70vh] flex-col rounded-lg border border-fuchsia-400/40 bg-bg-surface/95 shadow-2xl backdrop-blur md:inset-x-auto md:bottom-3 md:right-3 md:top-3 md:max-h-none md:w-[360px]"
     >
       <header className="flex items-start justify-between gap-2 border-b border-border px-4 py-3">
         <div className="min-w-0">
@@ -2308,7 +2358,11 @@ function AoiControls({
   return (
     <div
       data-testid="aoi-controls"
-      className="absolute right-3 top-3 z-10 flex flex-col items-end gap-2"
+      // Top-right on desktop, top-right under the hamburger on mobile —
+      // stays visible because users may want to start drawing an AOI
+      // from a phone (the typical "I'm standing on a corner, mark it"
+      // use case).
+      className="absolute right-2 top-2 z-10 flex flex-col items-end gap-2 md:right-3 md:top-3"
     >
       {mode === 'off' && (
         <button
@@ -2374,7 +2428,7 @@ function AoiPanel({ summary, onClose }: { summary: AoiSummary; onClose: () => vo
   return (
     <aside
       data-testid="aoi-panel"
-      className="absolute right-3 top-16 bottom-3 z-10 flex w-[360px] flex-col rounded-lg border border-border bg-bg-surface/95 shadow-2xl backdrop-blur"
+      className="absolute inset-x-2 bottom-2 z-10 flex max-h-[70vh] flex-col rounded-lg border border-border bg-bg-surface/95 shadow-2xl backdrop-blur md:inset-x-auto md:bottom-3 md:right-3 md:top-16 md:max-h-none md:w-[360px]"
     >
       <header className="flex items-start justify-between gap-2 border-b border-border px-4 py-3">
         <div className="min-w-0">
@@ -2495,7 +2549,9 @@ function Legend({ mrdsVisible }: { mrdsVisible: boolean }) {
   return (
     <div
       data-testid="legend"
-      className="absolute bottom-3 left-3 z-10 max-w-[220px] rounded-md border border-border bg-bg-surface/90 p-2 font-mono text-[10px] shadow-xl backdrop-blur"
+      // Hidden on mobile — competes with the bottom-sheet drawer; users
+      // can still hover the layer toggle for the same color cue.
+      className="absolute bottom-3 left-3 z-10 hidden max-w-[220px] rounded-md border border-border bg-bg-surface/90 p-2 font-mono text-[10px] shadow-xl backdrop-blur md:block"
     >
       <div className="mb-1 flex items-center justify-between">
         <span className="uppercase tracking-wider text-text-muted">legend</span>
@@ -2771,7 +2827,7 @@ function DetailDrawer({
   return (
     <aside
       data-testid="detail-drawer"
-      className="absolute right-3 top-3 bottom-3 z-10 flex w-[360px] flex-col rounded-lg border border-border bg-bg-surface/95 shadow-2xl backdrop-blur"
+      className="absolute inset-x-2 bottom-2 z-10 flex max-h-[70vh] flex-col rounded-lg border border-border bg-bg-surface/95 shadow-2xl backdrop-blur md:inset-x-auto md:bottom-3 md:right-3 md:top-3 md:max-h-none md:w-[360px]"
     >
       <header className="flex items-start justify-between gap-2 border-b border-border px-4 py-3">
         <div className="min-w-0">
