@@ -2,8 +2,19 @@ name: etl-refresh
 
 on:
   schedule:
-    # Weekly Sun 02:00 UTC
+    # Weekly Sun 02:00 UTC — keeps datasets fresh even when nobody pushes.
     - cron: '0 2 * * 0'
+  push:
+    branches: [main]
+    paths:
+      # Auto-trigger only when ETL code, source modules, or the workflow
+      # itself changes. A typical UI / Worker push doesn't re-run the
+      # ~25-minute pipeline. The Python deps file is here too so a
+      # dependency bump regenerates tiles against the new geopandas /
+      # tippecanoe behavior.
+      - 'etl/**'
+      - '.github/workflows/etl.yml'
+      - 'packages/shared/src/layers.ts'
   workflow_dispatch:
     inputs:
       only:
@@ -12,6 +23,10 @@ on:
           "water_rights" or "mrds,geochemistry"). Runs just those
           sources and SKIPS the tile build + R2 upload — use to test a
           source's endpoints without a 25-minute tippecanoe run.
+        required: false
+        default: ''
+      reason:
+        description: 'Optional note explaining why this run was kicked off (shows up in the run summary).'
         required: false
         default: ''
 

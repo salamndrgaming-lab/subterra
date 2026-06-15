@@ -96,6 +96,87 @@ class SourceStatus:
 SOURCE_STATUSES: list[SourceStatus] = []
 
 
+def _print_source_summary() -> None:
+    """Print a per-source status table to stdout and (when running in
+    GitHub Actions) also append it to $GITHUB_STEP_SUMMARY so the run
+    page shows the full picture at the top without anyone log-diving.
+
+    Silent partial failures (source returns 0 features, source crashes
+    after writing partial GeoJSON, upstream slug-shuffled, etc.) used
+    to be invisible unless you grep'd the 25k-line Actions log. Now
+    they land in a 1-screen table and exit-1 if anything looks broken
+    enough to matter."""
+    if not SOURCE_STATUSES:
+        return
+    by_status: dict[str, int] = {}
+    for s in SOURCE_STATUSES:
+        by_status[s.status] = by_status.get(s.status, 0) + 1
+
+    lines = [
+        "",
+        "================ ETL source summary ================",
+        f"  {len(SOURCE_STATUSES)} source(s) total · "
+        + " · ".join(f"{n} {st}" for st, n in sorted(by_status.items())),
+        "",
+        f"  {'source':<22} {'status':<8} {'features':>10}  {'time':>7}  error",
+        f"  {'-'*22} {'-'*8} {'-'*10}  {'-'*7}  {'-'*30}",
+    ]
+    for s in SOURCE_STATUSES:
+        err = (s.error or "").splitlines()[0][:60] if s.error else ""
+        lines.append(
+            f"  {s.name:<22} {s.status:<8} {s.feature_count:>10,}  "
+            f"{s.elapsed_s:>5.1f}s  {err}"
+        )
+    lines.append("=" * 52)
+    lines.append("")
+    print("\n".join(lines))
+
+    # Append the table to GitHub Actions' job summary so it's visible
+    # without expanding the log. Markdown formatting because the
+    # summary file is rendered as Markdown.
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary_path:
+        md_lines = [
+            "## ETL source summary",
+            "",
+            f"_{len(SOURCE_STATUSES)} source(s) total · "
+            + " · ".join(f"**{n}** {st}" for st, n in sorted(by_status.items()))
+            + "_",
+            "",
+            "| Source | Status | Features | Time | Error |",
+            "| --- | --- | ---: | ---: | --- |",
+        ]
+        for s in SOURCE_STATUSES:
+            err = (s.error or "").replace("|", "\\|")[:120] if s.error else ""
+            icon = "✅" if s.status == "ok" else ("⚠️" if s.status == "empty" else "❌")
+            md_lines.append(
+                f"| `{s.name}` | {icon} {s.status} | {s.feature_count:,} | "
+                f"{s.elapsed_s:.1f}s | {err} |"
+            )
+        try:
+            with open(summary_path, "a", encoding="utf-8") as fh:
+                fh.write("\n".join(md_lines) + "\n")
+        except OSError as err:
+            print(f"::warning::failed to write step summary: {err}")
+
+    # Hard-fail the workflow if too many sources broke. Threshold: more
+    # than 25% of attempted sources failed OR a critical "blockers"
+    # source (federal_lands, blm_claims) failed. Triggers
+    # `peter-evans/create-issue-from-file` in etl.yml's failure step.
+    failed = [s for s in SOURCE_STATUSES if s.status == "failed"]
+    critical = {"federal_lands", "blm_claims", "mrds"}
+    critical_failed = [s.name for s in failed if s.name in critical]
+    if critical_failed:
+        raise SystemExit(
+            f"::error::critical source(s) failed: {', '.join(critical_failed)}"
+        )
+    if len(failed) > max(1, len(SOURCE_STATUSES) // 4):
+        raise SystemExit(
+            f"::error::{len(failed)}/{len(SOURCE_STATUSES)} sources failed — "
+            "more than 25% threshold, refusing to upload partial tileset"
+        )
+
+
 def run_sources(only: set[str] | None, skip_set: set[str]) -> list[SourceResult]:
     """Run every enabled source module. A failure in one source is logged
     but doesn't abort the run — tippecanoe builds tiles from whatever
@@ -302,6 +383,12 @@ def main() -> int:
 
     sys.path.insert(0, str(ROOT))   # so sources.* imports work
     results = run_sources(only, skip)
+
+    # Per-source status table — printed unconditionally + appended to
+    # the GitHub Actions step summary when running in CI. Makes silent
+    # partial failures (the kind that used to look like "ETL succeeded"
+    # while half the layers came back empty) impossible to miss.
+    _print_source_summary()
 
     if not args.skip_tippecanoe:
         pmtiles = run_tippecanoe(results)
