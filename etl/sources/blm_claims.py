@@ -1,18 +1,31 @@
 """
 BLM National MLRS Mining Claims — Not Closed (active).
 
-Bulk GeoJSON download from BLM's Geospatial Business Platform Hub. The
-dataset item id (`abec5ef96dc8495d9c29a01b30cc04ee`) is the MLRS
-Mining Claims feature service — every active mining claim recorded in
-BLM's Mineral & Land Records System. ~350k features, ~250 MB GeoJSON.
+Pulls every active mining-claim case in BLM's Mineral and Land Records
+System (MLRS), nationwide. ~550k features as of 2026-06.
 
-Hub Downloads API v1 either streams the file directly or returns a
-short job-status JSON that points at a CDN URL. We handle both cases.
+The canonical endpoint is the ArcGIS REST FeatureServer that backs
+the BLM Hub item `abec5ef96dc8495d9c29a01b30cc04ee` — looked up via
+https://www.arcgis.com/sharing/rest/content/items/<itemid>?f=json.
+We paginate against it via the project's `_arcgis` helper, same as
+withdrawals.py / wells.py / etc.
 
-Source URL:
-  https://gbp-blm-egis.hub.arcgis.com/api/download/v1/items/abec5ef96dc8495d9c29a01b30cc04ee/geojson?layers=0
-Discoverable at:
-  https://catalog.data.gov/dataset/blm-natl-mlrs-mining-claims-not-closed-f621b
+The previous implementation used BLM's Hub Downloads API (a bulk
+GeoJSON dump). That endpoint silently regressed to returning ~552
+features (vs the historical ~552,985) for at least 10 days in
+June 2026 — the streamed file was a truncated cache that BLM's Hub
+job never refreshed. Switching to the FeatureServer paginator bypasses
+the broken cache entirely and uses the same underlying service the
+Hub Downloads job was supposed to be exporting from. Slower
+(paginated fetches instead of one big stream) but trustworthy.
+
+Source URLs:
+  - Hub item metadata:
+    https://www.arcgis.com/sharing/rest/content/items/abec5ef96dc8495d9c29a01b30cc04ee?f=json
+  - FeatureServer base (from the item's "url" field):
+    https://gis.blm.gov/nlsdb/rest/services/HUB/BLM_Natl_MLRS_Mining_Claims_Not_Closed/FeatureServer
+  - Discoverable at:
+    https://catalog.data.gov/dataset/blm-natl-mlrs-mining-claims-not-closed-f621b
 """
 
 from __future__ import annotations
@@ -24,21 +37,12 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import ijson
-import requests
-from tqdm import tqdm
+from sources._arcgis import iter_features_concurrent
 
-ITEM_ID = "abec5ef96dc8495d9c29a01b30cc04ee"
-PRIMARY_URL = (
-    f"https://gbp-blm-egis.hub.arcgis.com/api/download/v1/items/{ITEM_ID}/geojson?layers=0"
+DEFAULT_QUERY_URL = (
+    "https://gis.blm.gov/nlsdb/rest/services/HUB/"
+    "BLM_Natl_MLRS_Mining_Claims_Not_Closed/FeatureServer/0/query"
 )
-USER_AGENT = (
-    "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0 "
-    "(Subterra-ETL +https://github.com/salamndrgaming-lab/subterra)"
-)
-REQUEST_TIMEOUT = 600.0  # 10 min — large download under variable load
-POLL_INTERVAL = 5.0
-POLL_TIMEOUT = 600.0
 
 
 @dataclass
@@ -46,68 +50,6 @@ class SourceResult:
     layer_id: str
     geojson_path: Path
     feature_count: int
-
-
-def _resolve_data_url(url: str) -> tuple[str, requests.Response]:
-    """The Hub download endpoint sometimes returns a JSON job status (with
-    a `url` field pointing at the cached file) rather than streaming the
-    file directly. Detect that and follow up. Returns the eventual data
-    URL plus an open streaming Response on that URL."""
-    log = logging.getLogger("etl.blm_claims")
-    deadline = time.monotonic() + POLL_TIMEOUT
-
-    def fetch(u: str) -> requests.Response:
-        return requests.get(
-            u,
-            headers={
-                "User-Agent": USER_AGENT,
-                "accept": "application/geo+json, application/json, */*",
-            },
-            stream=True,
-            timeout=REQUEST_TIMEOUT,
-            allow_redirects=True,
-        )
-
-    current = url
-    while True:
-        resp = fetch(current)
-        resp.raise_for_status()
-        ct = resp.headers.get("content-type", "").lower()
-        # Direct GeoJSON stream — done.
-        if "geo+json" in ct or ("json" in ct and not _looks_like_status(resp)):
-            log.info("download URL ready (content-type=%s)", ct)
-            return current, resp
-        # JSON status response — parse and either follow or poll.
-        body = resp.text
-        resp.close()
-        try:
-            status = json.loads(body)
-        except Exception as err:
-            raise RuntimeError(
-                f"Unexpected response from BLM hub: ct={ct} body[:200]={body[:200]!r}"
-            ) from err
-        next_url = status.get("url") or status.get("downloadUrl")
-        if next_url and next_url != current:
-            log.info("hub redirected to %s", next_url)
-            current = next_url
-            continue
-        # Still cooking — poll same URL.
-        if time.monotonic() > deadline:
-            raise RuntimeError(f"Timed out waiting for BLM hub to publish download for item {ITEM_ID}")
-        log.info("hub job not ready, sleeping %.0fs (status=%s)", POLL_INTERVAL, status.get("status"))
-        time.sleep(POLL_INTERVAL)
-
-
-def _looks_like_status(resp: requests.Response) -> bool:
-    """A short JSON body is likely a job-status envelope; a large body is
-    likely the data itself. Used only when content-type doesn't disambiguate."""
-    cl = resp.headers.get("content-length")
-    if cl is not None:
-        try:
-            return int(cl) < 4096
-        except ValueError:
-            return False
-    return False
 
 
 _PROP_KEYS = {
@@ -149,57 +91,51 @@ def run(work_dir: Path) -> SourceResult:
     log = logging.getLogger("etl.blm_claims")
     log.info("starting BLM MLRS mining-claims download")
 
-    # The default `PRIMARY_URL` (BLM ArcGIS Hub Downloads API) has been
-    # observed returning a truncated payload of ~552 features (vs the
-    # historical ~552,985) for at least 10 days as of 2026-06-16 — root
-    # cause unknown, likely a BLM-side dataset republish or
-    # filter regression. Workarounds, in order of preference:
-    #   1. Set SUBTERRA_BLM_CLAIMS_URL in repo Variables to a known-good
-    #      bulk-download URL (e.g. the BLM EGIS direct ArcGIS service:
-    #      https://gis.blm.gov/arcgis/rest/services/mlrs/... /MapServer/0/query
-    #      — combined with iter_features_concurrent pagination via the
-    #      `_arcgis` helper). Then re-run via workflow_dispatch.
-    #   2. Wait for BLM to fix the Hub upstream.
-    # The EXPECTED_MIN_FEATURES floor in refresh.py prevents a tileset
-    # with the truncated count from shipping in the meantime.
+    # Endpoint is env-overridable in case BLM republishes the service
+    # under a new slug. Both the canonical SUBTERRA_* name and the
+    # legacy BLM_CLAIMS_URL are honored.
     url = (
         os.environ.get("SUBTERRA_BLM_CLAIMS_URL")
         or os.environ.get("BLM_CLAIMS_URL")
-        or PRIMARY_URL
+        or DEFAULT_QUERY_URL
     )
     log.info("source URL: %s", url)
-    _, resp = _resolve_data_url(url)
 
     out_path = work_dir / "blm_claims.geojson"
     feature_count = 0
     skipped = 0
     started = time.monotonic()
+    first = [True]
 
     try:
-        with out_path.open("w", encoding="utf-8") as out, resp:
-            # urllib3 doesn't decode gzip/deflate on resp.raw by default;
-            # the BLM hub serves Content-Encoding: gzip, so ijson would
-            # otherwise see the gzip magic header (\x1f\x8b) as JSON.
-            resp.raw.decode_content = True
+        with out_path.open("w", encoding="utf-8") as out:
             out.write('{"type":"FeatureCollection","features":[')
-            first = True
-            pbar = tqdm(desc="blm claims", unit="feat", smoothing=0.1)
-            # use_float=True keeps coordinates as Python floats; otherwise
-            # ijson hands back decimal.Decimal which json.dump refuses to
-            # serialize without a custom default.
-            for feat in ijson.items(resp.raw, "features.item", use_float=True):
+
+            def on_feature(feat: dict) -> None:
+                nonlocal feature_count, skipped
                 geom = feat.get("geometry")
                 if not geom:
                     skipped += 1
-                    continue
+                    return
                 props = _normalize(feat.get("properties") or {})
-                if not first:
+                if not first[0]:
                     out.write(",")
-                first = False
-                json.dump({"type": "Feature", "geometry": geom, "properties": props}, out)
+                first[0] = False
+                json.dump(
+                    {"type": "Feature", "geometry": geom, "properties": props}, out
+                )
                 feature_count += 1
-                pbar.update(1)
-            pbar.close()
+
+            iter_features_concurrent(
+                url,
+                on_feature=on_feature,
+                # 8 workers @ 2000 features/page = 16k features in flight;
+                # the BLM nlsdb host handles this comfortably in tests of
+                # the same shape against withdrawals + federal_lands.
+                workers=8,
+                progress_label="blm_claims",
+            )
+
             out.write("]}")
     except Exception:
         # Don't leave a half-written file lying around for tippecanoe.
