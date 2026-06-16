@@ -273,6 +273,14 @@ jobs:
           cache: 'npm'
       - run: npm ci
 
+      # `@subterra/shared` is a workspace dep of `apps/web`. The web
+      # build's typecheck (tsc --noEmit) needs the shared package's
+      # `dist/` to resolve `@subterra/shared` imports. Build shared
+      # first so the typecheck can find it — without this, the web
+      # build fails with "Cannot find module '@subterra/shared'" and
+      # downstream symbol-as-index-type cascades.
+      - run: npm run build:shared
+
       # Rebuild the web bundle with VITE_API_URL baked in so every
       # visitor's browser hits the Cloudflare Worker for the manifest,
       # not the localhost fallback. Vite bakes env vars at build time.
