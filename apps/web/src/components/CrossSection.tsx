@@ -738,7 +738,9 @@ function Toolbar({
  *  question "but how do you know unit X extends 8 km east?" — answer:
  *  we don't, and we're not claiming to. */
 function ContinuityDisclaimer() {
-  const KEY = 'subterra:cs:continuity-disclaimer-dismissed';
+  // Bumped suffix when the disclaimer wording changed (dip is now
+  // modeled). Users who dismissed the v1 disclaimer see the v2 once.
+  const KEY = 'subterra:cs:continuity-disclaimer-dismissed-v2';
   const [dismissed, setDismissed] = useState<boolean>(() => {
     if (typeof window === 'undefined') return true;
     return window.sessionStorage.getItem(KEY) === '1';
@@ -748,9 +750,10 @@ function ContinuityDisclaimer() {
     <div className="flex items-start gap-2 border-b border-amber-500/30 bg-amber-500/10 px-4 py-1.5 font-mono text-[10px] text-amber-200">
       <span aria-hidden className="mt-0.5">ⓘ</span>
       <span className="min-w-0 flex-1">
-        Hung-column section. Vertical thicknesses from Macrostrat (with
-        uncertainty bands shown on hover). Lateral continuity between
-        columns and regional dip are NOT modeled — units are drawn flat.
+        Hung-column section. Apparent dip per formation computed from
+        inter-column elevation differences (along-section component
+        only). Fault dip inferred from slip-sense. Lateral continuity
+        between columns is NOT interpolated — gaps mean the data ends.
       </span>
       <button
         type="button"
@@ -930,6 +933,58 @@ function SectionSvg({
     [geology, totalDistM],
   );
 
+  // Apparent dip per (block, unit) — computed from inter-column
+  // elevation differences of same-named formations across adjacent
+  // columns. Positive degrees = unit dips toward +x (toward B);
+  // negative = dips toward A. This is the regional-dip-along-section
+  // component of true dip (apparent dip ≤ true dip, with equality when
+  // the section runs perpendicular to strike). Honest improvement
+  // over the prior "all units flat" rendering, but only along-section
+  // — true 3D dip needs adjacent parallel sections we don't have.
+  const dipsByBlock = useMemo<Array<Array<number | null>>>(() => {
+    if (columnBlocks.length === 0) return [];
+    // First pass: for each block, build a map of unit-name → top
+    // elevation. Top elev derives from each block's midpoint surface
+    // elevation minus the cumulative thickness above the unit.
+    const topsByBlock: Array<Map<string, number>> = [];
+    const midByBlock: number[] = [];
+    for (const block of columnBlocks) {
+      const midDist = (block.startM + block.endM) / 2;
+      midByBlock.push(midDist);
+      const surfElev = interpElev(elev, midDist) ?? 0;
+      const tops = new Map<string, number>();
+      let cum = 0;
+      for (const u of block.units) {
+        tops.set(u.name, surfElev - cum);
+        const thick = u.thicknessM && u.thicknessM > 0 ? u.thicknessM : 50;
+        cum += thick;
+      }
+      topsByBlock.push(tops);
+    }
+    // Second pass: per-unit apparent dip relative to the same unit's
+    // top elevation in the previous block.
+    const out: Array<Array<number | null>> = [];
+    for (let bi = 0; bi < columnBlocks.length; bi++) {
+      const blockDips: Array<number | null> = [];
+      const units = columnBlocks[bi]?.units ?? [];
+      for (let ui = 0; ui < units.length; ui++) {
+        if (bi === 0) { blockDips.push(null); continue; }
+        const u = units[ui]!;
+        const thisTop = topsByBlock[bi]!.get(u.name);
+        const prevTop = topsByBlock[bi - 1]!.get(u.name);
+        const runM = midByBlock[bi]! - midByBlock[bi - 1]!;
+        if (thisTop == null || prevTop == null || runM <= 0) {
+          blockDips.push(null);
+          continue;
+        }
+        const dipDeg = Math.atan2(prevTop - thisTop, runM) * 180 / Math.PI;
+        blockDips.push(dipDeg);
+      }
+      out.push(blockDips);
+    }
+    return out;
+  }, [columnBlocks, elev]);
+
   // ── topo path (contiguous segments) ───────────────────────────────
   const topoSegments = buildPolySegments(elev, xOf, yOf);
   const topoFillPath = buildFillPath(elev, xOf, yOf, topoBottomY);
@@ -1083,6 +1138,13 @@ function SectionSvg({
                 const yBot = Math.min(yOf(Math.max(botElev, subsurfaceFloor)), topoBottomY);
                 const h = Math.max(0.5, yBot - yTop);
                 const showLabel = h > 13 && w > 90;
+                // Lithology-derived color overrides Macrostrat's
+                // age-based color when we recognize the lithology —
+                // standard USGS palette is more informative for
+                // economic-geology readers.
+                const fillColor = lithologyColor(u.lithology) ?? u.color ?? '#475569';
+                const dipDeg = dipsByBlock[bi]?.[ui] ?? null;
+                const showDipBadge = dipDeg != null && Math.abs(dipDeg) >= 0.5 && h > 18 && w > 60;
                 return (
                   <g key={`u-${bi}-${ui}`}>
                     <rect
@@ -1090,7 +1152,7 @@ function SectionSvg({
                       y={yTop}
                       width={w}
                       height={h}
-                      fill={u.color ?? '#475569'}
+                      fill={fillColor}
                       opacity={0.82}
                       stroke="#0a0c10"
                       strokeWidth={0.6}
@@ -1098,7 +1160,8 @@ function SectionSvg({
                       <title>
                         {`${u.name}${u.age ? ` · ${u.age}` : ''}${u.lithology ? ` · ${u.lithology}` : ''}` +
                           `\nthickness ~${Math.round(thick)} m · top ~${Math.round(cum - thick)} m below surface` +
-                          `${u.environment ? `\nenvironment: ${u.environment}` : ''}`}
+                          `${u.environment ? `\nenvironment: ${u.environment}` : ''}` +
+                          `${dipDeg != null ? `\napparent dip: ${Math.abs(dipDeg).toFixed(1)}° toward ${dipDeg > 0 ? 'B' : 'A'} (along-section component)` : ''}`}
                       </title>
                     </rect>
                     {showLabel && (
@@ -1108,10 +1171,24 @@ function SectionSvg({
                         textAnchor="middle"
                         fontFamily="ui-monospace, monospace"
                         fontSize={9}
-                        fill={contrastTextColor(u.color ?? '#475569')}
+                        fill={contrastTextColor(fillColor)}
                         pointerEvents="none"
                       >
                         {truncate(u.name, Math.max(6, Math.floor(w / 6.5)))}
+                      </text>
+                    )}
+                    {showDipBadge && (
+                      <text
+                        x={x0 + w - 4}
+                        y={yTop + 11}
+                        textAnchor="end"
+                        fontFamily="ui-monospace, monospace"
+                        fontSize={9}
+                        fill={contrastTextColor(fillColor)}
+                        opacity={0.85}
+                        pointerEvents="none"
+                      >
+                        {dipDeg! > 0 ? '↘' : '↗'} {Math.abs(dipDeg!).toFixed(1)}°
                       </text>
                     )}
                   </g>
@@ -1148,44 +1225,59 @@ function SectionSvg({
       )}
 
       {/* ── fault traces crossing the section ──
-          Quaternary fault traces give the surface crossing point but
-          not the dip — drawn vertical-dashed per convention for
-          unknown dip, with the name + slip data in the tooltip. */}
+          Quaternary faults dataset gives the surface crossing point +
+          slip-sense. We pick a typical dip per sense (normal=60°,
+          reverse=30°, strike-slip=vertical) and slant the fault trace
+          accordingly. Color by sense — red=normal, orange=reverse/
+          thrust, purple=strike-slip, gray=unknown. The dip angle is
+          INFERRED (not measured) when sense is known; this is
+          documented in the hover tooltip. */}
       {faultCrossings.map((f, i) => {
         const x = PADDING.l + f.t * innerW;
         const surfY = (() => {
           const e = interpElev(elev, f.t * totalDistM);
           return e != null ? yOf(e) : PADDING.t + 40;
         })();
+        const style = faultStyle(f.slipSense);
+        // Convert "dip from vertical" to a horizontal pixel offset at
+        // the bottom of the section. The fault dips toward +x (toward
+        // B). Real direction would need hanging-wall context the
+        // dataset doesn't carry — flagged in the tooltip as inferred.
+        const dipHeight = topoBottomY - surfY;
+        const dipOffsetPx = Math.tan((style.dipFromVerticalDeg * Math.PI) / 180) * dipHeight;
+        const xBot = x + dipOffsetPx;
         return (
           <g key={`fault-${i}`}>
             <line
               x1={x}
               y1={surfY}
-              x2={x}
+              x2={xBot}
               y2={topoBottomY}
-              stroke="#ef4444"
+              stroke={style.color}
               strokeWidth={2}
               strokeDasharray="8 4"
               opacity={0.9}
             >
               <title>
-                {`${f.name}${f.slipSense ? `\nslip sense: ${f.slipSense}` : ''}` +
+                {`${f.name}` +
+                  `${f.slipSense ? `\nslip sense: ${f.slipSense} (${style.label})` : '\nslip sense: unknown'}` +
                   `${f.slipRate ? `\nslip rate: ${f.slipRate}` : ''}` +
-                  `${f.age ? `\nage: ${f.age}` : ''}\n(dip unknown — drawn vertical)`}
+                  `${f.age ? `\nage: ${f.age}` : ''}` +
+                  `\ndip: ${style.dipFromVerticalDeg === 0 ? 'vertical' : `~${90 - style.dipFromVerticalDeg}° toward B`}` +
+                  `${style.inferred ? ' (inferred from slip sense — true dip not in dataset)' : ''}`}
               </title>
             </line>
             {/* surface tick + label */}
             <polygon
               points={`${x - 5},${surfY - 9} ${x + 5},${surfY - 9} ${x},${surfY - 2}`}
-              fill="#ef4444"
+              fill={style.color}
             />
             <text
               x={x + 4}
               y={surfY - 14}
               fontFamily="ui-monospace, monospace"
               fontSize={9}
-              fill="#ef4444"
+              fill={style.color}
             >
               {truncate(f.name, 26)}
             </text>
@@ -2080,6 +2172,64 @@ function contrastTextColor(hex: string): string {
   const b = n & 0xff;
   const yiq = (r * 299 + g * 587 + b * 114) / 1000;
   return yiq >= 160 ? '#0a0c10' : '#f8fafc';
+}
+
+/** Map a Macrostrat lithology string to a standard USGS-palette
+ *  color. Substring match because Macrostrat strings vary widely
+ *  ("sandstone", "ss", "Sandstone - fine grained, lithic"). Returns
+ *  null when no match, so the caller falls back to Macrostrat's
+ *  per-unit color (which is age-based, not lithology-based). */
+function lithologyColor(lithology: string | undefined): string | null {
+  if (!lithology) return null;
+  const l = lithology.toLowerCase();
+  // Sedimentary — most common in the western US prospecting target
+  if (/(limestone|dolomite|carbonate)/.test(l)) return '#7dd3fc';
+  if (/(sandstone|\bss\b|arenite)/.test(l)) return '#fde68a';
+  if (/(shale|mudstone|claystone|siltstone)/.test(l)) return '#94a3b8';
+  if (/conglomerate/.test(l)) return '#fcd34d';
+  if (/(evaporite|gypsum|halite|anhydrite)/.test(l)) return '#fce7f3';
+  if (/coal/.test(l)) return '#1f2937';
+  if (/(chert|jasperoid)/.test(l)) return '#fb923c';
+  // Igneous
+  if (/(granite|granodiorite|tonalite|diorite|monzonite)/.test(l)) return '#fda4af';
+  if (/(basalt|gabbro|diabase|dolerite)/.test(l)) return '#7c3aed';
+  if (/(rhyolite|tuff|ignimbrite|dacite|andesite|volcanic)/.test(l)) return '#f43f5e';
+  // Metamorphic
+  if (/(schist|gneiss|amphibolite)/.test(l)) return '#86efac';
+  if (/quartzite/.test(l)) return '#fef3c7';
+  if (/marble/.test(l)) return '#e0f2fe';
+  if (/(slate|phyllite)/.test(l)) return '#64748b';
+  return null;
+}
+
+/** Render style for a fault crossing, inferred from `slipSense`.
+ *  When the USGS Quaternary Faults dataset carries slip-sense, we
+ *  draw the fault at a typical dip:
+ *    normal:        60° (extensional — typical Basin-and-Range range)
+ *    reverse/thrust: 30° (compressional — typical fold-thrust belt)
+ *    strike-slip:    0° (vertical — dip-slip negligible)
+ *  Direction defaults to dipping toward +x (toward B). True dip
+ *  direction needs hanging-wall/footwall context that the Q-faults
+ *  dataset doesn't always provide — honest improvement over the
+ *  prior "always vertical" rendering, but documented as inferred. */
+function faultStyle(slipSense: string | undefined): {
+  dipFromVerticalDeg: number;
+  color: string;
+  label: string;
+  inferred: boolean;
+} {
+  const s = (slipSense || '').toLowerCase();
+  if (/normal/.test(s)) return { dipFromVerticalDeg: 60, color: '#ef4444', label: 'normal', inferred: true };
+  if (/(thrust|reverse)/.test(s)) {
+    return {
+      dipFromVerticalDeg: 30,
+      color: '#f97316',
+      label: /thrust/.test(s) ? 'thrust' : 'reverse',
+      inferred: true,
+    };
+  }
+  if (/strike|lateral|wrench/.test(s)) return { dipFromVerticalDeg: 0, color: '#a855f7', label: 'strike-slip', inferred: false };
+  return { dipFromVerticalDeg: 0, color: '#94a3b8', label: 'sense unknown', inferred: false };
 }
 
 function commodityCategory(commodity: string | undefined): keyof typeof COMMODITY_CATEGORY_COLORS {
