@@ -939,6 +939,24 @@ function SectionSvg({
 
   // ── hover state ───────────────────────────────────────────────────
   const [hover, setHover] = useState<{ x: number; y: number } | null>(null);
+  // Viewport-aware readout sizing. The SVG renders at a fixed 1200×640
+  // viewBox that auto-scales to container width; on a phone (~380px
+  // wide), 10px viewBox text becomes ~3px on screen — unreadable.
+  // `compact` switches the readout to a larger font + wider box; the
+  // readout stays inside the SVG (no state lift) but gets readable.
+  const [compact, setCompact] = useState<boolean>(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+      return false;
+    }
+    return window.matchMedia('(max-width: 640px)').matches;
+  });
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia('(max-width: 640px)');
+    const onChange = (e: { matches: boolean }) => setCompact(e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
   // Pointer events instead of mouse events so the crosshair tracks
   // touch on phones too. A tap shows the crosshair at the touched
   // point; subsequent drags update it; lifting the finger leaves it
@@ -1488,6 +1506,7 @@ function SectionSvg({
             unitAtCursor={hoverUnit}
             W={W}
             PADDING={PADDING}
+            compact={compact}
           />
         </g>
       )}
@@ -1507,6 +1526,7 @@ function HoverReadout({
   unitAtCursor,
   W,
   PADDING,
+  compact,
 }: {
   hover: { x: number; y: number };
   distM: number;
@@ -1519,21 +1539,27 @@ function HoverReadout({
   unitAtCursor: { unit: StratUnit; depthM: number } | null;
   W: number;
   PADDING: { l: number; r: number; t: number; b: number };
+  compact: boolean;
 }) {
   // Pin the readout to whichever side of the cursor has more space.
+  // `compact` (mobile) scales up the box ~1.8× so text remains readable
+  // after the 1200-wide viewBox is auto-scaled down to ~380px on phones.
   const u = unitAtCursor?.unit;
   const ageRange = u ? formatAgeRange(u) : null;
   const envLabel = u?.environment ? truncate(u.environment, 26) : null;
-  // Box grows to accommodate the extra age + environment rows when a
-  // subsurface unit is hovered.
   const extraRows = u ? 1 + (ageRange ? 1 : 0) + (envLabel ? 1 : 0) : 0;
-  const boxW = 220;
-  const boxH = 78 + extraRows * 14;
+  const fontPx = compact ? 18 : 10;
+  const rowH = compact ? 22 : 14;
+  const boxW = compact ? 380 : 220;
+  const boxH = (compact ? 96 : 78) + extraRows * rowH;
   const placeRight = hover.x < W - PADDING.r - boxW - 8;
   const x = placeRight ? hover.x + 10 : hover.x - boxW - 10;
   const y = Math.min(hover.y + 10, PADDING.t + 6);
+  // Row y-positions derived from rowH so the layout scales consistently
+  // across compact / desktop.
+  const row = (n: number) => (compact ? 22 : 14) + n * rowH;
   return (
-    <g transform={`translate(${x}, ${y})`} fontFamily="ui-monospace, monospace" fontSize={10}>
+    <g transform={`translate(${x}, ${y})`} fontFamily="ui-monospace, monospace" fontSize={fontPx}>
       <rect
         width={boxW}
         height={boxH}
@@ -1542,46 +1568,46 @@ function HoverReadout({
         stroke="#1f2937"
         opacity={0.95}
       />
-      <text x={8} y={14} fill="#94a3b8">distance</text>
-      <text x={boxW - 8} y={14} textAnchor="end" fill="#fbbf24">
+      <text x={8} y={row(0)} fill="#94a3b8">distance</text>
+      <text x={boxW - 8} y={row(0)} textAnchor="end" fill="#fbbf24">
         {(distM / 1000).toFixed(2)} km · {(distM / 1609.34).toFixed(2)} mi
       </text>
-      <text x={8} y={28} fill="#94a3b8">elevation</text>
-      <text x={boxW - 8} y={28} textAnchor="end" fill="#f8fafc">
+      <text x={8} y={row(1)} fill="#94a3b8">elevation</text>
+      <text x={boxW - 8} y={row(1)} textAnchor="end" fill="#f8fafc">
         {elevM != null ? `${Math.round(elevM)} m · ${Math.round(elevM * 3.28084)} ft` : '—'}
       </text>
-      <text x={8} y={42} fill="#94a3b8">slope</text>
-      <text x={boxW - 8} y={42} textAnchor="end" fill="#f8fafc">
+      <text x={8} y={row(2)} fill="#94a3b8">slope</text>
+      <text x={boxW - 8} y={row(2)} textAnchor="end" fill="#f8fafc">
         {slopePct != null ? `${slopePct.toFixed(1)}%` : '—'}
       </text>
-      <text x={8} y={56} fill="#94a3b8">surface geo</text>
-      <text x={boxW - 8} y={56} textAnchor="end" fill="#f8fafc">
+      <text x={8} y={row(3)} fill="#94a3b8">surface geo</text>
+      <text x={boxW - 8} y={row(3)} textAnchor="end" fill="#f8fafc">
         {truncate(geoLabel ?? '—', 22)}{geoAge ? `, ${truncate(geoAge, 8)}` : ''}
       </text>
-      <text x={8} y={70} fill="#94a3b8">surface mgmt</text>
-      <text x={boxW - 8} y={70} textAnchor="end" fill="#f8fafc">
+      <text x={8} y={row(4)} fill="#94a3b8">surface mgmt</text>
+      <text x={boxW - 8} y={row(4)} textAnchor="end" fill="#f8fafc">
         {agency ?? '—'}
       </text>
       {u && (
         <>
-          <text x={8} y={84} fill="#94a3b8">at cursor</text>
-          <text x={boxW - 8} y={84} textAnchor="end" fill="#2dd4bf">
+          <text x={8} y={row(5)} fill="#94a3b8">at cursor</text>
+          <text x={boxW - 8} y={row(5)} textAnchor="end" fill="#2dd4bf">
             {truncate(u.name, 20)} ({Math.round(unitAtCursor!.depthM)} m)
           </text>
           {ageRange && (
             <>
-              <text x={8} y={98} fill="#94a3b8">age</text>
-              <text x={boxW - 8} y={98} textAnchor="end" fill="#f8fafc">
+              <text x={8} y={row(6)} fill="#94a3b8">age</text>
+              <text x={boxW - 8} y={row(6)} textAnchor="end" fill="#f8fafc">
                 {truncate(u.age || '—', 20)} · {ageRange}
               </text>
             </>
           )}
           {envLabel && (
             <>
-              <text x={8} y={98 + (ageRange ? 14 : 0)} fill="#94a3b8">environ</text>
+              <text x={8} y={row(6 + (ageRange ? 1 : 0))} fill="#94a3b8">environ</text>
               <text
                 x={boxW - 8}
-                y={98 + (ageRange ? 14 : 0)}
+                y={row(6 + (ageRange ? 1 : 0))}
                 textAnchor="end"
                 fill="#f8fafc"
               >
