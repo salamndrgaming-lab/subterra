@@ -179,10 +179,33 @@ def run(work_dir: Path) -> SourceResult:
     out_of_bbox = 0
     no_anomaly = 0
     bad_coords = 0
+    # Diagnostic: per-element histograms of the highest concentration
+    # we observed in the file. If "no_anomaly" rejects all rows, this
+    # tells us at a glance whether KEEP_THRESHOLDS are mismatched to
+    # the data (e.g. file in ppb but threshold in ppm).
+    max_seen: dict[str, float] = {k: 0.0 for k in KEEP_THRESHOLDS}
+    rows_with_element: dict[str, int] = {k: 0 for k in KEEP_THRESHOLDS}
 
     with zipfile.ZipFile(zip_path) as zf, zf.open(csv_name) as raw:
         text = io.TextIOWrapper(raw, encoding="utf-8-sig", newline="")
         reader = csv.DictReader(text)
+        # Log the actual column names so we can see whether the
+        # ELEMENT_COLUMN_CANDIDATES list needs an update. NGDB column
+        # naming drifted between vintages; this is the diagnostic that
+        # surfaces a schema change before the user has to read the
+        # source code to figure out why everything is empty.
+        cols = reader.fieldnames or []
+        log.info("CSV has %d columns; first 30: %s", len(cols), cols[:30])
+        # Note which of our candidate column-names are actually present
+        # — if NONE matches per element, that element was never going
+        # to contribute to any_above and would silently fail.
+        unmatched: list[str] = []
+        for elem, cands in ELEMENT_COLUMN_CANDIDATES.items():
+            present = [c for c in cands if c in cols or c.upper() in cols or c.lower() in cols]
+            if not present:
+                unmatched.append(elem)
+        if unmatched:
+            log.warning("no candidate column matched for: %s — these elements WILL NOT trigger any-above", unmatched)
         with out_path.open("w", encoding="utf-8") as out:
             out.write('{"type":"FeatureCollection","features":[')
             first = True
@@ -204,6 +227,9 @@ def run(work_dir: Path) -> SourceResult:
                     v = _pick_element(row, candidates)
                     if v is not None:
                         props[out_key] = v
+                        rows_with_element[out_key] = rows_with_element.get(out_key, 0) + 1
+                        if v > max_seen.get(out_key, 0.0):
+                            max_seen[out_key] = v
                         if v >= KEEP_THRESHOLDS.get(out_key, float("inf")):
                             any_above = True
                 if not any_above:
@@ -230,6 +256,19 @@ def run(work_dir: Path) -> SourceResult:
         "wrote %d / %d samples (out_of_bbox=%d, no_anomaly=%d, bad_coords=%d) in %.1fs",
         kept, total, out_of_bbox, no_anomaly, bad_coords, elapsed,
     )
+    # If we filtered everything out, dump the per-element diagnostics —
+    # tells the operator AT A GLANCE which threshold needs tuning or
+    # which column-name candidate list needs an addition.
+    if kept == 0 and total > 0:
+        log.warning("0 features kept from %d rows. Per-element diagnostics:", total)
+        for elem, max_val in max_seen.items():
+            present = rows_with_element.get(elem, 0)
+            threshold = KEEP_THRESHOLDS.get(elem, float("inf"))
+            log.warning(
+                "  %-10s present_in=%d rows  max_observed=%.3g  threshold=%g  %s",
+                elem, present, max_val, threshold,
+                "BELOW THRESHOLD" if max_val < threshold else "above threshold (rejected for other reasons)",
+            )
     return SourceResult(
         layer_id="geochemistry",
         geojson_path=out_path,
