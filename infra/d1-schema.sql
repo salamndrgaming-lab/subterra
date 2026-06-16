@@ -48,12 +48,11 @@ CREATE TABLE IF NOT EXISTS aois (
   updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_aois_user ON aois(user_id);
--- R-Tree spatial index for fast bbox intersection queries.
-CREATE VIRTUAL TABLE IF NOT EXISTS aois_rtree USING rtree(
-  id,
-  bbox_west, bbox_east,
-  bbox_south, bbox_north
-);
+-- NOTE: Cloudflare D1 does NOT compile the rtree SQLite extension, so
+-- `CREATE VIRTUAL TABLE ... USING rtree` fails with SQLITE_AUTH (code
+-- 7500). For zero-user pre-launch scale, bbox columns + per-user index
+-- above are sufficient for AOI overlap queries; revisit with a
+-- geohash-prefix index if AOI count grows past ~10k per user.
 
 CREATE TABLE IF NOT EXISTS alerts (
   id            TEXT PRIMARY KEY,
