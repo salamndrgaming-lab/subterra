@@ -67,7 +67,9 @@ def _normalize(raw: dict[str, Any]) -> dict[str, Any]:
 
 def run(work_dir: Path) -> SourceResult:
     log = logging.getLogger("etl.quaternary_faults")
-    url = os.environ.get("SUBTERRA_QFAULTS_URL", USGS_QFAULTS_DEFAULT_URL)
+    # See water_rights.py for the rationale — empty env var must fall
+    # through to the hardcoded default URL, not get used as the URL.
+    url = os.environ.get("SUBTERRA_QFAULTS_URL") or USGS_QFAULTS_DEFAULT_URL
     log.info("starting USGS Quaternary Faults download — %s", url)
 
     out_path = work_dir / "quaternary_faults.geojson"

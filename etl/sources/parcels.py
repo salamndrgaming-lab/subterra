@@ -198,7 +198,9 @@ def _fetch_county(
     on_feature: Callable[[dict[str, Any]], None],
     log: logging.Logger,
 ) -> int:
-    url = os.environ.get(cfg["env_var"], cfg["default_url"])
+    # See water_rights.py for the rationale — empty env var must fall
+    # through to the hardcoded default URL, not get used as the URL.
+    url = os.environ.get(cfg["env_var"]) or cfg["default_url"]
     log.info("%s: %s", county, url)
     fmap = cfg["fields"]
     written = 0

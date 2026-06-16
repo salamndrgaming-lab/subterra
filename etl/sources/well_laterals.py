@@ -155,7 +155,9 @@ def run(work_dir: Path) -> SourceResult:
 
             for src in STATE_SOURCES:
                 code = src["code"]
-                url = os.environ.get(src["env_var"], src["default_url"])
+                # `or`-fallback so an empty env var (GitHub Actions sets
+                # unset repo Variables to "") doesn't override the default.
+                url = os.environ.get(src["env_var"]) or src["default_url"]
                 log.info("%s: %s", code, url)
                 before = total_count
 

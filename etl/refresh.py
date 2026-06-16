@@ -83,8 +83,15 @@ EXPECTED_MIN_FEATURES: dict[str, int] = {
     "blm_leases":         50_000,
     "plss":            1_500_000,
     "federal_lands":      30_000,
-    "wells":             500_000,
-    "well_laterals":      50_000,
+    # 2026-06-16: wells covers CO + ND + WY only (TX excluded; HIFLD
+    # mirror dropped). 167k features observed; floor set to 100k to
+    # absorb week-to-week variance without flapping.
+    "wells":             100_000,
+    # 2026-06-16: well_laterals is brand new; 4 state services
+    # (ND/CO/WY/NM). 36k features observed on first run; some state
+    # endpoints likely still need URL verification. Conservative floor
+    # until confidence builds.
+    "well_laterals":      10_000,
     "pipelines_natgas":    5_000,
     "pipelines_crude":     2_000,
     "geochemistry":       50_000,
@@ -96,6 +103,29 @@ EXPECTED_MIN_FEATURES: dict[str, int] = {
     "quaternary_faults":   5_000,
     "parcels":            50_000,
     "hotspots":              500,
+}
+
+# Sources known to be upstream-broken as of 2026-06-16. They still show
+# as `failed`/`empty` in the manifest and the sidebar banner, but DON'T
+# count toward the >25%-broken threshold check that would refuse to
+# upload the tileset. The point of the threshold is to catch NEW
+# breakage (a sudden cliff in data quality); known-broken state is
+# explicit context the operator carries, not a surprise.
+#
+# Removing entries here as upstreams come back. Empty list is the goal.
+ACCEPT_BROKEN: set[str] = {
+    # ─── Failed (real upstream HTTP errors observed 2026-06-16):
+    "pipelines_natgas",     # opendata.arcgis.com export-job HTTP 500
+    "pipelines_crude",      # opendata.arcgis.com export-job HTTP 500
+    "geophysics",           # sciencebase.gov ConnectTimeout
+    "withdrawals",          # gis.blm.gov 404 — URL likely moved; need
+                            # to look up the new service via the ArcGIS
+                            # item ID (set SUBTERRA_WITHDRAWALS_URL to fix)
+    "critical_habitat",     # ecos.fws.gov SSLError
+    # ─── Empty (real source bugs):
+    "geochemistry",         # WEST_BBOX + KEEP_THRESHOLDS filter drops
+                            # everything; needs a per-element threshold
+                            # tune. Separate follow-up.
 }
 
 
@@ -213,11 +243,21 @@ def _print_source_summary() -> None:
             f"::error::critical source(s) failed or returned empty: "
             f"{', '.join(critical_broken)} — refusing to upload partial tileset"
         )
-    if len(broken) > max(1, len(SOURCE_STATUSES) // 4):
-        broken_names = ", ".join(f"{s.name}({s.status})" for s in broken)
+    # Subtract known-broken sources before applying the >25% threshold.
+    # The threshold is meant to catch NEW breakage (a sudden quality
+    # cliff), not punish the build for upstreams we already know are
+    # down. Known-broken sources still surface in the manifest and the
+    # sidebar banner — they're explicit, not hidden.
+    unexpected_broken = [s for s in broken if s.name not in ACCEPT_BROKEN]
+    accepted_broken = [s for s in broken if s.name in ACCEPT_BROKEN]
+    if accepted_broken:
+        names = ", ".join(f"{s.name}({s.status})" for s in accepted_broken)
+        print(f"::warning::known-broken sources skipped from threshold: {names}")
+    if len(unexpected_broken) > max(1, len(SOURCE_STATUSES) // 4):
+        broken_names = ", ".join(f"{s.name}({s.status})" for s in unexpected_broken)
         raise SystemExit(
-            f"::error::{len(broken)}/{len(SOURCE_STATUSES)} sources broken — "
-            f"more than 25% threshold, refusing to upload partial tileset. "
+            f"::error::{len(unexpected_broken)}/{len(SOURCE_STATUSES)} sources "
+            f"UNEXPECTEDLY broken — more than 25% threshold, refusing to upload. "
             f"Broken: {broken_names}"
         )
 

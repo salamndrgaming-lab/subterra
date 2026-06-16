@@ -216,7 +216,11 @@ def _fetch_state(
     on_feature: Callable[[dict[str, Any]], None],
     log: logging.Logger,
 ) -> int:
-    url = os.environ.get(cfg["env_var"], cfg["default_url"])
+    # `or` rather than the dict-default form: GitHub Actions sets unset
+    # repo Variables to the empty string (not unset), so we treat "" as
+    # "use the hardcoded default" — otherwise iter_features_concurrent
+    # gets handed a "" URL and fails with "No scheme supplied".
+    url = os.environ.get(cfg["env_var"]) or cfg["default_url"]
     log.info("%s: %s", state, url)
     fields_map = cfg["fields"]
     written = 0
