@@ -134,6 +134,7 @@ jobs:
           # Per-source endpoint overrides. Set any of these as a repo
           # variable to point a source at a fresh URL without a code
           # change. Defaults live in each source module.
+          SUBTERRA_BLM_CLAIMS_URL: ${{ vars.SUBTERRA_BLM_CLAIMS_URL }}
           SUBTERRA_WITHDRAWALS_URL: ${{ vars.SUBTERRA_WITHDRAWALS_URL }}
           SUBTERRA_CRITICAL_HABITAT_URL: ${{ vars.SUBTERRA_CRITICAL_HABITAT_URL }}
           SUBTERRA_QFAULTS_URL: ${{ vars.SUBTERRA_QFAULTS_URL }}

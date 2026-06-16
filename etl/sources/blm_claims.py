@@ -149,7 +149,25 @@ def run(work_dir: Path) -> SourceResult:
     log = logging.getLogger("etl.blm_claims")
     log.info("starting BLM MLRS mining-claims download")
 
-    url = os.environ.get("BLM_CLAIMS_URL", PRIMARY_URL)
+    # The default `PRIMARY_URL` (BLM ArcGIS Hub Downloads API) has been
+    # observed returning a truncated payload of ~552 features (vs the
+    # historical ~552,985) for at least 10 days as of 2026-06-16 — root
+    # cause unknown, likely a BLM-side dataset republish or
+    # filter regression. Workarounds, in order of preference:
+    #   1. Set SUBTERRA_BLM_CLAIMS_URL in repo Variables to a known-good
+    #      bulk-download URL (e.g. the BLM EGIS direct ArcGIS service:
+    #      https://gis.blm.gov/arcgis/rest/services/mlrs/... /MapServer/0/query
+    #      — combined with iter_features_concurrent pagination via the
+    #      `_arcgis` helper). Then re-run via workflow_dispatch.
+    #   2. Wait for BLM to fix the Hub upstream.
+    # The EXPECTED_MIN_FEATURES floor in refresh.py prevents a tileset
+    # with the truncated count from shipping in the meantime.
+    url = (
+        os.environ.get("SUBTERRA_BLM_CLAIMS_URL")
+        or os.environ.get("BLM_CLAIMS_URL")
+        or PRIMARY_URL
+    )
+    log.info("source URL: %s", url)
     _, resp = _resolve_data_url(url)
 
     out_path = work_dir / "blm_claims.geojson"
