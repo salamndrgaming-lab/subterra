@@ -61,12 +61,80 @@ const MIN_BUFFER_M = 400;
 const MAX_BUFFER_M = 8000;
 const DEFAULT_VE = 4; // vertical exaggeration on first open
 const MIN_VE = 1;
-const MAX_VE = 30;
+/** Field cross-sections routinely use 50-200×; the previous 30 cap was
+ *  arbitrary and prevented genuinely useful exaggeration on
+ *  long-baseline sections in subdued terrain. */
+const MAX_VE = 100;
 /** Subsurface depth-window options (meters below lowest surface point).
  *  Macrostrat columns can stack 5-10 km of section; rendering all of it
  *  squashes the interesting near-surface units. Default 1 km. */
 const DEPTH_OPTIONS = [500, 1000, 2000, 4000] as const;
 const DEFAULT_DEPTH_M = 1000;
+
+/** localStorage key for the sticky slider settings (VE / buffer /
+ *  depth / true-scale). Endpoints are NOT persisted — those follow the
+ *  AOI the user clicked. Bump the version suffix when the schema
+ *  changes; older blobs are silently discarded. */
+const PERSIST_KEY = 'subterra:cs:v1';
+
+interface PersistedPrefs {
+  ve: number;
+  bufferM: number;
+  depthM: number;
+  trueScale: boolean;
+}
+
+function loadPersistedPrefs(): Partial<PersistedPrefs> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(PERSIST_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Partial<PersistedPrefs>;
+    return {
+      ve: typeof parsed.ve === 'number' ? parsed.ve : undefined,
+      bufferM: typeof parsed.bufferM === 'number' ? parsed.bufferM : undefined,
+      depthM: typeof parsed.depthM === 'number' ? parsed.depthM : undefined,
+      trueScale: typeof parsed.trueScale === 'boolean' ? parsed.trueScale : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function savePersistedPrefs(prefs: PersistedPrefs): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(PERSIST_KEY, JSON.stringify(prefs));
+  } catch {
+    // localStorage may be unavailable (private mode, quota) — silently
+    // skip persistence rather than crash the modal.
+  }
+}
+
+/** Build a one-line plain-text citation for this cross-section. Used
+ *  by the Copy-citation button + stamped onto downloaded PNGs. Format
+ *  is deliberately readable + machine-parseable without ceremony. */
+function buildCitation(opts: {
+  a: LngLat;
+  b: LngLat;
+  ve: number;
+  bufferM: number;
+  depthM: number;
+  trueScale: boolean;
+  url: string;
+}): string {
+  const fmt = (p: LngLat) => `${p[0].toFixed(3)}, ${p[1].toFixed(3)}`;
+  const scale = opts.trueScale ? '1:1 (true scale)' : `VE ${opts.ve}×`;
+  const bufMi = (opts.bufferM / 1609.34).toFixed(2);
+  const depthKm = (opts.depthM / 1000).toFixed(1);
+  const today = new Date().toISOString().slice(0, 10);
+  return [
+    `Subterra cross-section A (${fmt(opts.a)}) → B (${fmt(opts.b)}).`,
+    `${scale}, buffer ±${bufMi} mi, depth window ${depthKm} km.`,
+    `Data: Macrostrat v2 (geology), USGS EPQS (topo), USGS Quaternary Faults,`,
+    `BLM SMA / claims (federal). Generated ${today}. ${opts.url}`,
+  ].join('\n');
+}
 
 export interface CrossSectionMrds {
   lng: number;
@@ -183,9 +251,24 @@ export function CrossSection({
   // without bouncing back to the caller. Caller passes the initial
   // pair; we own subsequent ordering.
   const [pair, setPair] = useState<{ a: LngLat; b: LngLat }>({ a, b });
-  const [bufferM, setBufferM] = useState(DEFAULT_BUFFER_M);
-  const [ve, setVe] = useState(DEFAULT_VE);
-  const [depthM, setDepthM] = useState<number>(DEFAULT_DEPTH_M);
+  // Restore sticky toolbar settings from localStorage on first mount
+  // so a user's preferred VE / buffer / depth carries between sessions.
+  // Endpoints come from the caller and are NOT persisted.
+  const persistedRef = useRef(loadPersistedPrefs());
+  const [bufferM, setBufferM] = useState(persistedRef.current.bufferM ?? DEFAULT_BUFFER_M);
+  const [ve, setVe] = useState(persistedRef.current.ve ?? DEFAULT_VE);
+  const [depthM, setDepthM] = useState<number>(persistedRef.current.depthM ?? DEFAULT_DEPTH_M);
+  // True-scale mode forces the y-axis to render at real meters-per-pixel
+  // (squashes the section to ~1:50 aspect). Most real sections look bad
+  // in true scale — that's the point. The toggle exists to make the
+  // dishonesty of "VE 8×" visceral when an academic asks why something
+  // looks dramatic. When on, the VE slider is disabled.
+  const [trueScale, setTrueScale] = useState<boolean>(persistedRef.current.trueScale ?? false);
+
+  // Persist the sticky preferences whenever they change.
+  useEffect(() => {
+    savePersistedPrefs({ ve, bufferM, depthM, trueScale });
+  }, [ve, bufferM, depthM, trueScale]);
 
   const totalDistM = useMemo(() => distanceMeters(pair.a, pair.b), [pair]);
   const bearing = useMemo(() => bearingDeg(pair.a, pair.b), [pair]);
@@ -351,6 +434,32 @@ export function CrossSection({
     await svgToPngDownload(svg, `cross-section-${Date.now()}.png`);
   }, []);
 
+  // Copy a plain-text citation block to the clipboard. Pairs with the
+  // shareable `?cs=...` URL written by the Map route so the citation
+  // contains a permalink that reproduces the exact section.
+  const [citationCopied, setCitationCopied] = useState(false);
+  const copyCitation = useCallback(async () => {
+    const url = typeof window !== 'undefined' ? window.location.href : '';
+    const text = buildCitation({
+      a: pair.a,
+      b: pair.b,
+      ve,
+      bufferM,
+      depthM,
+      trueScale,
+      url,
+    });
+    try {
+      await navigator.clipboard.writeText(text);
+      setCitationCopied(true);
+      window.setTimeout(() => setCitationCopied(false), 1500);
+    } catch {
+      // Clipboard may be unavailable (insecure context, denied
+      // permission). Fall back to a prompt the user can copy manually.
+      window.prompt('Copy this citation:', text);
+    }
+  }, [pair, ve, bufferM, depthM, trueScale]);
+
   return (
     <div
       className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-4 backdrop-blur"
@@ -373,6 +482,8 @@ export function CrossSection({
           onClose={onClose}
           onReverse={reverse}
           onDownload={downloadPng}
+          onCopyCitation={copyCitation}
+          citationCopied={citationCopied}
         />
 
         <Toolbar
@@ -382,6 +493,8 @@ export function CrossSection({
           onBufferChange={setBufferM}
           depthM={depthM}
           onDepthChange={setDepthM}
+          trueScale={trueScale}
+          onTrueScaleChange={setTrueScale}
           counts={{
             mrds: projectedMrds.length,
             claims: projectedClaims.length,
@@ -389,6 +502,8 @@ export function CrossSection({
             faults: faultCrossings.length,
           }}
         />
+
+        <ContinuityDisclaimer />
 
         <div className="overflow-auto p-4">
           {loading.elev && loading.geology ? (
@@ -411,6 +526,7 @@ export function CrossSection({
               ve={ve}
               bufferM={bufferM}
               depthM={depthM}
+              trueScale={trueScale}
             />
           )}
         </div>
@@ -438,6 +554,8 @@ function Header({
   onClose,
   onReverse,
   onDownload,
+  onCopyCitation,
+  citationCopied,
 }: {
   totalDistM: number;
   bearing: number;
@@ -446,6 +564,8 @@ function Header({
   onClose: () => void;
   onReverse: () => void;
   onDownload: () => void;
+  onCopyCitation: () => void;
+  citationCopied: boolean;
 }) {
   const lengthMi = totalDistM / 1609.34;
   return (
@@ -496,6 +616,15 @@ function Header({
         </button>
         <button
           type="button"
+          onClick={onCopyCitation}
+          data-testid="cs-citation"
+          className="rounded border border-border bg-bg-panel px-2 py-1 text-text-muted hover:border-accent hover:text-accent"
+          title="Copy a plain-text citation (data sources + endpoints + permalink) to the clipboard"
+        >
+          {citationCopied ? '✓ copied' : '⎘ cite'}
+        </button>
+        <button
+          type="button"
           onClick={onClose}
           aria-label="Close"
           className="rounded p-1 text-text-muted hover:bg-bg-panel hover:text-text"
@@ -514,6 +643,8 @@ function Toolbar({
   onBufferChange,
   depthM,
   onDepthChange,
+  trueScale,
+  onTrueScaleChange,
   counts,
 }: {
   ve: number;
@@ -522,10 +653,12 @@ function Toolbar({
   onBufferChange: (m: number) => void;
   depthM: number;
   onDepthChange: (m: number) => void;
+  trueScale: boolean;
+  onTrueScaleChange: (v: boolean) => void;
   counts: { mrds: number; claims: number; geochem: number; faults: number };
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-4 border-b border-border bg-bg-panel/30 px-4 py-2 font-mono text-[10px]">
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-border bg-bg-panel/30 px-4 py-2 font-mono text-[10px]">
       <label className="flex items-center gap-2 text-text-muted">
         <span>Vertical stretch</span>
         <input
@@ -535,10 +668,26 @@ function Toolbar({
           step={1}
           value={ve}
           onChange={(e) => onVeChange(Number(e.target.value))}
+          disabled={trueScale}
           data-testid="cs-ve-slider"
-          className="h-1 w-28 accent-accent"
+          className="h-1 w-28 accent-accent disabled:opacity-40"
         />
-        <span className="w-8 text-accent">{ve}×</span>
+        <span className={`w-10 ${trueScale ? 'text-text-muted line-through' : 'text-accent'}`}>
+          {ve}×
+        </span>
+      </label>
+      <label
+        className="flex items-center gap-1.5 text-text-muted"
+        title="Render the section at real meters-per-pixel. Most sections look squashed in true scale — that's why exaggeration exists. Toggle to see the honest aspect ratio."
+      >
+        <input
+          type="checkbox"
+          checked={trueScale}
+          onChange={(e) => onTrueScaleChange(e.target.checked)}
+          data-testid="cs-truescale-toggle"
+          className="h-3 w-3 accent-accent"
+        />
+        <span>1:1 (true scale)</span>
       </label>
       <label className="flex items-center gap-2 text-text-muted">
         <span>Buffer ±</span>
@@ -577,6 +726,45 @@ function Toolbar({
         <CountBadge label="Geochem" value={counts.geochem} color="#a78bfa" />
         <CountBadge label="Faults" value={counts.faults} color="#ef4444" />
       </div>
+    </div>
+  );
+}
+
+/** One-line geological-honesty disclaimer shown above the section
+ *  the first time the user opens it in a session. The default rendering
+ *  is a hung-column section: vertical thicknesses are real, lateral
+ *  continuity between columns is implied, and regional dip is not
+ *  modeled. Spelling that out up front prevents the academic-reviewer
+ *  question "but how do you know unit X extends 8 km east?" — answer:
+ *  we don't, and we're not claiming to. */
+function ContinuityDisclaimer() {
+  const KEY = 'subterra:cs:continuity-disclaimer-dismissed';
+  const [dismissed, setDismissed] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    return window.sessionStorage.getItem(KEY) === '1';
+  });
+  if (dismissed) return null;
+  return (
+    <div className="flex items-start gap-2 border-b border-amber-500/30 bg-amber-500/10 px-4 py-1.5 font-mono text-[10px] text-amber-200">
+      <span aria-hidden className="mt-0.5">ⓘ</span>
+      <span className="min-w-0 flex-1">
+        Hung-column section. Vertical thicknesses from Macrostrat (with
+        uncertainty bands shown on hover). Lateral continuity between
+        columns and regional dip are NOT modeled — units are drawn flat.
+      </span>
+      <button
+        type="button"
+        onClick={() => {
+          if (typeof window !== 'undefined') {
+            window.sessionStorage.setItem(KEY, '1');
+          }
+          setDismissed(true);
+        }}
+        aria-label="Dismiss"
+        className="rounded px-1 text-amber-300 hover:bg-amber-500/20"
+      >
+        ✕
+      </button>
     </div>
   );
 }
@@ -669,6 +857,7 @@ function SectionSvg({
   ve,
   bufferM,
   depthM,
+  trueScale,
 }: {
   svgRef: React.MutableRefObject<SVGSVGElement | null>;
   totalDistM: number;
@@ -684,6 +873,7 @@ function SectionSvg({
   ve: number;
   bufferM: number;
   depthM: number;
+  trueScale: boolean;
 }) {
   const W = 1200;
   const H = 640;
@@ -705,8 +895,16 @@ function SectionSvg({
   const dataMax = elevValid.length ? Math.max(...elevValid.map((e) => e.elevM)) : 100;
   const subsurfaceFloor = dataMin - depthM;
   const fullRange = Math.max(50, dataMax - subsurfaceFloor);
-  const visibleRange = fullRange / Math.max(1, ve / 4); // ve=4 default → full window
   const elevMid = (dataMax + subsurfaceFloor) / 2;
+  // In true-scale mode, the y-axis renders at the same meters-per-pixel
+  // as the x-axis — VE collapses to 1.0. The section gets brutally
+  // squashed; that's the point. Otherwise apply the user's VE around
+  // the data midpoint (ve=4 default → the full data window fills the
+  // canvas).
+  const trueScaleSpan = totalDistM * (innerH / innerW);
+  const visibleRange = trueScale
+    ? Math.max(trueScaleSpan, fullRange)
+    : fullRange / Math.max(1, ve / 4);
   const yDomainMin = elevMid - visibleRange / 2 - fullRange * 0.02;
   const yDomainMax = elevMid + visibleRange / 2 + fullRange * 0.02;
   const yDomainSpan = Math.max(1, yDomainMax - yDomainMin);
@@ -741,7 +939,12 @@ function SectionSvg({
 
   // ── hover state ───────────────────────────────────────────────────
   const [hover, setHover] = useState<{ x: number; y: number } | null>(null);
-  const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
+  // Pointer events instead of mouse events so the crosshair tracks
+  // touch on phones too. A tap shows the crosshair at the touched
+  // point; subsequent drags update it; lifting the finger leaves it
+  // visible until the next interaction (better mobile UX than instant
+  // dismiss).
+  const onMove = (e: React.PointerEvent<SVGSVGElement>) => {
     const svg = e.currentTarget;
     const rect = svg.getBoundingClientRect();
     const x = ((e.clientX - rect.left) / rect.width) * W;
@@ -752,7 +955,13 @@ function SectionSvg({
     }
     setHover({ x, y });
   };
-  const onLeave = () => setHover(null);
+  const onLeave = (e: React.PointerEvent<SVGSVGElement>) => {
+    // Don't dismiss on touch-end — readout stays put so the user can
+    // actually read it after lifting their finger. Only mouse-leave
+    // (non-touch) clears the hover.
+    if (e.pointerType !== 'mouse') return;
+    setHover(null);
+  };
 
   // ── crosshair readouts at hovered x ───────────────────────────────
   const hoverDist = hover ? ((hover.x - PADDING.l) / innerW) * totalDistM : null;
@@ -794,12 +1003,12 @@ function SectionSvg({
     <svg
       ref={svgRef}
       viewBox={`0 0 ${W} ${H}`}
-      className="block w-full"
+      className="block w-full touch-none"
       style={{ background: '#0a0c10' }}
       role="img"
       aria-label="Topographic and geologic cross-section"
-      onMouseMove={onMove}
-      onMouseLeave={onLeave}
+      onPointerMove={onMove}
+      onPointerLeave={onLeave}
       data-testid="cs-svg"
     >
       <defs>
@@ -1151,7 +1360,9 @@ function SectionSvg({
             rx={3}
           />
           <text x={0} y={0} fill="#94a3b8">VE</text>
-          <text x={50} y={0} fill="#fbbf24">{effectiveVe.toFixed(1)}×</text>
+          <text x={50} y={0} fill={trueScale ? '#94a3b8' : '#fbbf24'}>
+            {trueScale ? '1:1 true' : `${effectiveVe.toFixed(1)}×`}
+          </text>
           <text x={90} y={0} fill="#94a3b8">Relief</text>
           <text x={150} y={0}>{Math.round(stats.reliefM)} m</text>
           <text x={0} y={14} fill="#94a3b8">Slope</text>
@@ -1305,13 +1516,19 @@ function HoverReadout({
   geoLabel: string | null;
   geoAge: string | null;
   agency: string | null;
-  unitAtCursor: { name: string; depthM: number } | null;
+  unitAtCursor: { unit: StratUnit; depthM: number } | null;
   W: number;
   PADDING: { l: number; r: number; t: number; b: number };
 }) {
   // Pin the readout to whichever side of the cursor has more space.
-  const boxW = 210;
-  const boxH = unitAtCursor ? 92 : 78;
+  const u = unitAtCursor?.unit;
+  const ageRange = u ? formatAgeRange(u) : null;
+  const envLabel = u?.environment ? truncate(u.environment, 26) : null;
+  // Box grows to accommodate the extra age + environment rows when a
+  // subsurface unit is hovered.
+  const extraRows = u ? 1 + (ageRange ? 1 : 0) + (envLabel ? 1 : 0) : 0;
+  const boxW = 220;
+  const boxH = 78 + extraRows * 14;
   const placeRight = hover.x < W - PADDING.r - boxW - 8;
   const x = placeRight ? hover.x + 10 : hover.x - boxW - 10;
   const y = Math.min(hover.y + 10, PADDING.t + 6);
@@ -1345,12 +1562,33 @@ function HoverReadout({
       <text x={boxW - 8} y={70} textAnchor="end" fill="#f8fafc">
         {agency ?? '—'}
       </text>
-      {unitAtCursor && (
+      {u && (
         <>
           <text x={8} y={84} fill="#94a3b8">at cursor</text>
           <text x={boxW - 8} y={84} textAnchor="end" fill="#2dd4bf">
-            {truncate(unitAtCursor.name, 18)} ({Math.round(unitAtCursor.depthM)} m)
+            {truncate(u.name, 20)} ({Math.round(unitAtCursor!.depthM)} m)
           </text>
+          {ageRange && (
+            <>
+              <text x={8} y={98} fill="#94a3b8">age</text>
+              <text x={boxW - 8} y={98} textAnchor="end" fill="#f8fafc">
+                {truncate(u.age || '—', 20)} · {ageRange}
+              </text>
+            </>
+          )}
+          {envLabel && (
+            <>
+              <text x={8} y={98 + (ageRange ? 14 : 0)} fill="#94a3b8">environ</text>
+              <text
+                x={boxW - 8}
+                y={98 + (ageRange ? 14 : 0)}
+                textAnchor="end"
+                fill="#f8fafc"
+              >
+                {envLabel}
+              </text>
+            </>
+          )}
         </>
       )}
       {/* invariant: keeps positional info accessible if the cursor is
@@ -1557,17 +1795,28 @@ function unitAtDepth(
   _elev: ElevSample[],
   distM: number,
   depthM: number,
-): { name: string; depthM: number } | null {
+): { unit: StratUnit; depthM: number } | null {
   const block = blocks.find((bl) => distM >= bl.startM && distM <= bl.endM);
   if (!block) return null;
   let cum = 0;
   for (const u of block.units) {
     const thick = u.thicknessM && u.thicknessM > 0 ? u.thicknessM : 50;
     if (depthM >= cum && depthM < cum + thick) {
-      return { name: u.name, depthM };
+      return { unit: u, depthM };
     }
     cum += thick;
   }
+  return null;
+}
+
+/** Pretty-print a numerical age range from Macrostrat's `bAge` (older
+ *  bound) and `tAge` (younger bound) fields. Returns null when both
+ *  are missing so callers can omit the line cleanly. */
+function formatAgeRange(unit: StratUnit): string | null {
+  if (typeof unit.bAge === 'number' && typeof unit.tAge === 'number') {
+    return `${unit.bAge.toFixed(0)}–${unit.tAge.toFixed(0)} Ma`;
+  }
+  if (typeof unit.bAge === 'number') return `${unit.bAge.toFixed(0)} Ma`;
   return null;
 }
 

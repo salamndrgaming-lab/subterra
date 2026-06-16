@@ -152,9 +152,20 @@ export function MapPage() {
   /** Cross-section picker state. 'off' = inactive; 'pickingA'/'pickingB'
    *  = waiting for the next click; 'open' = modal visible with chosen
    *  AB line + MRDS hits projected onto it. */
-  const [csMode, setCsMode] = useState<'off' | 'pickingA' | 'pickingB' | 'open'>('off');
-  const [csA, setCsA] = useState<LngLat | null>(null);
-  const [csB, setCsB] = useState<LngLat | null>(null);
+  // Cross-section state. The URL is the source of truth for
+  // permalink-shareability: when `?cs=lng1,lat1,lng2,lat2` is present
+  // on first mount, we restore the endpoints and open the modal with
+  // empty derived-data arrays (the modal's own effects load topo +
+  // geology from APIs; MRDS / claims / geochem / agencies / faults
+  // populate the next time the user picks via the toolbar). This makes
+  // the section URL self-contained: any visitor opening the link sees
+  // the same A/B line with real topo + geology data.
+  const initialCsFromUrl = useMemo(() => parseCsParam(), []);
+  const [csMode, setCsMode] = useState<'off' | 'pickingA' | 'pickingB' | 'open'>(
+    initialCsFromUrl ? 'open' : 'off',
+  );
+  const [csA, setCsA] = useState<LngLat | null>(initialCsFromUrl?.a ?? null);
+  const [csB, setCsB] = useState<LngLat | null>(initialCsFromUrl?.b ?? null);
   const [csMrds, setCsMrds] = useState<CrossSectionMrds[]>([]);
   const [csClaims, setCsClaims] = useState<CrossSectionClaim[]>([]);
   const [csGeochem, setCsGeochem] = useState<CrossSectionGeochem[]>([]);
@@ -642,6 +653,16 @@ export function MapPage() {
       clearTimeout(t);
     };
   }, [manifestQuery.data]);
+
+  // Mirror the open cross-section into the URL as `?cs=...` for
+  // shareability. Writes on open + endpoint change, clears on close.
+  useEffect(() => {
+    if (csMode === 'open' && csA && csB) {
+      writeCsParam({ a: csA, b: csB });
+    } else if (csMode === 'off') {
+      writeCsParam(null);
+    }
+  }, [csMode, csA, csB]);
 
   // Cross-section: ESC cancels at any non-'off' state; sync csMode ref
   // for the click handler. The cursor effect uses the mode too — same
@@ -3171,6 +3192,43 @@ function hotspotScoreColor(score: number): string {
  *  these with `etl,bug`). The 3-layer threshold is intentionally
  *  permissive — 1-2 sources being temporarily empty isn't a user-
  *  facing emergency, but ≥3 means the map looks measurably broken. */
+/** Parse the cross-section `?cs=lng1,lat1,lng2,lat2` query param. Used
+ *  exactly once at mount in Map.tsx to restore a shared section.
+ *  Returns null when the param is missing OR malformed — the user gets
+ *  the normal map instead of an error. */
+function parseCsParam(): { a: LngLat; b: LngLat } | null {
+  if (typeof window === 'undefined') return null;
+  const raw = new URL(window.location.href).searchParams.get('cs');
+  if (!raw) return null;
+  const parts = raw.split(',').map((s) => Number(s.trim()));
+  if (parts.length < 4) return null;
+  const [lng1, lat1, lng2, lat2] = parts as [number, number, number, number];
+  if (![lng1, lat1, lng2, lat2].every((n) => Number.isFinite(n))) return null;
+  // Sanity bounds — protects against malformed URLs putting a section
+  // halfway across the antimeridian.
+  if (Math.abs(lat1) > 90 || Math.abs(lat2) > 90) return null;
+  if (Math.abs(lng1) > 180 || Math.abs(lng2) > 180) return null;
+  return { a: [lng1, lat1], b: [lng2, lat2] };
+}
+
+/** Write or clear the cross-section query param. Uses history.replaceState
+ *  (not pushState) so the back button still navigates to the previous
+ *  page rather than collecting a history entry per slider tweak. */
+function writeCsParam(pair: { a: LngLat; b: LngLat } | null): void {
+  if (typeof window === 'undefined') return;
+  const url = new URL(window.location.href);
+  if (pair) {
+    const fmt = (n: number) => n.toFixed(5);
+    url.searchParams.set(
+      'cs',
+      `${fmt(pair.a[0])},${fmt(pair.a[1])},${fmt(pair.b[0])},${fmt(pair.b[1])}`,
+    );
+  } else {
+    url.searchParams.delete('cs');
+  }
+  window.history.replaceState({}, '', url);
+}
+
 function UnhealthyDataBanner({
   sources,
 }: {
