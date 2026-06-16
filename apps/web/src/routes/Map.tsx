@@ -1171,6 +1171,7 @@ export function MapPage() {
             data-testid="layer-search"
             className="mt-2 w-full rounded-md border border-border bg-bg-panel px-2 py-1 font-mono text-[11px] text-text placeholder:text-text-muted focus:border-accent focus:outline-none"
           />
+          <UnhealthyDataBanner sources={manifestQuery.data?.sources ?? []} />
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
@@ -3162,6 +3163,49 @@ function hotspotScoreColor(score: number): string {
 /** Humanize an ISO timestamp as "5m ago" / "2h ago" / "3d ago" — used by
  *  the sidebar freshness badge so the user can tell at a glance whether
  *  they're looking at this week's tileset or last month's. */
+/** Sidebar banner that surfaces broken-data state from the last ETL
+ *  run. The manifest's `sources` field carries per-source status
+ *  (`ok` / `empty` / `failed`); this counts the non-ok entries and
+ *  renders a clickable red banner when ≥3 layers are broken, linking
+ *  to the auto-opened GitHub issue (pipeline.yml's failure step labels
+ *  these with `etl,bug`). The 3-layer threshold is intentionally
+ *  permissive — 1-2 sources being temporarily empty isn't a user-
+ *  facing emergency, but ≥3 means the map looks measurably broken. */
+function UnhealthyDataBanner({
+  sources,
+}: {
+  sources: Array<{ name: string; status: 'ok' | 'empty' | 'failed'; error?: string }>;
+}) {
+  const broken = sources.filter((s) => s.status !== 'ok');
+  if (broken.length < 3) return null;
+  const failed = broken.filter((s) => s.status === 'failed').length;
+  const empty = broken.length - failed;
+  return (
+    <a
+      href="https://github.com/salamndrgaming-lab/subterra/issues?q=is%3Aissue+is%3Aopen+label%3Aetl%2Cbug"
+      target="_blank"
+      rel="noreferrer"
+      data-testid="unhealthy-data-banner"
+      title={
+        broken.length === 0
+          ? 'All ETL sources healthy'
+          : broken.map((s) => `${s.name}: ${s.status}${s.error ? ` — ${s.error}` : ''}`).join('\n')
+      }
+      className="mt-2 flex items-start gap-2 rounded-md border border-red-500/40 bg-red-500/10 px-2 py-1.5 font-mono text-[10px] text-red-300 hover:border-red-400 hover:text-red-200"
+    >
+      <span aria-hidden className="mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-red-400" />
+      <span className="min-w-0 flex-1">
+        <span className="block text-text">
+          {broken.length} data layer{broken.length === 1 ? '' : 's'} unhealthy in latest ETL
+        </span>
+        <span className="block text-[9px] text-red-300/80">
+          {failed} failed · {empty} empty · click for issue tracker ↗
+        </span>
+      </span>
+    </a>
+  );
+}
+
 function humanizeAgo(iso: string): string {
   const then = new Date(iso).getTime();
   if (!Number.isFinite(then)) return 'unknown';

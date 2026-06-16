@@ -94,7 +94,11 @@ def _find_polygon_shapefile(extract_dir: Path, log: logging.Logger) -> Path | No
 
 def run(work_dir: Path) -> SourceResult:
     log = logging.getLogger("etl.critical_habitat")
-    url = os.environ.get("CRITHAB_URL", DEFAULT_URL)
+    url = (
+        os.environ.get("SUBTERRA_CRITICAL_HABITAT_URL")
+        or os.environ.get("CRITHAB_URL")
+        or DEFAULT_URL
+    )
     out_path = work_dir / "critical_habitat.geojson"
     started = time.monotonic()
 

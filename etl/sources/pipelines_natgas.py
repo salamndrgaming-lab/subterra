@@ -118,7 +118,11 @@ def run(work_dir: Path) -> SourceResult:
     log = logging.getLogger("etl.pipelines_natgas")
     log.info("starting EIA natural gas pipelines download")
 
-    url = os.environ.get("PIPELINES_NATGAS_URL", PRIMARY_URL)
+    url = (
+        os.environ.get("SUBTERRA_PIPELINES_NATGAS_URL")
+        or os.environ.get("PIPELINES_NATGAS_URL")
+        or PRIMARY_URL
+    )
     resp = _resolve(url, log)
 
     out_path = work_dir / "pipelines_natgas.geojson"

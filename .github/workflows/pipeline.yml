@@ -1,0 +1,290 @@
+name: pipeline
+
+# Single canonical workflow for the whole pipeline. Replaces the
+# previous `etl.yml` + `deploy.yml`. One run-page per push, sequential
+# jobs, no race between fresh-tile-upload and fresh-Worker-deploy.
+#
+# Triggers:
+#   - push to main / claude/**  → conditionally runs etl, always runs deploy
+#   - schedule (Sun 02:00 UTC)  → forces a full ETL refresh
+#   - workflow_dispatch         → optional inputs to force ETL or limit
+#                                 to a subset of sources for verification
+#
+# Job graph:
+#   changes  →  etl (conditional)  →  deploy-api  →  deploy-web (prod only)
+#
+# The `etl` job is skipped automatically when a push doesn't touch
+# anything that can affect the tileset (saves 25 min on UI-only pushes);
+# `deploy-api` waits for it via `needs:` so the Worker can't ship before
+# fresh tiles land in R2 — the bug that prompted this consolidation.
+on:
+  push:
+    branches:
+      - main
+      - 'claude/**'
+  schedule:
+    - cron: '0 2 * * 0'
+  workflow_dispatch:
+    inputs:
+      force_etl:
+        description: 'Run the ETL even if no relevant files changed'
+        type: boolean
+        default: false
+      only:
+        description: >-
+          Verification mode: comma-separated source list (e.g.
+          "water_rights" or "mrds,geochemistry"). Runs just those
+          sources and SKIPS the tile build + R2 upload — use to test a
+          source's endpoints without a 25-minute tippecanoe run.
+        required: false
+        default: ''
+      reason:
+        description: 'Optional note explaining why this run was kicked off (visible in the run summary).'
+        required: false
+        default: ''
+
+concurrency:
+  # One in-flight run per ref. Prod and each feature branch get their
+  # own group so a long ETL on main doesn't block a preview push.
+  group: pipeline-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ───────────────────────────────────────────────────────────────
+  # 1) changes — detect which downstream jobs need to run
+  # ───────────────────────────────────────────────────────────────
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      etl: ${{ steps.filter.outputs.etl }}
+      web: ${{ steps.filter.outputs.web }}
+      api: ${{ steps.filter.outputs.api }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            etl:
+              - 'etl/**'
+              - 'packages/shared/src/layers.ts'
+              - '.github/workflows/pipeline.yml'
+            web:
+              - 'apps/web/**'
+              - 'packages/shared/**'
+            api:
+              - 'apps/api/**'
+              - 'packages/shared/**'
+              - 'infra/migrations/**'
+
+  # ───────────────────────────────────────────────────────────────
+  # 2) etl — runs the bulk download → tippecanoe → R2 upload pipeline
+  # ───────────────────────────────────────────────────────────────
+  # Runs when: scheduled cron, manual force, only-mode verification,
+  # or any push that touched ETL-relevant files. Skipped otherwise.
+  etl:
+    needs: changes
+    if: |
+      github.event_name == 'schedule' ||
+      inputs.force_etl == true ||
+      inputs.only != '' ||
+      needs.changes.outputs.etl == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Echo dispatch reason
+        if: ${{ inputs.reason != '' }}
+        run: echo "::notice title=ETL dispatch reason::${{ inputs.reason }}"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: etl/requirements.txt
+
+      - name: Install tippecanoe
+        if: ${{ inputs.only == '' }}
+        timeout-minutes: 8
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euo pipefail
+          # Skip `apt-get update` — the runner image ships with fresh
+          # indexes and `update` periodically hangs on Microsoft / Azure
+          # mirror probes. If `install` complains about a missing package
+          # we'll add a one-time update fallback below.
+          sudo apt-get install -y --no-install-recommends \
+            build-essential libsqlite3-dev zlib1g-dev \
+            || (sudo apt-get update -qq && \
+                sudo apt-get install -y --no-install-recommends \
+                  build-essential libsqlite3-dev zlib1g-dev)
+          git clone --depth=1 https://github.com/felt/tippecanoe.git /tmp/tippecanoe
+          cd /tmp/tippecanoe && make -j$(nproc) && sudo make install
+
+      - name: Install Python deps
+        run: pip install -r etl/requirements.txt
+
+      - name: Run ETL
+        env:
+          EIA_API_KEY: ${{ secrets.EIA_API_KEY }}
+          ONLY: ${{ inputs.only }}
+          # Per-source endpoint overrides. Set any of these as a repo
+          # variable to point a source at a fresh URL without a code
+          # change. Defaults live in each source module.
+          SUBTERRA_WITHDRAWALS_URL: ${{ vars.SUBTERRA_WITHDRAWALS_URL }}
+          SUBTERRA_CRITICAL_HABITAT_URL: ${{ vars.SUBTERRA_CRITICAL_HABITAT_URL }}
+          SUBTERRA_QFAULTS_URL: ${{ vars.SUBTERRA_QFAULTS_URL }}
+          SUBTERRA_PIPELINES_NATGAS_URL: ${{ vars.SUBTERRA_PIPELINES_NATGAS_URL }}
+          SUBTERRA_PIPELINES_CRUDE_URL: ${{ vars.SUBTERRA_PIPELINES_CRUDE_URL }}
+          SUBTERRA_WATER_RIGHTS_NV_URL: ${{ vars.SUBTERRA_WATER_RIGHTS_NV_URL }}
+          SUBTERRA_WATER_RIGHTS_UT_URL: ${{ vars.SUBTERRA_WATER_RIGHTS_UT_URL }}
+          SUBTERRA_WATER_RIGHTS_AZ_URL: ${{ vars.SUBTERRA_WATER_RIGHTS_AZ_URL }}
+          SUBTERRA_PARCELS_NV_WASHOE_URL: ${{ vars.SUBTERRA_PARCELS_NV_WASHOE_URL }}
+          SUBTERRA_PARCELS_NV_CLARK_URL: ${{ vars.SUBTERRA_PARCELS_NV_CLARK_URL }}
+          SUBTERRA_PARCELS_NV_ELKO_URL: ${{ vars.SUBTERRA_PARCELS_NV_ELKO_URL }}
+          SUBTERRA_PARCELS_NV_LYON_URL: ${{ vars.SUBTERRA_PARCELS_NV_LYON_URL }}
+        run: |
+          if [ -n "$ONLY" ]; then
+            echo "--- verification mode: --only $ONLY (no tiles, no upload) ---"
+            python etl/refresh.py --only "$ONLY" --skip-tippecanoe
+            echo "--- etl/work contents ---"
+            ls -la etl/work
+          else
+            python etl/refresh.py
+            echo "--- etl/out contents ---"
+            ls -la etl/out
+            test -s etl/out/subterra.pmtiles || { echo "::error::pmtiles missing"; exit 1; }
+            test -s etl/out/manifest.json   || { echo "::error::manifest missing"; exit 1; }
+          fi
+
+      - name: Upload PMTiles + manifest to R2 (S3-compatible API)
+        if: ${{ inputs.only == '' }}
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: python etl/upload.py
+
+      - name: Open issue on failure
+        if: failure()
+        uses: peter-evans/create-issue-from-file@v5
+        with:
+          title: 'ETL refresh failed on ${{ github.run_id }}'
+          content-filepath: ${{ github.workspace }}/.github/etl-failure-body.md
+          labels: 'etl,bug'
+        continue-on-error: true
+
+  # ───────────────────────────────────────────────────────────────
+  # 3) deploy-api — deploy the Worker to Cloudflare
+  # ───────────────────────────────────────────────────────────────
+  # Runs on every push to main / claude/** *after* the ETL job
+  # completes (or was skipped). This ordering is the whole point of
+  # the consolidation — the Worker can't ship while ETL is mid-upload.
+  # When the ETL job is skipped, deploy-api still runs (skipped jobs
+  # don't block downstream jobs that condition on `success | skipped`).
+  deploy-api:
+    needs: [changes, etl]
+    if: |
+      always() &&
+      (needs.etl.result == 'success' || needs.etl.result == 'skipped') &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/claude/')) &&
+      inputs.only == ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
+    env:
+      IS_PROD: ${{ github.ref == 'refs/heads/main' }}
+    outputs:
+      worker_url: ${{ steps.deploy-worker.outputs.worker_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build
+
+      - name: Inject D1 database ID into wrangler.toml
+        env:
+          CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
+        run: |
+          test -n "$CLOUDFLARE_D1_DATABASE_ID" \
+            || { echo "::error::CLOUDFLARE_D1_DATABASE_ID secret is empty"; exit 1; }
+          # Placeholder appears on its own line in both the top-level
+          # and [env.preview] d1_databases blocks; sed -i replaces the
+          # first match per line, so this swap covers both occurrences.
+          sed -i "s/00000000-0000-0000-0000-000000000000/$CLOUDFLARE_D1_DATABASE_ID/" \
+            apps/api/wrangler.toml
+
+      - name: Apply D1 migrations (prod only)
+        if: ${{ env.IS_PROD == 'true' && hashFiles('infra/migrations/*.sql') != '' }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx --yes wrangler@3 d1 migrations apply subterra --remote \
+            --config apps/api/wrangler.toml
+
+      - name: Deploy API Worker
+        id: deploy-worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        working-directory: apps/api
+        run: |
+          if [ "$IS_PROD" = "true" ]; then
+            npx --yes wrangler@3 deploy | tee /tmp/wrangler-deploy.log
+          else
+            # Deploys to subterra-api-preview.<account>.workers.dev.
+            # The web app resolves this URL at runtime (lib/api-base.ts)
+            # for Pages preview builds, where CI can't bake env vars.
+            npx --yes wrangler@3 deploy --env preview | tee /tmp/wrangler-deploy.log
+          fi
+          # Extract the deployed workers.dev URL for the web build below.
+          WORKER_URL=$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' /tmp/wrangler-deploy.log | head -1)
+          echo "worker_url=$WORKER_URL" >> "$GITHUB_OUTPUT"
+          echo "Deployed Worker at: $WORKER_URL"
+
+  # ───────────────────────────────────────────────────────────────
+  # 4) deploy-web — rebuild the SPA with the Worker URL baked in,
+  #    then ship to Cloudflare Pages. Prod-only — feature branches
+  #    are auto-deployed by Cloudflare Pages' Git integration, and
+  #    Vercel's Git integration auto-deploys both branch + main on
+  #    every push regardless of this workflow.
+  # ───────────────────────────────────────────────────────────────
+  deploy-web:
+    needs: [deploy-api]
+    if: |
+      always() &&
+      needs.deploy-api.result == 'success' &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+
+      # Rebuild the web bundle with VITE_API_URL baked in so every
+      # visitor's browser hits the Cloudflare Worker for the manifest,
+      # not the localhost fallback. Vite bakes env vars at build time.
+      - name: Build web with API URL
+        env:
+          VITE_API_URL: ${{ needs.deploy-api.outputs.worker_url }}
+        run: |
+          test -n "$VITE_API_URL" \
+            || { echo "::error::could not extract worker URL from deploy-api outputs"; exit 1; }
+          npm run build:web
+
+      - name: Deploy web app to Cloudflare Pages
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx --yes wrangler@3 pages deploy apps/web/dist --project-name=subterra --branch=main

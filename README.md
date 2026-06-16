@@ -53,15 +53,51 @@ Optional: create `apps/web/.env.local` with
 `VITE_API_URL=<any Worker URL>` to pin the API target and bypass the
 automatic resolution in `apps/web/src/lib/api-base.ts`.
 
-## Production deploy
+## Production deploy + weekly ETL
 
-CI handles it. Push to `main`, `.github/workflows/deploy.yml` runs:
+A single GitHub Actions workflow — `.github/workflows/pipeline.yml` —
+runs the end-to-end pipeline. Job graph:
 
 ```
-wrangler pages deploy apps/web/dist     # static SPA → Cloudflare Pages
-wrangler deploy --config apps/api/wrangler.toml   # API → Cloudflare Workers
-wrangler d1 migrations apply             # only if migrations/*.sql changed
+push to main / claude/**
+        │
+        ├── changes  (paths-filter)
+        │
+        ├── etl  (only if etl/** or shared/layers.ts changed,
+        │         or scheduled, or workflow_dispatch{force_etl})
+        │         ↓ downloads sources → tippecanoe → R2 upload
+        │
+        ├── deploy-api  (always; waits for etl to finish first)
+        │         ↓ wrangler deploy + D1 migrations
+        │
+        └── deploy-web  (prod only)
+                  ↓ rebuild with VITE_API_URL → Pages deploy
 ```
+
+Three guarantees:
+- **No race** — `deploy-api` waits for `etl`, so the Worker can't
+  ship while ETL is mid-upload (the bug that caused "tiles aren't
+  loading" earlier).
+- **No wasted ETL** — a pure-UI push skips the 25-minute pipeline
+  via the paths-filter.
+- **One run page per push** — sub-jobs show up under one workflow run.
+
+Manual triggers (Actions → pipeline → Run workflow):
+- `force_etl: true` — run the ETL even when paths-filter would skip it.
+- `only: water_rights,parcels` — verification mode, fast (~2 min),
+  skips tile build + R2 upload.
+- `reason: ...` — free-text note that shows up at the top of the run.
+
+Per-source URLs are env-overridable via repo Variables. When a state
+or federal endpoint republishes a slug, set the matching
+`SUBTERRA_*_URL` variable (e.g. `SUBTERRA_WITHDRAWALS_URL`) and the
+next pipeline run picks it up without a code change. Full list in
+`pipeline.yml`'s `Run ETL` step.
+
+If too many sources break (any of `federal_lands` / `blm_claims` /
+`mrds`, OR > 25% of all sources fail-or-empty) the ETL job hard-fails
+and refuses to upload a partial tileset. The previous tileset stays
+live; a GitHub issue is auto-opened with the `etl,bug` label.
 
 ## Mobile / Vercel preview deploy
 
@@ -90,14 +126,6 @@ The layout is responsive — sidebar slides in via a hamburger
 button, drawers become bottom-sheets, and floating controls
 have 36px+ tap targets — so the phone UX is usable, not just
 pinch-zoomable.
-
-## Weekly ETL refresh
-
-GitHub Actions cron job at `Sun 02:00 UTC` (`.github/workflows/etl.yml`)
-downloads every bulk dataset, builds a single `subterra.pmtiles` + a
-SQLite `subterra-features.db`, and uploads both to R2 with a bumped
-version number. The web app reads `manifest.json` to discover the
-latest version on next load.
 
 ## Project layout
 

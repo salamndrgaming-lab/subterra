@@ -94,7 +94,13 @@ def _normalize(props: dict[str, Any]) -> dict[str, Any]:
 
 def run(work_dir: Path) -> SourceResult:
     log = logging.getLogger("etl.withdrawals")
-    url = os.environ.get("BLM_WITHDRAWALS_URL", DEFAULT_QUERY_URL)
+    # Accept either SUBTERRA_WITHDRAWALS_URL (canonical, set in
+    # pipeline.yml) or BLM_WITHDRAWALS_URL (legacy) for the override.
+    url = (
+        os.environ.get("SUBTERRA_WITHDRAWALS_URL")
+        or os.environ.get("BLM_WITHDRAWALS_URL")
+        or DEFAULT_QUERY_URL
+    )
     log.info("starting BLM withdrawals download from %s", url)
 
     out_path = work_dir / "withdrawals.geojson"

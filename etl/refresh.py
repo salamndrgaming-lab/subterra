@@ -44,7 +44,8 @@ SOURCES = [
     "federal_lands", # Phase 2 — BLM National SMA (BLM/USFS/NPS/BIA polygons)
     "pipelines_natgas", # Phase 2 — EIA natural-gas trunk pipelines
     "pipelines_crude",  # Phase 2 — EIA crude-oil trunk pipelines
-    "wells",            # Phase 2 — HIFLD wells via NASA NCCS mirror (~1M points)
+    "wells",            # Phase 2 — multi-state ECMC/DMR/WOGCC wells (~1M points)
+    "well_laterals",    # multi-state wellbore directional surveys (lines)
     "geochemistry",  # Phase 9 — USGS NGDB stream-sediment/soil samples (~1.5M points)
     "geophysics",    # Phase 9 — USGS Earth MRI airborne survey footprints
     # Stake-ability constraint layers — needed for legally-correct
@@ -62,6 +63,40 @@ SOURCES = [
     # inputs are guaranteed to exist when it runs.
     "hotspots",
 ]
+
+
+# Per-source feature-count floor. A source that completes successfully
+# but emits dramatically fewer features than this gets demoted from
+# `ok` to `empty` in the manifest (with a diagnostic error message),
+# which trips the >25%-broken threshold and fails the pipeline rather
+# than uploading a half-blank tileset. Numbers are intentionally
+# conservative — set to ~50% of the historical floor so normal
+# week-to-week variation doesn't flap the alarm, but a 100x drop
+# (e.g. truncated upstream stream) immediately surfaces.
+#
+# Add an entry here when a new source lands, OR adjust an existing
+# value if upstream legitimately shrinks. Sources NOT in this dict are
+# only checked for the "0 features" boundary case.
+EXPECTED_MIN_FEATURES: dict[str, int] = {
+    "mrds":              200_000,
+    "blm_claims":        300_000,    # historical ~552k; floor at 300k
+    "blm_leases":         50_000,
+    "plss":            1_500_000,
+    "federal_lands":      30_000,
+    "wells":             500_000,
+    "well_laterals":      50_000,
+    "pipelines_natgas":    5_000,
+    "pipelines_crude":     2_000,
+    "geochemistry":       50_000,
+    "geophysics":            500,
+    "withdrawals":         1_000,
+    "critical_habitat":   10_000,
+    "indian_lands":          500,
+    "water_rights":       10_000,
+    "quaternary_faults":   5_000,
+    "parcels":            50_000,
+    "hotspots":              500,
+}
 
 
 @dataclass
@@ -159,21 +194,31 @@ def _print_source_summary() -> None:
         except OSError as err:
             print(f"::warning::failed to write step summary: {err}")
 
-    # Hard-fail the workflow if too many sources broke. Threshold: more
-    # than 25% of attempted sources failed OR a critical "blockers"
-    # source (federal_lands, blm_claims) failed. Triggers
-    # `peter-evans/create-issue-from-file` in etl.yml's failure step.
-    failed = [s for s in SOURCE_STATUSES if s.status == "failed"]
+    # Hard-fail the workflow if too many sources broke. Two thresholds:
+    #   1) any critical source (federal_lands / blm_claims / mrds)
+    #      failed OR came back empty — these are the core map data,
+    #      shipping without them is worse than serving the prior tileset
+    #   2) > 25% of attempted sources are failed OR empty — partial
+    #      tilesets that look "successful" but render blank for half
+    #      the layers cause the user-visible "tiles aren't loading"
+    #      complaint; refuse the upload instead.
+    # Triggers `peter-evans/create-issue-from-file` in the pipeline's
+    # failure step so the broken state becomes a GitHub issue rather
+    # than a silent shrug.
+    broken = [s for s in SOURCE_STATUSES if s.status in ("failed", "empty")]
     critical = {"federal_lands", "blm_claims", "mrds"}
-    critical_failed = [s.name for s in failed if s.name in critical]
-    if critical_failed:
+    critical_broken = [s.name for s in broken if s.name in critical]
+    if critical_broken:
         raise SystemExit(
-            f"::error::critical source(s) failed: {', '.join(critical_failed)}"
+            f"::error::critical source(s) failed or returned empty: "
+            f"{', '.join(critical_broken)} — refusing to upload partial tileset"
         )
-    if len(failed) > max(1, len(SOURCE_STATUSES) // 4):
+    if len(broken) > max(1, len(SOURCE_STATUSES) // 4):
+        broken_names = ", ".join(f"{s.name}({s.status})" for s in broken)
         raise SystemExit(
-            f"::error::{len(failed)}/{len(SOURCE_STATUSES)} sources failed — "
-            "more than 25% threshold, refusing to upload partial tileset"
+            f"::error::{len(broken)}/{len(SOURCE_STATUSES)} sources broken — "
+            f"more than 25% threshold, refusing to upload partial tileset. "
+            f"Broken: {broken_names}"
         )
 
 
@@ -203,11 +248,33 @@ def run_sources(only: set[str] | None, skip_set: set[str]) -> list[SourceResult]
                 elapsed, result.feature_count, result.geojson_path.name,
             )
             results.append(result)
+            # Health check: a source that returned dramatically fewer
+            # features than expected is treated as `empty` (with a
+            # diagnostic message) rather than `ok`. Catches silent-fail
+            # cases where the endpoint returns a small valid-but-broken
+            # subset (e.g. blm_claims went 552k → 552 features when the
+            # upstream Hub download truncated mid-stream).
+            expected = EXPECTED_MIN_FEATURES.get(name)
+            status: str
+            error_msg: str | None
+            if result.feature_count == 0:
+                status, error_msg = "empty", None
+            elif expected is not None and result.feature_count < expected:
+                status = "empty"
+                error_msg = (
+                    f"below expected minimum: got {result.feature_count:,}, "
+                    f"expected ≥{expected:,} — likely an upstream truncation "
+                    f"or schema change"
+                )
+                log.warning("FEATURE-COUNT FLOOR — %s", error_msg)
+            else:
+                status, error_msg = "ok", None
             SOURCE_STATUSES.append(SourceStatus(
                 name=name,
-                status="ok" if result.feature_count > 0 else "empty",
+                status=status,
                 feature_count=result.feature_count,
                 elapsed_s=round(elapsed, 1),
+                error=error_msg,
             ))
         except Exception as exc:  # noqa: BLE001
             elapsed = time.monotonic() - t0
