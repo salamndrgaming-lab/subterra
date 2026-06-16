@@ -3240,7 +3240,7 @@ function UnhealthyDataBanner({
   const empty = broken.length - failed;
   return (
     <a
-      href="https://github.com/salamndrgaming-lab/subterra/issues?q=is%3Aissue+is%3Aopen+label%3Aetl%2Cbug"
+      href="https://github.com/salamndrgaming-lab/subterra/issues?q=is%3Aissue+is%3Aopen+label%3Aetl+label%3Abug"
       target="_blank"
       rel="noreferrer"
       data-testid="unhealthy-data-banner"
