@@ -1,11 +1,15 @@
 """
-EIA U.S. Crude Oil Pipelines.
+EIA Crude Oil pipelines.
 
-Sibling of sources/pipelines_natgas.py — same EIA Atlas Hub Downloads
-API, different item id. Crude oil trunk lines (no gathering / lateral
-detail).
+Same fix as pipelines_natgas.py: the EIA Atlas ArcGIS Hub Downloads
+endpoint has been returning HTTP 500 for some weeks, and DOT hosts the
+same underlying EIA crude-pipeline data as a FeatureServer at
+geo.dot.gov that we can paginate via the project's `_arcgis` helper.
 
-Source: https://atlas.eia.gov/datasets/ae809a7e79354d31ab37da8df6352f84
+Source URL:
+  https://geo.dot.gov/server/rest/services/Hosted/Crude_Oil_Pipelines_US_EIA/FeatureServer/0
+
+Env override: SUBTERRA_PIPELINES_CRUDE_URL.
 """
 
 from __future__ import annotations
@@ -17,23 +21,12 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import ijson
-import requests
-from tqdm import tqdm
+from sources._arcgis import iter_features_concurrent
 
-ITEM_ID = "ae809a7e79354d31ab37da8df6352f84"
-# atlas.eia.gov and hub.arcgis.com both 403 — pivot to the legacy
-# opendata.arcgis.com Hub Download endpoint.
-PRIMARY_URL = (
-    f"https://opendata.arcgis.com/api/v3/datasets/{ITEM_ID}_0/downloads/data?format=geojson&spatialRefId=4326"
+DEFAULT_QUERY_URL = (
+    "https://geo.dot.gov/server/rest/services/Hosted/"
+    "Crude_Oil_Pipelines_US_EIA/FeatureServer/0/query"
 )
-USER_AGENT = (
-    "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0 "
-    "(Subterra-ETL +https://github.com/salamndrgaming-lab/subterra)"
-)
-REQUEST_TIMEOUT = 120.0
-POLL_INTERVAL = 5.0
-POLL_TIMEOUT = 90.0  # If the hub hasn't published in 90s, give up and move on.
 
 
 @dataclass
@@ -43,52 +36,8 @@ class SourceResult:
     feature_count: int
 
 
-def _resolve(url: str, log: logging.Logger) -> requests.Response:
-    deadline = time.monotonic() + POLL_TIMEOUT
-
-    def fetch(u: str) -> requests.Response:
-        return requests.get(
-            u,
-            headers={
-                "User-Agent": USER_AGENT,
-                "accept": "application/geo+json, application/json, */*",
-            },
-            stream=True,
-            timeout=REQUEST_TIMEOUT,
-            allow_redirects=True,
-        )
-
-    current = url
-    while True:
-        resp = fetch(current)
-        resp.raise_for_status()
-        ct = resp.headers.get("content-type", "").lower()
-        cl = resp.headers.get("content-length", "0")
-        try:
-            cl_n = int(cl)
-        except ValueError:
-            cl_n = 0
-        if "geo+json" in ct or cl_n > 4096:
-            log.info("download stream ready (ct=%s, content-length=%s)", ct, cl)
-            return resp
-        body = resp.text
-        resp.close()
-        try:
-            status = json.loads(body)
-        except Exception as err:
-            raise RuntimeError(f"Unexpected EIA Atlas response: ct={ct} body[:200]={body[:200]!r}") from err
-        next_url = status.get("url") or status.get("downloadUrl")
-        if next_url and next_url != current:
-            log.info("redirected to %s", next_url)
-            current = next_url
-            continue
-        if time.monotonic() > deadline:
-            raise RuntimeError(f"EIA Atlas timed out generating download for item {ITEM_ID}")
-        log.info("job not ready, sleeping %.0fs (status=%s)", POLL_INTERVAL, status.get("status"))
-        time.sleep(POLL_INTERVAL)
-
-
 def _normalize_props(p: dict) -> dict:
+    """Pipeline schema varies across EIA revisions; coalesce common fields."""
     def first(*keys: str) -> object:
         for k in keys:
             v = p.get(k) or p.get(k.upper()) or p.get(k.lower())
@@ -114,61 +63,61 @@ def _normalize_props(p: dict) -> dict:
 
 def run(work_dir: Path) -> SourceResult:
     log = logging.getLogger("etl.pipelines_crude")
-    log.info("starting EIA crude oil pipelines download")
+    log.info("starting crude-oil pipelines download")
 
     url = (
         os.environ.get("SUBTERRA_PIPELINES_CRUDE_URL")
         or os.environ.get("PIPELINES_CRUDE_URL")
-        or PRIMARY_URL
+        or DEFAULT_QUERY_URL
     )
-    resp = _resolve(url, log)
+    log.info("source URL: %s", url)
 
     out_path = work_dir / "pipelines_crude.geojson"
     feature_count = 0
     skipped = 0
     started = time.monotonic()
+    first = [True]
 
-    raw_path = work_dir / "pipelines_crude.raw.json"
     try:
-        with raw_path.open("wb") as rawf, resp:
-            resp.raw.decode_content = True
-            for chunk in iter(lambda: resp.raw.read(1 << 16), b""):
-                rawf.write(chunk)
-        log.info("downloaded %d bytes → %s", raw_path.stat().st_size, raw_path.name)
-
-        with out_path.open("w", encoding="utf-8") as out, raw_path.open("rb") as src:
+        with out_path.open("w", encoding="utf-8") as out:
             out.write('{"type":"FeatureCollection","features":[')
-            first = True
-            pbar = tqdm(desc="crude pipelines", unit="feat", smoothing=0.1)
-            for feat in ijson.items(src, "features.item", use_float=True):
+
+            def on_feature(feat: dict) -> None:
+                nonlocal feature_count, skipped
                 geom = feat.get("geometry")
                 if not geom:
                     skipped += 1
-                    continue
+                    return
+                if geom.get("type") not in ("LineString", "MultiLineString"):
+                    skipped += 1
+                    return
                 props = _normalize_props(feat.get("properties") or {})
-                if not first:
+                if not first[0]:
                     out.write(",")
-                first = False
-                json.dump({"type": "Feature", "geometry": geom, "properties": props}, out)
+                first[0] = False
+                json.dump(
+                    {"type": "Feature", "geometry": geom, "properties": props}, out,
+                )
                 feature_count += 1
-                pbar.update(1)
-            pbar.close()
-            out.write("]}")
 
-        if feature_count == 0:
-            with raw_path.open("rb") as src:
-                head = src.read(800)
-            log.error(
-                "ZERO features parsed from EIA response. First 800 bytes:\n%s",
-                head.decode("utf-8", errors="replace"),
+            iter_features_concurrent(
+                url,
+                on_feature=on_feature,
+                workers=4,
+                progress_label="pipelines_crude",
             )
+
+            out.write("]}")
     except Exception:
         if out_path.exists():
             out_path.unlink()
         raise
 
     elapsed = time.monotonic() - started
-    log.info("wrote %d crude pipelines in %.1fs → %s", feature_count, elapsed, out_path.name)
+    log.info(
+        "wrote %d crude pipeline segments (skipped %d) in %.1fs",
+        feature_count, skipped, elapsed,
+    )
     return SourceResult(
         layer_id="pipelines_crude",
         geojson_path=out_path,

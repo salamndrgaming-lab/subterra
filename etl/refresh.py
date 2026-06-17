@@ -112,20 +112,29 @@ EXPECTED_MIN_FEATURES: dict[str, int] = {
 # breakage (a sudden cliff in data quality); known-broken state is
 # explicit context the operator carries, not a surprise.
 #
-# Removing entries here as upstreams come back. Empty list is the goal.
+# Removing entries here as upstreams come back. Empty set is the goal.
 ACCEPT_BROKEN: set[str] = {
-    # ─── Failed (real upstream HTTP errors observed 2026-06-16):
-    "pipelines_natgas",     # opendata.arcgis.com export-job HTTP 500
-    "pipelines_crude",      # opendata.arcgis.com export-job HTTP 500
-    "geophysics",           # sciencebase.gov ConnectTimeout
-    "withdrawals",          # gis.blm.gov 404 — URL likely moved; need
-                            # to look up the new service via the ArcGIS
-                            # item ID (set SUBTERRA_WITHDRAWALS_URL to fix)
-    "critical_habitat",     # ecos.fws.gov SSLError
-    # ─── Empty (real source bugs):
-    "geochemistry",         # WEST_BBOX + KEEP_THRESHOLDS filter drops
-                            # everything; needs a per-element threshold
-                            # tune. Separate follow-up.
+    # ─── pipelines_natgas, pipelines_crude, critical_habitat REMOVED:
+    # Switched from broken bulk-download endpoints to FeatureServer
+    # paginators (DOT-hosted EIA pipeline data; ArcGIS Online USFWS
+    # crit-hab service). See the source modules for the URLs.
+    #
+    # geophysics:  sciencebase.gov ConnectTimeout — transient/upstream;
+    #              re-evaluating each run.
+    "geophysics",
+    # withdrawals: gis.blm.gov/lands/BLM_Natl_Withdrawn_Lands moved
+    #              and BLM now bundles mineral-withdrawal status into
+    #              the SMA service (which we already pull as
+    #              federal_lands). Needs a refactor to either query
+    #              the Land_Tenure_Case service with a
+    #              withdrawal-type filter OR an item-ID lookup against
+    #              the BLM Hub to find the canonical replacement.
+    "withdrawals",
+    # geochemistry: WEST_BBOX + KEEP_THRESHOLDS filter drops every
+    #               row. New diagnostic logging (commit 3061d36) will
+    #               surface the column-name / threshold mismatch on
+    #               the next run; fix once we see the diagnostic.
+    "geochemistry",
 }
 
 
