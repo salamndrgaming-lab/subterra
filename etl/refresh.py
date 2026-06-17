@@ -122,11 +122,11 @@ ACCEPT_BROKEN: set[str] = {
     #              withdrawal-type filter OR an item-ID lookup against
     #              the BLM Hub to find the canonical replacement.
     "withdrawals",
-    # geochemistry: WEST_BBOX + KEEP_THRESHOLDS filter drops every
-    #               row. Diagnostic logging in commit 3061d36 will
-    #               surface column-name / threshold mismatch on the
-    #               next run; fix once we see the diagnostic.
-    "geochemistry",
+    # geochemistry: REMOVED — diagnostic from previous run showed the
+    #               bug was (a) `long_wgs84` missing from lng candidates
+    #               and (b) we were reading main.csv (metadata only)
+    #               instead of joining main.csv + bestvalue.csv on lab_id.
+    #               Refactored to do the 2-CSV join. Re-evaluating.
     # pipelines: my latest fix (DOT-hosted EIA services) returned
     #            HTTP 500. Geo.dot.gov may be rate-limiting, or the
     #            URL path needs a different case/structure. Until
