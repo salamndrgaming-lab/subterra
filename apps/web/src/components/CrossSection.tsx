@@ -54,8 +54,23 @@ import {
 } from '@/lib/section-math';
 import { COMMODITY_CATEGORY_COLORS } from '@subterra/shared';
 
-const ELEV_SAMPLES = 100;
-const GEOLOGY_SAMPLES = 24;
+// Sample counts. On narrow viewports we cut these roughly in half so
+// the SVG has fewer elements (~480 rects + labels for 24 columns; ~240
+// for 12). Heavy SVG renders on mobile compete with MapLibre for GPU
+// memory and have been observed to force a WebGL context loss on the
+// map canvas underneath — which read to the user as "the whole site
+// blacks out" because the modal backdrop was semi-transparent and the
+// dead map canvas showed through. The opaque mobile backdrop below
+// hides the map regardless; this just reduces the GPU pressure.
+const ELEV_SAMPLES_DESKTOP = 100;
+const ELEV_SAMPLES_MOBILE = 60;
+const GEOLOGY_SAMPLES_DESKTOP = 24;
+const GEOLOGY_SAMPLES_MOBILE = 14;
+// Default to the desktop values for code paths that run before the
+// per-instance `compact` flag is available (the loading-placeholder
+// label uses these; values are recomputed at fetch time).
+const ELEV_SAMPLES = ELEV_SAMPLES_DESKTOP;
+const GEOLOGY_SAMPLES = GEOLOGY_SAMPLES_DESKTOP;
 const DEFAULT_BUFFER_M = 1609; // 1 mile
 const MIN_BUFFER_M = 400;
 const MAX_BUFFER_M = 8000;
@@ -367,13 +382,21 @@ export function CrossSection({
   useEffect(() => {
     cancelRef.current = false;
     setLoading({ elev: true, geology: true });
-    const ePts = interpolateLine(pair.a, pair.b, ELEV_SAMPLES);
-    const gPts = interpolateLine(pair.a, pair.b, GEOLOGY_SAMPLES);
+    // Sample counts pegged to viewport width — fewer SVG elements on
+    // narrow viewports to avoid the WebGL-context-loss issue we saw
+    // when MapLibre and a heavy SVG fought for GPU memory.
+    const narrow = typeof window !== 'undefined'
+      && typeof window.matchMedia === 'function'
+      && window.matchMedia('(max-width: 640px)').matches;
+    const elevSamples = narrow ? ELEV_SAMPLES_MOBILE : ELEV_SAMPLES_DESKTOP;
+    const geoSamples = narrow ? GEOLOGY_SAMPLES_MOBILE : GEOLOGY_SAMPLES_DESKTOP;
+    const ePts = interpolateLine(pair.a, pair.b, elevSamples);
+    const gPts = interpolateLine(pair.a, pair.b, geoSamples);
 
     void Promise.allSettled(ePts.map((p) => fetchElevation(p[0], p[1]))).then((settled) => {
       if (cancelRef.current) return;
       const out: ElevSample[] = settled.map((s, i) => {
-        const t = i / ELEV_SAMPLES;
+        const t = i / elevSamples;
         const elevM = s.status === 'fulfilled' && s.value ? s.value.meters : null;
         return { t, distM: t * totalDistM, elevM };
       });
@@ -384,7 +407,7 @@ export function CrossSection({
     void Promise.allSettled(gPts.map((p) => fetchGeology(p[0], p[1]))).then((settled) => {
       if (cancelRef.current) return;
       const out: GeoSample[] = settled.map((s, i) => {
-        const t = i / GEOLOGY_SAMPLES;
+        const t = i / geoSamples;
         let color = '#475569';
         let label = 'unknown';
         let age: string | undefined;
@@ -462,7 +485,14 @@ export function CrossSection({
 
   return (
     <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-4 backdrop-blur"
+      className={
+        // Opaque backdrop on mobile (<640px): fully hides the MapLibre
+        // canvas underneath. Without this, a heavy SVG render could
+        // crash WebGL → black map canvas → user sees "the whole site
+        // blacked out" through the semi-transparent backdrop. On
+        // desktop, keep the prior semi-transparent + blur look.
+        'fixed inset-0 z-40 flex items-center justify-center bg-bg p-0 sm:bg-black/60 sm:p-4 sm:backdrop-blur'
+      }
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -472,7 +502,13 @@ export function CrossSection({
     >
       <div
         data-testid="cross-section-modal"
-        className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-lg border border-border bg-bg-surface shadow-2xl"
+        className={
+          // Mobile: full-bleed (the backdrop is opaque so there's no
+          // padding to leave a gap). Desktop: max-w-6xl card with a
+          // rounded border and a gap around it.
+          'flex h-full max-h-screen w-full flex-col overflow-hidden bg-bg-surface ' +
+          'sm:h-auto sm:max-h-[92vh] sm:max-w-6xl sm:rounded-lg sm:border sm:border-border sm:shadow-2xl'
+        }
       >
         <Header
           totalDistM={totalDistM}
