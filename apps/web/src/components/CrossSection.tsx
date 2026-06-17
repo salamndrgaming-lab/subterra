@@ -1058,7 +1058,9 @@ function SectionSvg({
       const tops = new Map<string, number>();
       let cum = 0;
       for (const u of block.units) {
-        tops.set(u.name, surfElev - cum);
+        // strField() — u.name can be a {name, ...} object; coerce
+        // before using as a Map key so the cross-block lookup matches.
+        tops.set(strField(u.name), surfElev - cum);
         const thick = u.thicknessM && u.thicknessM > 0 ? u.thicknessM : 50;
         cum += thick;
       }
@@ -1073,8 +1075,9 @@ function SectionSvg({
       for (let ui = 0; ui < units.length; ui++) {
         if (bi === 0) { blockDips.push(null); continue; }
         const u = units[ui]!;
-        const thisTop = topsByBlock[bi]!.get(u.name);
-        const prevTop = topsByBlock[bi - 1]!.get(u.name);
+        const uKey = strField(u.name);
+        const thisTop = topsByBlock[bi]!.get(uKey);
+        const prevTop = topsByBlock[bi - 1]!.get(uKey);
         const runM = midByBlock[bi]! - midByBlock[bi - 1]!;
         if (thisTop == null || prevTop == null || runM <= 0) {
           blockDips.push(null);
@@ -1261,10 +1264,18 @@ function SectionSvg({
                       strokeWidth={0.6}
                     >
                       <title>
-                        {`${u.name}${u.age ? ` · ${u.age}` : ''}${u.lithology ? ` · ${u.lithology}` : ''}` +
-                          `\nthickness ~${Math.round(thick)} m · top ~${Math.round(cum - thick)} m below surface` +
-                          `${u.environment ? `\nenvironment: ${u.environment}` : ''}` +
-                          `${dipDeg != null ? `\napparent dip: ${Math.abs(dipDeg).toFixed(1)}° toward ${dipDeg > 0 ? 'B' : 'A'} (along-section component)` : ''}`}
+                        {(() => {
+                          const uName = strField(u.name) || '(unnamed)';
+                          const uAge = strField(u.age);
+                          const uLith = strField(u.lithology);
+                          const uEnv = strField(u.environment);
+                          return (
+                            `${uName}${uAge ? ` · ${uAge}` : ''}${uLith ? ` · ${uLith}` : ''}` +
+                            `\nthickness ~${Math.round(thick)} m · top ~${Math.round(cum - thick)} m below surface` +
+                            `${uEnv ? `\nenvironment: ${uEnv}` : ''}` +
+                            `${dipDeg != null ? `\napparent dip: ${Math.abs(dipDeg).toFixed(1)}° toward ${dipDeg > 0 ? 'B' : 'A'} (along-section component)` : ''}`
+                          );
+                        })()}
                       </title>
                     </rect>
                     {showLabel && (
@@ -1277,7 +1288,7 @@ function SectionSvg({
                         fill={contrastTextColor(fillColor)}
                         pointerEvents="none"
                       >
-                        {truncate(u.name, Math.max(6, Math.floor(w / 6.5)))}
+                        {truncate(strField(u.name) || '(unnamed)', Math.max(6, Math.floor(w / 6.5)))}
                       </text>
                     )}
                     {showDipBadge && (
@@ -1740,8 +1751,14 @@ function HoverReadout({
   // `compact` (mobile) scales up the box ~1.8× so text remains readable
   // after the 1200-wide viewBox is auto-scaled down to ~380px on phones.
   const u = unitAtCursor?.unit;
+  // Coerce all Macrostrat string-ish fields via strField — they're
+  // typed-as-string but reality includes objects/arrays. Direct
+  // rendering crashes with React error #31.
+  const uName = u ? (strField(u.name) || '(unnamed)') : '';
+  const uAge = u ? strField(u.age) : '';
   const ageRange = u ? formatAgeRange(u) : null;
-  const envLabel = u?.environment ? truncate(u.environment, 26) : null;
+  const envStr = u ? strField(u.environment) : '';
+  const envLabel = envStr ? truncate(envStr, 26) : null;
   const extraRows = u ? 1 + (ageRange ? 1 : 0) + (envLabel ? 1 : 0) : 0;
   const fontPx = compact ? 18 : 10;
   const rowH = compact ? 22 : 14;
@@ -1777,23 +1794,23 @@ function HoverReadout({
       </text>
       <text x={8} y={row(3)} fill="#94a3b8">surface geo</text>
       <text x={boxW - 8} y={row(3)} textAnchor="end" fill="#f8fafc">
-        {truncate(geoLabel ?? '—', 22)}{geoAge ? `, ${truncate(geoAge, 8)}` : ''}
+        {truncate(strField(geoLabel) || '—', 22)}{geoAge ? `, ${truncate(strField(geoAge), 8)}` : ''}
       </text>
       <text x={8} y={row(4)} fill="#94a3b8">surface mgmt</text>
       <text x={boxW - 8} y={row(4)} textAnchor="end" fill="#f8fafc">
-        {agency ?? '—'}
+        {strField(agency) || '—'}
       </text>
       {u && (
         <>
           <text x={8} y={row(5)} fill="#94a3b8">at cursor</text>
           <text x={boxW - 8} y={row(5)} textAnchor="end" fill="#2dd4bf">
-            {truncate(u.name, 20)} ({Math.round(unitAtCursor!.depthM)} m)
+            {truncate(uName, 20)} ({Math.round(unitAtCursor!.depthM)} m)
           </text>
           {ageRange && (
             <>
               <text x={8} y={row(6)} fill="#94a3b8">age</text>
               <text x={boxW - 8} y={row(6)} textAnchor="end" fill="#f8fafc">
-                {truncate(u.age || '—', 20)} · {ageRange}
+                {truncate(uAge || '—', 20)} · {ageRange}
               </text>
             </>
           )}
@@ -2282,6 +2299,32 @@ function contrastTextColor(hex: string): string {
  *  ("sandstone", "ss", "Sandstone - fine grained, lithic"). Returns
  *  null when no match, so the caller falls back to Macrostrat's
  *  per-unit color (which is age-based, not lithology-based). */
+/** Coerce a Macrostrat string-ish field to a plain display string.
+ *  Macrostrat's typed-as-string fields (`name`, `age`, `lithology`,
+ *  `environment`) regularly arrive as nested objects or arrays:
+ *    environment → { environ_id, name, type, class }
+ *    lithology   → [{ name, lith_class, ... }, ...]
+ *    age         → either a string like 'Devonian' or { name, ... }
+ *  Rendering any of these as a React child crashes with React error
+ *  #31 ("Objects are not valid as a React child"). Coerce defensively
+ *  by pulling out a `.name` when present; otherwise stringify. */
+function strField(x: unknown): string {
+  if (x == null) return '';
+  if (typeof x === 'string') return x;
+  if (typeof x === 'number' || typeof x === 'boolean') return String(x);
+  if (Array.isArray(x)) {
+    return x.map((item) => strField(item)).filter(Boolean).join(', ');
+  }
+  if (typeof x === 'object') {
+    // Prefer .name; fall back to .label or stringify.
+    const obj = x as Record<string, unknown>;
+    if (typeof obj.name === 'string') return obj.name;
+    if (typeof obj.label === 'string') return obj.label;
+    return '';
+  }
+  return String(x);
+}
+
 function lithologyColor(lithology: unknown): string | null {
   // Macrostrat's `lithology` field is loosely typed — some unit
   // records return an array of lith objects ({name, lith_class, ...})
