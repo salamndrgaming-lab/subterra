@@ -630,6 +630,15 @@ function CrossSectionInner({
               bufferM={bufferM}
               depthM={depthM}
               trueScale={trueScale}
+              citationText={buildCitation({
+                a: pair.a,
+                b: pair.b,
+                ve,
+                bufferM,
+                depthM,
+                trueScale,
+                url: typeof window !== 'undefined' ? window.location.href : '',
+              })}
             />
           )}
         </div>
@@ -841,9 +850,9 @@ function Toolbar({
  *  question "but how do you know unit X extends 8 km east?" — answer:
  *  we don't, and we're not claiming to. */
 function ContinuityDisclaimer() {
-  // Bumped suffix when the disclaimer wording changed (dip is now
-  // modeled). Users who dismissed the v1 disclaimer see the v2 once.
-  const KEY = 'subterra:cs:continuity-disclaimer-dismissed-v2';
+  // Bumped suffix when the disclaimer wording changed. Users who
+  // dismissed v2 see v3 (uncertainty bands mentioned) once.
+  const KEY = 'subterra:cs:continuity-disclaimer-dismissed-v3';
   const [dismissed, setDismissed] = useState<boolean>(() => {
     if (typeof window === 'undefined') return true;
     return window.sessionStorage.getItem(KEY) === '1';
@@ -853,10 +862,11 @@ function ContinuityDisclaimer() {
     <div className="flex items-start gap-2 border-b border-amber-500/30 bg-amber-500/10 px-4 py-1.5 font-mono text-[10px] text-amber-200">
       <span aria-hidden className="mt-0.5">ⓘ</span>
       <span className="min-w-0 flex-1">
-        Hung-column section. Apparent dip per formation computed from
-        inter-column elevation differences (along-section component
-        only). Fault dip inferred from slip-sense. Lateral continuity
-        between columns is NOT interpolated — gaps mean the data ends.
+        Hung-column section. Apparent dip computed from inter-column
+        elevation differences (along-section component only). Fault dip
+        inferred from slip-sense. Dashed-stripe overlay = Macrostrat
+        min-to-max thickness uncertainty. Lateral continuity between
+        columns is NOT interpolated — gaps mean the data ends.
       </span>
       <button
         type="button"
@@ -964,6 +974,7 @@ function SectionSvg({
   bufferM,
   depthM,
   trueScale,
+  citationText,
 }: {
   svgRef: React.MutableRefObject<SVGSVGElement | null>;
   totalDistM: number;
@@ -980,6 +991,10 @@ function SectionSvg({
   bufferM: number;
   depthM: number;
   trueScale: boolean;
+  /** Citation block stamped at the bottom of the SVG so PNG exports
+   *  carry the same provenance + permalink as the Copy-citation
+   *  clipboard payload. */
+  citationText: string;
 }) {
   const W = 1200;
   const H = 640;
@@ -1244,6 +1259,20 @@ function SectionSvg({
                 const yBot = Math.min(yOf(Math.max(botElev, subsurfaceFloor)), topoBottomY);
                 const h = Math.max(0.5, yBot - yTop);
                 const showLabel = h > 13 && w > 90;
+                // Thickness uncertainty band: if Macrostrat publishes both
+                // min_thick and max_thick AND they differ meaningfully,
+                // render a lighter-fill rectangle from the min-thick
+                // bottom down to the max-thick bottom. This is the
+                // "we don't know exactly where the unit ends" zone.
+                const minThick = typeof u.thicknessMinM === 'number' && u.thicknessMinM > 0
+                  ? u.thicknessMinM
+                  : null;
+                const hasUncertainty = minThick != null && minThick < thick - 1;
+                const yMinBot = hasUncertainty
+                  ? Math.min(yOf(Math.max(topElev - minThick, subsurfaceFloor)), topoBottomY)
+                  : yTop;
+                const uncertaintyTop = yMinBot;
+                const uncertaintyHeight = hasUncertainty ? Math.max(0, yBot - yMinBot) : 0;
                 // Lithology-derived color overrides Macrostrat's
                 // age-based color when we recognize the lithology —
                 // standard USGS palette is more informative for
@@ -1273,11 +1302,31 @@ function SectionSvg({
                             `${uName}${uAge ? ` · ${uAge}` : ''}${uLith ? ` · ${uLith}` : ''}` +
                             `\nthickness ~${Math.round(thick)} m · top ~${Math.round(cum - thick)} m below surface` +
                             `${uEnv ? `\nenvironment: ${uEnv}` : ''}` +
+                            `${hasUncertainty ? `\nthickness uncertainty: ${Math.round(minThick!)}–${Math.round(thick)} m` : ''}` +
                             `${dipDeg != null ? `\napparent dip: ${Math.abs(dipDeg).toFixed(1)}° toward ${dipDeg > 0 ? 'B' : 'A'} (along-section component)` : ''}`
                           );
                         })()}
                       </title>
                     </rect>
+                    {hasUncertainty && uncertaintyHeight > 0.5 && (
+                      // Lighter overlay showing the "between min-thick
+                      // and max-thick" zone — the unit is reported up to
+                      // this depth, but might end higher. Diagonal-line
+                      // pattern would be nicer; for now use a striped
+                      // opacity contrast which renders cleanly on mobile.
+                      <rect
+                        x={x0}
+                        y={uncertaintyTop}
+                        width={w}
+                        height={uncertaintyHeight}
+                        fill={fillColor}
+                        opacity={0.35}
+                        stroke="#0a0c10"
+                        strokeWidth={0.4}
+                        strokeDasharray="2 2"
+                        pointerEvents="none"
+                      />
+                    )}
                     {showLabel && (
                       <text
                         x={x0 + w / 2}
@@ -1716,6 +1765,23 @@ function SectionSvg({
           />
         </g>
       )}
+
+      {/* ── citation stamp (bottom-right) ──
+          Rendered as SVG text so it's captured by the PNG export.
+          One short line per ~80 chars; the buildCitation() output is
+          a multi-line block, so split + render each line. */}
+      <g
+        fontFamily="ui-monospace, monospace"
+        fontSize={7}
+        fill="#475569"
+        pointerEvents="none"
+      >
+        {citationText.split('\n').map((line, i) => (
+          <text key={`cite-${i}`} x={W - PADDING.r} y={H - 4 - (citationText.split('\n').length - 1 - i) * 9} textAnchor="end">
+            {line}
+          </text>
+        ))}
+      </g>
     </svg>
   );
 }

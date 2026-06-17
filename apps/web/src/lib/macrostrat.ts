@@ -42,6 +42,10 @@ export interface StratUnit {
   age: string;
   /** Maximum reported thickness in meters. Null if unknown. */
   thicknessM?: number;
+  /** Minimum reported thickness in meters. Macrostrat publishes both
+   *  bounds; the gap between is the unit-thickness uncertainty that
+   *  the cross-section's hover readout shows. */
+  thicknessMinM?: number;
   /** Numerical age range start/end (Ma — millions of years ago).
    *  bAge = older bound, tAge = younger bound. */
   bAge?: number;
@@ -207,6 +211,7 @@ async function fetchColumnUnits(columnId: number): Promise<StratUnit[]> {
         ? `${d.t_int_name}–${d.b_int_name}`
         : (d.t_int_name ?? d.b_int_name ?? '')),
     thicknessM: d.max_thick ?? d.min_thick,
+    thicknessMinM: d.min_thick,
     bAge: d.b_age,
     tAge: d.t_age,
     color: d.color,
