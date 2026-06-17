@@ -2282,9 +2282,27 @@ function contrastTextColor(hex: string): string {
  *  ("sandstone", "ss", "Sandstone - fine grained, lithic"). Returns
  *  null when no match, so the caller falls back to Macrostrat's
  *  per-unit color (which is age-based, not lithology-based). */
-function lithologyColor(lithology: string | undefined): string | null {
-  if (!lithology) return null;
-  const l = lithology.toLowerCase();
+function lithologyColor(lithology: unknown): string | null {
+  // Macrostrat's `lithology` field is loosely typed — some unit
+  // records return an array of lith objects ({name, lith_class, ...})
+  // or a comma-joined string, others return null. Coerce to a single
+  // searchable string defensively; the type annotation can't be trusted.
+  if (lithology == null) return null;
+  let str: string;
+  if (typeof lithology === 'string') {
+    str = lithology;
+  } else if (Array.isArray(lithology)) {
+    str = lithology
+      .map((x) => (typeof x === 'string' ? x : (x && typeof x === 'object' && 'name' in x ? String((x as { name: unknown }).name) : '')))
+      .filter(Boolean)
+      .join(' ');
+  } else if (typeof lithology === 'object' && 'name' in lithology) {
+    str = String((lithology as { name: unknown }).name);
+  } else {
+    str = String(lithology);
+  }
+  if (!str) return null;
+  const l = str.toLowerCase();
   // Sedimentary — most common in the western US prospecting target
   if (/(limestone|dolomite|carbonate)/.test(l)) return '#7dd3fc';
   if (/(sandstone|\bss\b|arenite)/.test(l)) return '#fde68a';
@@ -2315,13 +2333,17 @@ function lithologyColor(lithology: string | undefined): string | null {
  *  direction needs hanging-wall/footwall context that the Q-faults
  *  dataset doesn't always provide — honest improvement over the
  *  prior "always vertical" rendering, but documented as inferred. */
-function faultStyle(slipSense: string | undefined): {
+function faultStyle(slipSense: unknown): {
   dipFromVerticalDeg: number;
   color: string;
   label: string;
   inferred: boolean;
 } {
-  const s = (slipSense || '').toLowerCase();
+  // Defensive coercion — slipSense source data (USGS Q-Faults attrs)
+  // is loosely typed; some records ship arrays or nulls instead of
+  // plain strings, and `(thing || '').toLowerCase()` crashes when
+  // `thing` is a truthy non-string like `[]`.
+  const s = (typeof slipSense === 'string' ? slipSense : '').toLowerCase();
   if (/normal/.test(s)) return { dipFromVerticalDeg: 60, color: '#ef4444', label: 'normal', inferred: true };
   if (/(thrust|reverse)/.test(s)) {
     return {
