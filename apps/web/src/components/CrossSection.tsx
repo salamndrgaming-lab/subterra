@@ -40,7 +40,8 @@
  *  lib/elevation + lib/macrostrat helpers with a small in-component
  *  cache so re-renders during VE/buffer changes don't refetch. */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Component, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type * as React from 'react';
 
 import { fetchElevation } from '@/lib/elevation';
 import { fetchGeology, type StratUnit } from '@/lib/macrostrat';
@@ -243,7 +244,75 @@ interface ProjectedGeochem extends ProjectedPoint {
   element: string;
 }
 
-export function CrossSection({
+/** Wraps the real CrossSection component in an error boundary so a
+ *  render exception inside it (e.g. a bad data shape from a Macrostrat
+ *  response) doesn't blank the surrounding UI — surfaces a useful
+ *  fallback with a Close button instead. Mounts as a sibling to the
+ *  rest of Map.tsx; without this boundary, an unhandled error inside
+ *  the modal renders nothing visible and the user sees a black screen. */
+export function CrossSection(props: CrossSectionProps) {
+  return (
+    <CrossSectionErrorBoundary onClose={props.onClose}>
+      <CrossSectionInner {...props} />
+    </CrossSectionErrorBoundary>
+  );
+}
+
+interface CrossSectionProps {
+  a: LngLat;
+  b: LngLat;
+  mrds: CrossSectionMrds[];
+  claims: CrossSectionClaim[];
+  geochem: CrossSectionGeochem[];
+  agencies: CrossSectionAgency[];
+  faults: CrossSectionFault[];
+  onClose: () => void;
+}
+
+class CrossSectionErrorBoundary extends Component<
+  { children: React.ReactNode; onClose: () => void },
+  { error: Error | null }
+> {
+  override state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+  override componentDidCatch(error: Error, info: React.ErrorInfo) {
+    // Logged so a returning user can find this in the JS console.
+    console.error('CrossSection render error:', error, info);
+  }
+  override render() {
+    if (this.state.error) {
+      return (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center p-4 backdrop-blur"
+          style={{ backgroundColor: 'rgba(10, 12, 16, 0.92)' }}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Cross-section error"
+        >
+          <div
+            className="flex max-w-md flex-col gap-3 rounded-lg border border-red-500/40 p-4 font-mono text-[12px] text-text shadow-2xl"
+            style={{ backgroundColor: '#161a22' }}
+          >
+            <div className="text-sm font-semibold text-red-300">Cross-section error</div>
+            <div className="text-text-muted">{this.state.error.message || String(this.state.error)}</div>
+            <button
+              type="button"
+              onClick={this.props.onClose}
+              className="self-end rounded border border-border bg-bg-panel px-3 py-1 text-text-muted hover:border-accent hover:text-accent"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function CrossSectionInner({
   a,
   b,
   mrds,
@@ -485,14 +554,14 @@ export function CrossSection({
 
   return (
     <div
-      className={
-        // Opaque backdrop on mobile (<640px): fully hides the MapLibre
-        // canvas underneath. Without this, a heavy SVG render could
-        // crash WebGL → black map canvas → user sees "the whole site
-        // blacked out" through the semi-transparent backdrop. On
-        // desktop, keep the prior semi-transparent + blur look.
-        'fixed inset-0 z-40 flex items-center justify-center bg-bg p-0 sm:bg-black/60 sm:p-4 sm:backdrop-blur'
-      }
+      // Mobile blackout fix v2: use an inline-style backdrop guaranteed
+      // to render (the previous `bg-bg` class doesn't generate from the
+      // codebase's @theme tokens — every other use is `bg-bg-surface`
+      // etc.). 85% opaque so the MapLibre canvas underneath, even if
+      // its WebGL context dies and renders pure black, is masked by a
+      // dark-but-distinguishable backdrop, not a transparent one.
+      className="fixed inset-0 z-40 flex items-center justify-center p-2 sm:p-4 backdrop-blur"
+      style={{ backgroundColor: 'rgba(10, 12, 16, 0.92)' }}
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -502,13 +571,11 @@ export function CrossSection({
     >
       <div
         data-testid="cross-section-modal"
-        className={
-          // Mobile: full-bleed (the backdrop is opaque so there's no
-          // padding to leave a gap). Desktop: max-w-6xl card with a
-          // rounded border and a gap around it.
-          'flex h-full max-h-screen w-full flex-col overflow-hidden bg-bg-surface ' +
-          'sm:h-auto sm:max-h-[92vh] sm:max-w-6xl sm:rounded-lg sm:border sm:border-border sm:shadow-2xl'
-        }
+        // Inline background style for the same reason as the backdrop —
+        // guaranteed to render even if the Tailwind theme tokens don't
+        // produce a class. Mobile: full-bleed; desktop: max-w-6xl card.
+        className="flex h-full max-h-[96vh] w-full flex-col overflow-hidden border-border shadow-2xl sm:h-auto sm:max-h-[92vh] sm:max-w-6xl sm:rounded-lg sm:border"
+        style={{ backgroundColor: '#161a22' }}
       >
         <Header
           totalDistM={totalDistM}
