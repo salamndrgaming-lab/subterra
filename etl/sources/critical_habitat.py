@@ -92,21 +92,38 @@ def run(work_dir: Path) -> SourceResult:
     started = time.monotonic()
     first = [True]
     per_status: dict[str, int] = {}
+    # Diagnostic: capture the FIRST feature's shape so the next run's
+    # log surfaces whether the service is returning ArcGIS-format
+    # features (attributes + geometry) vs proper GeoJSON, OR returning
+    # features with null geometry, OR a different geometry type than
+    # the layer-info claims.
+    first_feature_sample: dict | None = None
+    skip_reasons: dict[str, int] = {"no_geom": 0, "wrong_type": 0}
 
     try:
         with out_path.open("w", encoding="utf-8") as out:
             out.write('{"type":"FeatureCollection","features":[')
 
             def on_feature(feat: dict) -> None:
-                nonlocal feature_count, skipped
+                nonlocal feature_count, skipped, first_feature_sample
+                if first_feature_sample is None:
+                    # Stringify a sample of the first feature so the
+                    # warning we emit at run end is useful for
+                    # debugging schema mismatches.
+                    first_feature_sample = {
+                        "keys": list(feat.keys()),
+                        "geom_type": (feat.get("geometry") or {}).get("type"),
+                        "geom_present": feat.get("geometry") is not None,
+                        "props_keys": list((feat.get("properties") or {}).keys())[:10],
+                    }
                 geom = feat.get("geometry")
                 if not geom:
                     skipped += 1
+                    skip_reasons["no_geom"] += 1
                     return
-                # FeatureServer returns polygons; tippecanoe accepts
-                # both Polygon and MultiPolygon as-is.
                 if geom.get("type") not in ("Polygon", "MultiPolygon"):
                     skipped += 1
+                    skip_reasons["wrong_type"] += 1
                     return
                 props = _normalize(feat.get("properties") or {})
                 if not first[0]:
@@ -134,9 +151,14 @@ def run(work_dir: Path) -> SourceResult:
 
     elapsed = time.monotonic() - started
     log.info(
-        "wrote %d critical-habitat polygons (skipped %d) in %.1fs (by status: %s)",
-        feature_count, skipped, elapsed, per_status,
+        "wrote %d critical-habitat polygons (skipped %d, reasons=%s) in %.1fs (by status: %s)",
+        feature_count, skipped, skip_reasons, elapsed, per_status,
     )
+    if feature_count == 0 and first_feature_sample is not None:
+        log.warning(
+            "0 features written but a feature WAS received. First feature: %s",
+            first_feature_sample,
+        )
 
     return SourceResult(
         layer_id="critical_habitat",

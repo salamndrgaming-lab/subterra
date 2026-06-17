@@ -58,20 +58,26 @@ class SourceResult:
 # Mappings are ordered candidate lists — the first non-empty hit wins.
 
 # NV Division of Water Resources — Points of Diversion.
+# Canonical NDWR endpoint, discovered via search after the previous
+# services1.arcgis.com guess returned 0 features.
 NV_DEFAULT_URL = (
-    "https://services1.arcgis.com/cZxbsh07jHL5z9pp/arcgis/rest/services/"
-    "Points_of_Diversion/FeatureServer/0/query"
+    "https://arcgis.water.nv.gov/arcgis/rest/services/NDWR/"
+    "Water_Rights_Points_of_Diversion/FeatureServer/0/query"
 )
 
-# UT Division of Water Rights — Water Rights points.
+# UT Division of Water Rights — Points of Diversion ("PODView" is the
+# canonical service name on UT DWR's ArcGIS Online org).
 UT_DEFAULT_URL = (
     "https://services.arcgis.com/ZzrwjTRez6FJiOq4/arcgis/rest/services/"
-    "Water_Rights/FeatureServer/0/query"
+    "PODView/FeatureServer/0/query"
 )
 
 # AZ Department of Water Resources — Surface + groundwater water rights.
+# Hostname is `gisweb3` (not `gisweb` — that one returns 404). The
+# specific service path is unverified; if AZ comes back empty, set
+# SUBTERRA_WATER_RIGHTS_AZ_URL to the correct service.
 AZ_DEFAULT_URL = (
-    "https://gisweb.azwater.gov/arcgis/rest/services/PublicData/"
+    "https://gisweb3.azwater.gov/arcgis/rest/services/PublicData/"
     "WaterRights/MapServer/0/query"
 )
 

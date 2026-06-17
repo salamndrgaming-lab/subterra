@@ -28,8 +28,13 @@ from typing import Any
 from sources._arcgis import iter_features_concurrent
 
 USGS_QFAULTS_DEFAULT_URL = (
-    "https://services.arcgis.com/eqj5z0KbcWUcZxgQ/arcgis/rest/services/"
-    "Quaternary_Faults_and_Folds_of_the_United_States/FeatureServer/0/query"
+    # USGS canonical Quaternary Faults & Folds National Database.
+    # Layer 21 of the haz/Qfaults MapServer is the "National Database"
+    # layer (the other layers are subset views — Holocene only, etc.).
+    # Discovered via search after the previous ArcGIS Online hosted
+    # URL (services.arcgis.com/eqj5z0KbcWUcZxgQ/...) silently returned 0.
+    "https://earthquake.usgs.gov/arcgis/rest/services/"
+    "haz/Qfaults/MapServer/21/query"
 )
 
 
