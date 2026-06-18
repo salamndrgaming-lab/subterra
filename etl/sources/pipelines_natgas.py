@@ -29,10 +29,21 @@ from pathlib import Path
 
 from sources._arcgis import iter_features_concurrent
 
-DEFAULT_QUERY_URL = (
+# Try these URLs in order — first one that returns features wins.
+# The DOT-hosted EIA service was observed returning HTTP 500 in
+# 2026-06 production runs. NASA NCCS hosts a HIFLD mirror of the same
+# pipeline-network data that's more reliable as a backup.
+CANDIDATE_URLS = [
+    # geo.dot.gov — official DOT host of EIA pipeline data. Historically
+    # the canonical one; intermittently 500s.
     "https://geo.dot.gov/server/rest/services/Hosted/"
-    "Natural_Gas_Pipelines_US_EIA/FeatureServer/0/query"
-)
+    "Natural_Gas_Pipelines_US_EIA/FeatureServer/0/query",
+    # NASA NCCS HIFLD mirror — energy-infrastructure service that
+    # includes natural gas pipelines as one of its layers.
+    "https://maps.nccs.nasa.gov/mapping/rest/services/"
+    "hifld_open/energy/FeatureServer/0/query",
+]
+DEFAULT_QUERY_URL = CANDIDATE_URLS[0]
 
 
 @dataclass
@@ -71,55 +82,79 @@ def run(work_dir: Path) -> SourceResult:
     log = logging.getLogger("etl.pipelines_natgas")
     log.info("starting natural-gas pipelines download")
 
-    url = (
+    # Build the URL try-list: env override first, then candidates in
+    # order. First URL that produces features wins; subsequent ones
+    # don't run. We don't merge across hosts because schemas may
+    # differ — wholesale-replacement is safer than partial-mix.
+    env_url = (
         os.environ.get("SUBTERRA_PIPELINES_NATGAS_URL")
         or os.environ.get("PIPELINES_NATGAS_URL")
-        or DEFAULT_QUERY_URL
+        or ""
     )
-    log.info("source URL: %s", url)
+    urls = [u for u in [env_url, *CANDIDATE_URLS] if u]
 
     out_path = work_dir / "pipelines_natgas.geojson"
     feature_count = 0
     skipped = 0
     started = time.monotonic()
-    first = [True]
+    chosen_url: str | None = None
+    last_error: Exception | None = None
 
-    try:
-        with out_path.open("w", encoding="utf-8") as out:
-            out.write('{"type":"FeatureCollection","features":[')
+    for attempt_url in urls:
+        log.info("attempt URL: %s", attempt_url)
+        first = [True]
+        feature_count = 0
+        skipped = 0
+        try:
+            with out_path.open("w", encoding="utf-8") as out:
+                out.write('{"type":"FeatureCollection","features":[')
 
-            def on_feature(feat: dict) -> None:
-                nonlocal feature_count, skipped
-                geom = feat.get("geometry")
-                if not geom:
-                    skipped += 1
-                    return
-                # Pipelines are LineStrings (segments); accept Multi
-                # too in case the dataset publishes joined runs.
-                if geom.get("type") not in ("LineString", "MultiLineString"):
-                    skipped += 1
-                    return
-                props = _normalize_props(feat.get("properties") or {})
-                if not first[0]:
-                    out.write(",")
-                first[0] = False
-                json.dump(
-                    {"type": "Feature", "geometry": geom, "properties": props}, out,
+                def on_feature(feat: dict) -> None:
+                    nonlocal feature_count, skipped
+                    geom = feat.get("geometry")
+                    if not geom:
+                        skipped += 1
+                        return
+                    if geom.get("type") not in ("LineString", "MultiLineString"):
+                        skipped += 1
+                        return
+                    props = _normalize_props(feat.get("properties") or {})
+                    if not first[0]:
+                        out.write(",")
+                    first[0] = False
+                    json.dump(
+                        {"type": "Feature", "geometry": geom, "properties": props}, out,
+                    )
+                    feature_count += 1
+
+                iter_features_concurrent(
+                    attempt_url,
+                    on_feature=on_feature,
+                    workers=6,
+                    progress_label="pipelines_natgas",
                 )
-                feature_count += 1
 
-            iter_features_concurrent(
-                url,
-                on_feature=on_feature,
-                workers=6,
-                progress_label="pipelines_natgas",
-            )
+                out.write("]}")
+            if feature_count > 0:
+                chosen_url = attempt_url
+                break
+            log.warning("URL produced 0 features — trying next candidate")
+        except Exception as err:  # noqa: BLE001
+            last_error = err
+            log.warning("URL failed (%s) — trying next candidate", err)
+            continue
 
-            out.write("]}")
-    except Exception:
+    if feature_count == 0:
+        # All candidates exhausted; clean up the file and raise the
+        # last error so the source surfaces as `failed` (not silently
+        # empty) in the per-source summary.
         if out_path.exists():
             out_path.unlink()
-        raise
+        raise RuntimeError(
+            f"all {len(urls)} candidate URLs failed for pipelines_natgas — "
+            f"last error: {last_error}"
+        )
+    log.info("succeeded via %s", chosen_url)
 
     elapsed = time.monotonic() - started
     log.info(

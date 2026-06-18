@@ -32,10 +32,30 @@ from typing import Any
 
 from sources._arcgis import iter_features_concurrent
 
-DEFAULT_QUERY_URL = (
+# BLM republished the withdrawn-lands data multiple times — old paths
+# 404 frequently. Following the blm_claims fix pattern, try the BLM
+# Hub MLRS/HUB FeatureServer endpoints first (the same NLSDB host
+# that serves the canonical mining-claims service), then fall back to
+# the older `arcgis/lands/` MapServer endpoints. First URL that
+# produces features wins.
+CANDIDATE_URLS = [
+    # MLRS HUB withdrawals — following the same naming pattern as
+    # BLM_Natl_MLRS_Mining_Claims_Not_Closed (the blm_claims fix).
+    "https://gis.blm.gov/nlsdb/rest/services/HUB/"
+    "BLM_Natl_MLRS_Withdrawals/FeatureServer/0/query",
+    # Land Tenure Case service — multi-purpose service that includes
+    # withdrawals as one case type. May need a where-clause filter to
+    # narrow to withdrawals specifically; iter_features_concurrent
+    # doesn't support that yet, but we'll get the full case-recordation
+    # set which is a superset.
+    "https://gis.blm.gov/nlsdb/rest/services/HUB/"
+    "BLM_Natl_Withdrawals/FeatureServer/0/query",
+    # Old legacy URL — long-deprecated but kept as a final fallback in
+    # case BLM ever re-publishes under the original slug.
     "https://gis.blm.gov/arcgis/rest/services/lands/"
-    "BLM_Natl_Withdrawn_Lands/MapServer/0/query"
-)
+    "BLM_Natl_Withdrawn_Lands/MapServer/0/query",
+]
+DEFAULT_QUERY_URL = CANDIDATE_URLS[0]
 
 
 @dataclass
@@ -94,49 +114,66 @@ def _normalize(props: dict[str, Any]) -> dict[str, Any]:
 
 def run(work_dir: Path) -> SourceResult:
     log = logging.getLogger("etl.withdrawals")
-    # Accept either SUBTERRA_WITHDRAWALS_URL (canonical, set in
-    # pipeline.yml) or BLM_WITHDRAWALS_URL (legacy) for the override.
-    url = (
+    env_url = (
         os.environ.get("SUBTERRA_WITHDRAWALS_URL")
         or os.environ.get("BLM_WITHDRAWALS_URL")
-        or DEFAULT_QUERY_URL
+        or ""
     )
-    log.info("starting BLM withdrawals download from %s", url)
+    urls = [u for u in [env_url, *CANDIDATE_URLS] if u]
 
     out_path = work_dir / "withdrawals.geojson"
     started = time.monotonic()
     feature_count = 0
     by_status: dict[str, int] = {}
+    chosen_url: str | None = None
+    last_error: Exception | None = None
 
-    try:
-        with out_path.open("w", encoding="utf-8") as out:
-            out.write('{"type":"FeatureCollection","features":[')
-            first = [True]
+    for attempt_url in urls:
+        log.info("attempt URL: %s", attempt_url)
+        feature_count = 0
+        by_status = {}
+        try:
+            with out_path.open("w", encoding="utf-8") as out:
+                out.write('{"type":"FeatureCollection","features":[')
+                first = [True]
 
-            def on_feature(feat: dict[str, Any]) -> None:
-                nonlocal feature_count
-                geom = feat.get("geometry")
-                if not geom:
-                    return
-                props = _normalize(feat.get("properties") or {})
-                if not first[0]:
-                    out.write(",")
-                first[0] = False
-                json.dump({"type": "Feature", "geometry": geom, "properties": props}, out)
-                feature_count += 1
-                status = str(props.get("mineral_status", "Unknown"))
-                by_status[status] = by_status.get(status, 0) + 1
+                def on_feature(feat: dict[str, Any]) -> None:
+                    nonlocal feature_count
+                    geom = feat.get("geometry")
+                    if not geom:
+                        return
+                    props = _normalize(feat.get("properties") or {})
+                    if not first[0]:
+                        out.write(",")
+                    first[0] = False
+                    json.dump({"type": "Feature", "geometry": geom, "properties": props}, out)
+                    feature_count += 1
+                    status = str(props.get("mineral_status", "Unknown"))
+                    by_status[status] = by_status.get(status, 0) + 1
 
-            iter_features_concurrent(
-                url,
-                on_feature=on_feature,
-                progress_label="withdrawals",
-            )
-            out.write("]}")
-    except Exception:
+                iter_features_concurrent(
+                    attempt_url,
+                    on_feature=on_feature,
+                    progress_label="withdrawals",
+                )
+                out.write("]}")
+            if feature_count > 0:
+                chosen_url = attempt_url
+                break
+            log.warning("URL produced 0 features — trying next candidate")
+        except Exception as err:  # noqa: BLE001
+            last_error = err
+            log.warning("URL failed (%s) — trying next candidate", err)
+            continue
+
+    if feature_count == 0:
         if out_path.exists():
             out_path.unlink()
-        raise
+        raise RuntimeError(
+            f"all {len(urls)} candidate URLs failed for withdrawals — "
+            f"last error: {last_error}"
+        )
+    log.info("succeeded via %s", chosen_url)
 
     elapsed = time.monotonic() - started
     log.info(

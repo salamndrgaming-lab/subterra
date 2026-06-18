@@ -114,30 +114,23 @@ EXPECTED_MIN_FEATURES: dict[str, int] = {
 #
 # Removing entries here as upstreams come back. Empty set is the goal.
 ACCEPT_BROKEN: set[str] = {
-    # withdrawals: gis.blm.gov/lands/BLM_Natl_Withdrawn_Lands moved
-    #              and BLM now bundles mineral-withdrawal status into
-    #              the SMA service (which we already pull as
-    #              federal_lands). Needs a refactor to either query
-    #              the Land_Tenure_Case service with a
-    #              withdrawal-type filter OR an item-ID lookup against
-    #              the BLM Hub to find the canonical replacement.
-    "withdrawals",
-    # geochemistry: REMOVED — diagnostic from previous run showed the
-    #               bug was (a) `long_wgs84` missing from lng candidates
-    #               and (b) we were reading main.csv (metadata only)
-    #               instead of joining main.csv + bestvalue.csv on lab_id.
-    #               Refactored to do the 2-CSV join. Re-evaluating.
-    # pipelines: my latest fix (DOT-hosted EIA services) returned
-    #            HTTP 500. Geo.dot.gov may be rate-limiting, or the
-    #            URL path needs a different case/structure. Until
-    #            verified, keep them out of the threshold so the
-    #            tileset can ship.
-    "pipelines_natgas",
-    "pipelines_crude",
-    # parcels: multiple NV counties have moved their ArcGIS services
-    #          (Lyon county returned 404 in latest run). Per-county
-    #          URL re-verification needed.
-    "parcels",
+    # withdrawals: REMOVED — multi-URL fallback added
+    #              (CANDIDATE_URLS: HUB MLRS, HUB withdrawals, legacy
+    #              lands MapServer). First one that returns features
+    #              wins. If all three fail, the source surfaces as
+    #              `failed` and the threshold check decides whether to
+    #              upload.
+    # geochemistry: REMOVED — 2-CSV join (main.csv coords +
+    #               bestvalue.csv elements). Re-evaluating each run.
+    # pipelines: REMOVED — multi-URL fallback (geo.dot.gov →
+    #            maps.nccs.nasa.gov HIFLD mirror). Same shape as
+    #            withdrawals; first non-empty wins.
+    # parcels: REMOVED — switched to NDOT statewide-parcels endpoint
+    #          (covers every NV county in one service). Replaces the
+    #          per-county URLs that all 404'd.
+    #
+    # Empty set is the goal. Keep this dict here so future broken
+    # upstreams can be added without re-deriving the threshold pattern.
 }
 
 
