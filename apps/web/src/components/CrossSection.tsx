@@ -47,10 +47,13 @@ import { fetchElevation } from '@/lib/elevation';
 import { fetchGeology, type StratUnit } from '@/lib/macrostrat';
 import {
   bearingDeg,
-  distanceMeters,
-  interpolateLine,
-  polylineCrossings,
-  projectOntoLine,
+  interpolatePolyline,
+  lngLatAtDistance,
+  polylineCrossingsAll,
+  polylineLength,
+  polylineSegments,
+  projectOntoPolyline,
+  type PolylineSegment,
   type LngLat,
 } from '@/lib/section-math';
 import { COMMODITY_CATEGORY_COLORS } from '@subterra/shared';
@@ -131,8 +134,7 @@ function savePersistedPrefs(prefs: PersistedPrefs): void {
  *  by the Copy-citation button + stamped onto downloaded PNGs. Format
  *  is deliberately readable + machine-parseable without ceremony. */
 function buildCitation(opts: {
-  a: LngLat;
-  b: LngLat;
+  vertices: LngLat[];
   ve: number;
   bufferM: number;
   depthM: number;
@@ -144,8 +146,19 @@ function buildCitation(opts: {
   const bufMi = (opts.bufferM / 1609.34).toFixed(2);
   const depthKm = (opts.depthM / 1000).toFixed(1);
   const today = new Date().toISOString().slice(0, 10);
+  // Vertex chain — A → B for 2-vertex, A → … → C for 3+.
+  let chain: string;
+  if (opts.vertices.length === 2) {
+    chain = `A (${fmt(opts.vertices[0]!)}) → B (${fmt(opts.vertices[1]!)})`;
+  } else {
+    const first = fmt(opts.vertices[0]!);
+    const last = fmt(opts.vertices[opts.vertices.length - 1]!);
+    chain = `A (${first}) → ${opts.vertices.length - 2} bend${
+      opts.vertices.length - 2 === 1 ? '' : 's'
+    } → ${String.fromCharCode(65 + opts.vertices.length - 1)} (${last})`;
+  }
   return [
-    `Subterra cross-section A (${fmt(opts.a)}) → B (${fmt(opts.b)}).`,
+    `Subterra cross-section ${chain}.`,
     `${scale}, buffer ±${bufMi} mi, depth window ${depthKm} km.`,
     `Data: Macrostrat v2 (geology), USGS EPQS (topo), USGS Quaternary Faults,`,
     `BLM SMA / claims (federal). Generated ${today}. ${opts.url}`,
@@ -213,7 +226,10 @@ interface GeoSample {
 }
 
 interface FaultCrossing {
-  t: number; // fraction along AB
+  /** Distance along the polyline in meters from the first vertex.
+   *  Multi-segment-aware: a fault that wiggles can produce crossings
+   *  in multiple segments; each is recorded by its accumulated distance. */
+  distM: number;
   name: string;
   slipSense: string;
   slipRate: string;
@@ -259,8 +275,11 @@ export function CrossSection(props: CrossSectionProps) {
 }
 
 interface CrossSectionProps {
-  a: LngLat;
-  b: LngLat;
+  /** Polyline of 2+ pick vertices (A → B → C → …). A 2-vertex array
+   *  behaves identically to the prior single-segment A→B section.
+   *  3+ vertices render a bent-line section with each consecutive
+   *  pair forming a segment. */
+  vertices: LngLat[];
   mrds: CrossSectionMrds[];
   claims: CrossSectionClaim[];
   geochem: CrossSectionGeochem[];
@@ -313,8 +332,7 @@ class CrossSectionErrorBoundary extends Component<
 }
 
 function CrossSectionInner({
-  a,
-  b,
+  vertices: initialVertices,
   mrds,
   claims = [],
   geochem = [],
@@ -322,8 +340,7 @@ function CrossSectionInner({
   faults = [],
   onClose,
 }: {
-  a: LngLat;
-  b: LngLat;
+  vertices: LngLat[];
   mrds: CrossSectionMrds[];
   claims?: CrossSectionClaim[];
   geochem?: CrossSectionGeochem[];
@@ -331,10 +348,10 @@ function CrossSectionInner({
   faults?: CrossSectionFault[];
   onClose: () => void;
 }) {
-  // Reversible endpoints — local state so the modal can swap A/B
-  // without bouncing back to the caller. Caller passes the initial
-  // pair; we own subsequent ordering.
-  const [pair, setPair] = useState<{ a: LngLat; b: LngLat }>({ a, b });
+  // Local polyline state — own subsequent ordering so the Reverse
+  // button can flip the whole chain without bouncing back to the
+  // caller. Defaults to the caller-supplied vertices.
+  const [polyVertices, setPolyVertices] = useState<LngLat[]>(initialVertices);
   // Restore sticky toolbar settings from localStorage on first mount
   // so a user's preferred VE / buffer / depth carries between sessions.
   // Endpoints come from the caller and are NOT persisted.
@@ -354,8 +371,15 @@ function CrossSectionInner({
     savePersistedPrefs({ ve, bufferM, depthM, trueScale });
   }, [ve, bufferM, depthM, trueScale]);
 
-  const totalDistM = useMemo(() => distanceMeters(pair.a, pair.b), [pair]);
-  const bearing = useMemo(() => bearingDeg(pair.a, pair.b), [pair]);
+  const segments = useMemo(() => polylineSegments(polyVertices), [polyVertices]);
+  const totalDistM = useMemo(() => polylineLength(polyVertices), [polyVertices]);
+  // Header bearing = first segment. For 3+ vertex polylines, each
+  // segment has its own bearing; the stats callout shows a per-segment
+  // breakdown.
+  const bearing = useMemo(
+    () => (polyVertices.length >= 2 ? bearingDeg(polyVertices[0]!, polyVertices[1]!) : 0),
+    [polyVertices],
+  );
 
   const [elev, setElev] = useState<ElevSample[]>([]);
   const [geology, setGeology] = useState<GeoSample[]>([]);
@@ -366,11 +390,11 @@ function CrossSectionInner({
   const cancelRef = useRef(false);
   const svgRef = useRef<SVGSVGElement | null>(null);
 
-  // ─── projections (recompute when AB or buffer changes) ──────────
+  // ─── projections (recompute when the polyline or buffer changes) ──
   const projectedMrds: ProjectedMrds[] = useMemo(() => {
     const out: ProjectedMrds[] = [];
     for (const m of mrds) {
-      const proj = projectOntoLine([m.lng, m.lat], pair.a, pair.b);
+      const proj = projectOntoPolyline([m.lng, m.lat], polyVertices);
       if (proj.distanceFrom > bufferM) continue;
       const cat = commodityCategory(m.commodity);
       out.push({
@@ -384,13 +408,13 @@ function CrossSectionInner({
       });
     }
     return out.sort((x, y) => x.distM - y.distM);
-  }, [mrds, pair, bufferM]);
+  }, [mrds, polyVertices, bufferM]);
 
   const projectedClaims: ProjectedClaim[] = useMemo(() => {
     const out: ProjectedClaim[] = [];
     const seen = new Set<string>();
     for (const c of claims) {
-      const proj = projectOntoLine([c.lng, c.lat], pair.a, pair.b);
+      const proj = projectOntoPolyline([c.lng, c.lat], polyVertices);
       if (proj.distanceFrom > bufferM) continue;
       const key = c.serial ?? `${c.lng.toFixed(5)},${c.lat.toFixed(5)}`;
       if (seen.has(key)) continue;
@@ -404,12 +428,12 @@ function CrossSectionInner({
       });
     }
     return out.sort((x, y) => x.distM - y.distM);
-  }, [claims, pair, bufferM]);
+  }, [claims, polyVertices, bufferM]);
 
   const projectedGeochem: ProjectedGeochem[] = useMemo(() => {
     const out: ProjectedGeochem[] = [];
     for (const g of geochem) {
-      const proj = projectOntoLine([g.lng, g.lat], pair.a, pair.b);
+      const proj = projectOntoPolyline([g.lng, g.lat], polyVertices);
       if (proj.distanceFrom > bufferM) continue;
       out.push({
         distM: proj.distanceAlong,
@@ -419,24 +443,27 @@ function CrossSectionInner({
       });
     }
     return out;
-  }, [geochem, pair, bufferM]);
+  }, [geochem, polyVertices, bufferM]);
 
   // Agencies are sampled along the line at 60 evenly-spaced points
-  // — they're large polygons so per-sample lookup beats projecting
-  // every supplied centroid.
-  const agencyStrip = useMemo(() => buildAgencyStrip(pair.a, pair.b, agencies, totalDistM), [
-    agencies, pair, totalDistM,
+  // (distributed across polyline segments by length) — they're large
+  // polygons so per-sample lookup beats projecting every supplied
+  // centroid.
+  const agencyStrip = useMemo(() => buildAgencyStrip(polyVertices, agencies, totalDistM), [
+    agencies, polyVertices, totalDistM,
   ]);
 
-  // Fault crossings — exact polyline∩AB intersections (no buffer:
-  // a fault either crosses the section plane or it doesn't).
+  // Fault crossings — exact polyline∩section intersections (no buffer:
+  // a fault either crosses the section plane or it doesn't). Returns
+  // distance along the polyline in meters; downstream renders convert
+  // to a fraction of totalDistM for x-axis positioning.
   const faultCrossings: FaultCrossing[] = useMemo(() => {
     const out: FaultCrossing[] = [];
     for (const f of faults) {
-      const ts = polylineCrossings(pair.a, pair.b, f.coords);
-      for (const t of ts) {
+      const dists = polylineCrossingsAll(polyVertices, f.coords);
+      for (const distM of dists) {
         out.push({
-          t,
+          distM,
           name: f.name ?? '(unnamed fault)',
           slipSense: f.slipSense ?? '',
           slipRate: f.slipRate ?? '',
@@ -444,8 +471,8 @@ function CrossSectionInner({
         });
       }
     }
-    return out.sort((x, y) => x.t - y.t);
-  }, [faults, pair]);
+    return out.sort((x, y) => x.distM - y.distM);
+  }, [faults, polyVertices]);
 
   // ─── data fetching (re-runs only when AB actually changes) ──────
   useEffect(() => {
@@ -459,8 +486,8 @@ function CrossSectionInner({
       && window.matchMedia('(max-width: 640px)').matches;
     const elevSamples = narrow ? ELEV_SAMPLES_MOBILE : ELEV_SAMPLES_DESKTOP;
     const geoSamples = narrow ? GEOLOGY_SAMPLES_MOBILE : GEOLOGY_SAMPLES_DESKTOP;
-    const ePts = interpolateLine(pair.a, pair.b, elevSamples);
-    const gPts = interpolateLine(pair.a, pair.b, geoSamples);
+    const ePts = interpolatePolyline(polyVertices, elevSamples);
+    const gPts = interpolatePolyline(polyVertices, geoSamples);
 
     void Promise.allSettled(ePts.map((p) => fetchElevation(p[0], p[1]))).then((settled) => {
       if (cancelRef.current) return;
@@ -503,7 +530,7 @@ function CrossSectionInner({
     return () => {
       cancelRef.current = true;
     };
-  }, [pair, totalDistM]);
+  }, [polyVertices, totalDistM]);
 
   // ESC closes.
   useEffect(() => {
@@ -517,7 +544,7 @@ function CrossSectionInner({
   const stats = useMemo(() => computeStats(elev), [elev]);
 
   const reverse = useCallback(() => {
-    setPair((p) => ({ a: p.b, b: p.a }));
+    setPolyVertices((v) => [...v].reverse());
   }, []);
 
   const downloadPng = useCallback(async () => {
@@ -533,8 +560,7 @@ function CrossSectionInner({
   const copyCitation = useCallback(async () => {
     const url = typeof window !== 'undefined' ? window.location.href : '';
     const text = buildCitation({
-      a: pair.a,
-      b: pair.b,
+      vertices: polyVertices,
       ve,
       bufferM,
       depthM,
@@ -550,7 +576,7 @@ function CrossSectionInner({
       // permission). Fall back to a prompt the user can copy manually.
       window.prompt('Copy this citation:', text);
     }
-  }, [pair, ve, bufferM, depthM, trueScale]);
+  }, [polyVertices, ve, bufferM, depthM, trueScale]);
 
   return (
     <div
@@ -580,8 +606,7 @@ function CrossSectionInner({
         <Header
           totalDistM={totalDistM}
           bearing={bearing}
-          a={pair.a}
-          b={pair.b}
+          vertices={polyVertices}
           onClose={onClose}
           onReverse={reverse}
           onDownload={downloadPng}
@@ -616,8 +641,8 @@ function CrossSectionInner({
           ) : (
             <SectionSvg
               svgRef={svgRef}
-              a={pair.a}
-              b={pair.b}
+              vertices={polyVertices}
+              segments={segments}
               totalDistM={totalDistM}
               bearing={bearing}
               elev={elev}
@@ -633,8 +658,7 @@ function CrossSectionInner({
               depthM={depthM}
               trueScale={trueScale}
               citationText={buildCitation({
-                a: pair.a,
-                b: pair.b,
+                vertices: polyVertices,
                 ve,
                 bufferM,
                 depthM,
@@ -663,8 +687,7 @@ function CrossSectionInner({
 function Header({
   totalDistM,
   bearing,
-  a,
-  b,
+  vertices,
   onClose,
   onReverse,
   onDownload,
@@ -673,8 +696,7 @@ function Header({
 }: {
   totalDistM: number;
   bearing: number;
-  a: LngLat;
-  b: LngLat;
+  vertices: LngLat[];
   onClose: () => void;
   onReverse: () => void;
   onDownload: () => void;
@@ -682,6 +704,14 @@ function Header({
   citationCopied: boolean;
 }) {
   const lengthMi = totalDistM / 1609.34;
+  // Vertex letters: A, B, C, ... — first + last get linked buttons;
+  // intermediate bends are summarized as "+ N bends" to keep the
+  // header compact.
+  const first = vertices[0];
+  const last = vertices[vertices.length - 1];
+  const intermediateCount = Math.max(0, vertices.length - 2);
+  const firstLetter = 'A';
+  const lastLetter = String.fromCharCode(65 + vertices.length - 1);
   return (
     <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-2.5 font-mono text-[11px]">
       <div className="flex items-center gap-3 text-text">
@@ -689,33 +719,38 @@ function Header({
         <span className="text-text-muted">
           {(totalDistM / 1000).toFixed(2)} km · {lengthMi.toFixed(2)} mi · bearing{' '}
           {bearing.toFixed(0)}° {compassFromDeg(bearing)}
+          {intermediateCount > 0 && ` · +${intermediateCount} bend${intermediateCount === 1 ? '' : 's'}`}
         </span>
       </div>
       <div className="flex items-center gap-1.5">
-        <a
-          href={`https://www.google.com/maps?q=${a[1]},${a[0]}`}
-          target="_blank"
-          rel="noreferrer"
-          className="rounded border border-border bg-bg-panel px-2 py-1 text-text-muted hover:border-accent hover:text-accent"
-          title={`A: ${a[1].toFixed(5)}, ${a[0].toFixed(5)} — open in Google Maps`}
-        >
-          A ↗
-        </a>
-        <a
-          href={`https://www.google.com/maps?q=${b[1]},${b[0]}`}
-          target="_blank"
-          rel="noreferrer"
-          className="rounded border border-border bg-bg-panel px-2 py-1 text-text-muted hover:border-accent hover:text-accent"
-          title={`B: ${b[1].toFixed(5)}, ${b[0].toFixed(5)} — open in Google Maps`}
-        >
-          B ↗
-        </a>
+        {first && (
+          <a
+            href={`https://www.google.com/maps?q=${first[1]},${first[0]}`}
+            target="_blank"
+            rel="noreferrer"
+            className="rounded border border-border bg-bg-panel px-2 py-1 text-text-muted hover:border-accent hover:text-accent"
+            title={`${firstLetter}: ${first[1].toFixed(5)}, ${first[0].toFixed(5)} — open in Google Maps`}
+          >
+            {firstLetter} ↗
+          </a>
+        )}
+        {last && vertices.length > 1 && (
+          <a
+            href={`https://www.google.com/maps?q=${last[1]},${last[0]}`}
+            target="_blank"
+            rel="noreferrer"
+            className="rounded border border-border bg-bg-panel px-2 py-1 text-text-muted hover:border-accent hover:text-accent"
+            title={`${lastLetter}: ${last[1].toFixed(5)}, ${last[0].toFixed(5)} — open in Google Maps`}
+          >
+            {lastLetter} ↗
+          </a>
+        )}
         <button
           type="button"
           onClick={onReverse}
           data-testid="cs-reverse"
           className="rounded border border-border bg-bg-panel px-2 py-1 text-text-muted hover:border-accent hover:text-accent"
-          title="Swap A and B"
+          title="Reverse polyline (flip endpoint order)"
         >
           ⇄ reverse
         </button>
@@ -962,8 +997,8 @@ function Footer({
 
 function SectionSvg({
   svgRef,
-  a,
-  b,
+  vertices,
+  segments,
   totalDistM,
   bearing,
   elev,
@@ -981,8 +1016,8 @@ function SectionSvg({
   citationText,
 }: {
   svgRef: React.MutableRefObject<SVGSVGElement | null>;
-  a: LngLat;
-  b: LngLat;
+  vertices: LngLat[];
+  segments: PolylineSegment[];
   totalDistM: number;
   bearing: number;
   elev: ElevSample[];
@@ -1402,9 +1437,10 @@ function SectionSvg({
           INFERRED (not measured) when sense is known; this is
           documented in the hover tooltip. */}
       {faultCrossings.map((f, i) => {
-        const x = PADDING.l + f.t * innerW;
+        const tFrac = totalDistM > 0 ? f.distM / totalDistM : 0;
+        const x = PADDING.l + tFrac * innerW;
         const surfY = (() => {
-          const e = interpElev(elev, f.t * totalDistM);
+          const e = interpElev(elev, f.distM);
           return e != null ? yOf(e) : PADDING.t + 40;
         })();
         const style = faultStyle(f.slipSense);
@@ -1448,9 +1484,8 @@ function SectionSvg({
             />
             <a
               href={(() => {
-                const lng = a[0] + (b[0] - a[0]) * f.t;
-                const lat = a[1] + (b[1] - a[1]) * f.t;
-                return `https://usgs.maps.arcgis.com/apps/webappviewer/index.html?id=5a6038b3a1684561a9b0aadf88412fcf&center=${lng.toFixed(5)},${lat.toFixed(5)}&level=13`;
+                const { lngLat } = lngLatAtDistance(vertices, f.distM);
+                return `https://usgs.maps.arcgis.com/apps/webappviewer/index.html?id=5a6038b3a1684561a9b0aadf88412fcf&center=${lngLat[0].toFixed(5)},${lngLat[1].toFixed(5)}&level=13`;
               })()}
               target="_blank"
               rel="noreferrer"
@@ -1697,6 +1732,42 @@ function SectionSvg({
       >
         Elevation (m / ft)
       </text>
+
+      {/* ── polyline-vertex markers (bent-line sections only) ──
+          Each interior vertex (A=start and last=end excluded) gets a
+          subtle full-height dashed line plus a small letter label at
+          the top — gives the operator a clear visual cue of where the
+          section direction changes. */}
+      {segments.length > 1 && segments.slice(1).map((seg, i) => {
+        // seg.startOffsetM = distance along polyline at this vertex.
+        const x = xOf(seg.startOffsetM);
+        // i+1 → vertex letter B, C, D, ... (i=0 corresponds to vertex 1).
+        const letter = String.fromCharCode(65 + i + 1);
+        return (
+          <g key={`vert-${i}`} pointerEvents="none">
+            <line
+              x1={x}
+              y1={PADDING.t}
+              x2={x}
+              y2={topoBottomY}
+              stroke="#94a3b8"
+              strokeWidth={1}
+              strokeDasharray="2 4"
+              opacity={0.55}
+            />
+            <text
+              x={x}
+              y={PADDING.t - 4}
+              textAnchor="middle"
+              fontFamily="ui-monospace, monospace"
+              fontSize={9}
+              fill="#94a3b8"
+            >
+              {`${letter} · bearing ${Math.round(seg.bearingDeg)}°`}
+            </text>
+          </g>
+        );
+      })}
 
       {/* ── x-axis ticks (km + mi) ── */}
       {xTicks.map((d) => {
@@ -2307,14 +2378,13 @@ const AGENCY_COLORS: Record<string, string> = {
  *  one to each sample point on the line. Coarse but sufficient at
  *  the SVG scale we're rendering. */
 function buildAgencyStrip(
-  a: LngLat,
-  b: LngLat,
+  vertices: LngLat[],
   agencies: CrossSectionAgency[],
   totalDistM: number,
 ): AgencySegment[] {
-  if (agencies.length === 0 || totalDistM <= 0) return [];
+  if (agencies.length === 0 || totalDistM <= 0 || vertices.length < 2) return [];
   const N = 60;
-  const pts = interpolateLine(a, b, N);
+  const pts = interpolatePolyline(vertices, N);
   const samples: Array<{ distM: number; agency: string; name: string }> = [];
   for (let i = 0; i <= N; i++) {
     const p = pts[i]!;

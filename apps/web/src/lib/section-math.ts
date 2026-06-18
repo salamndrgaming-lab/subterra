@@ -162,3 +162,164 @@ export function polylineCrossings(a: LngLat, b: LngLat, line: LngLat[]): number[
   }
   return out.sort((x, y) => x - y);
 }
+
+// ─── Multi-segment (polyline) section helpers ───────────────────────
+//
+// For bent-line cross-sections (3+ vertices), every helper above
+// operates on a single A→B segment. The polyline equivalents below
+// concatenate per-segment results into a single 1-D coordinate space
+// where 0 is the first vertex and `totalLength` is the last vertex.
+// All distances/projections are in that unrolled coordinate space.
+
+/** Per-segment metadata for a polyline. */
+export interface PolylineSegment {
+  a: LngLat;
+  b: LngLat;
+  lengthM: number;
+  bearingDeg: number;
+  /** Distance from the polyline's first vertex to this segment's start
+   *  (the cumulative length of all preceding segments). */
+  startOffsetM: number;
+}
+
+/** Total length in meters of a polyline (chain of LngLat vertices). */
+export function polylineLength(vertices: LngLat[]): number {
+  let sum = 0;
+  for (let i = 0; i + 1 < vertices.length; i++) {
+    sum += distanceMeters(vertices[i]!, vertices[i + 1]!);
+  }
+  return sum;
+}
+
+/** Per-segment {a, b, lengthM, bearingDeg, startOffsetM}. Empty when
+ *  fewer than 2 vertices. Use as the canonical "unrolled" coordinate
+ *  basis for everything else. */
+export function polylineSegments(vertices: LngLat[]): PolylineSegment[] {
+  const out: PolylineSegment[] = [];
+  let acc = 0;
+  for (let i = 0; i + 1 < vertices.length; i++) {
+    const a = vertices[i]!;
+    const b = vertices[i + 1]!;
+    const lengthM = distanceMeters(a, b);
+    out.push({
+      a,
+      b,
+      lengthM,
+      bearingDeg: bearingDeg(a, b),
+      startOffsetM: acc,
+    });
+    acc += lengthM;
+  }
+  return out;
+}
+
+/** N+1 evenly-spaced points along the polyline, inclusive of both
+ *  endpoints. Distributes by length so each point's "distance along"
+ *  is i * totalLength / n. Falls back to interpolateLine(a, b, n) for
+ *  the degenerate 2-vertex case so callers can use the polyline
+ *  variant uniformly without paying a perf cost. */
+export function interpolatePolyline(vertices: LngLat[], n: number): LngLat[] {
+  if (n < 1) throw new Error('interpolatePolyline requires n >= 1');
+  if (vertices.length < 2) throw new Error('interpolatePolyline requires >= 2 vertices');
+  if (vertices.length === 2) return interpolateLine(vertices[0]!, vertices[1]!, n);
+  const segs = polylineSegments(vertices);
+  const total = segs[segs.length - 1]!.startOffsetM + segs[segs.length - 1]!.lengthM;
+  const out: LngLat[] = [];
+  let segIdx = 0;
+  for (let i = 0; i <= n; i++) {
+    const targetDist = (i / n) * total;
+    // Advance to the segment containing targetDist.
+    while (segIdx + 1 < segs.length && targetDist > segs[segIdx]!.startOffsetM + segs[segIdx]!.lengthM) {
+      segIdx++;
+    }
+    const seg = segs[segIdx]!;
+    const tLocal = seg.lengthM > 0 ? (targetDist - seg.startOffsetM) / seg.lengthM : 0;
+    out.push([
+      seg.a[0] + (seg.b[0] - seg.a[0]) * tLocal,
+      seg.a[1] + (seg.b[1] - seg.a[1]) * tLocal,
+    ]);
+  }
+  return out;
+}
+
+/** Project point p onto a polyline. Returns the best (smallest
+ *  perpendicular distance) projection across all segments, with the
+ *  along-polyline distance accumulated correctly. */
+export function projectOntoPolyline(
+  p: LngLat,
+  vertices: LngLat[],
+): { distanceAlong: number; distanceFrom: number; segmentIndex: number; t: number } {
+  if (vertices.length < 2) {
+    return { distanceAlong: 0, distanceFrom: Infinity, segmentIndex: 0, t: 0 };
+  }
+  if (vertices.length === 2) {
+    const r = projectOntoLine(p, vertices[0]!, vertices[1]!);
+    return { distanceAlong: r.distanceAlong, distanceFrom: r.distanceFrom, segmentIndex: 0, t: r.t };
+  }
+  const segs = polylineSegments(vertices);
+  let best = {
+    distanceAlong: 0,
+    distanceFrom: Infinity,
+    segmentIndex: 0,
+    t: 0,
+  };
+  for (let i = 0; i < segs.length; i++) {
+    const seg = segs[i]!;
+    const r = projectOntoLine(p, seg.a, seg.b);
+    if (r.distanceFrom < best.distanceFrom) {
+      best = {
+        distanceAlong: seg.startOffsetM + r.distanceAlong,
+        distanceFrom: r.distanceFrom,
+        segmentIndex: i,
+        t: r.t,
+      };
+    }
+  }
+  return best;
+}
+
+/** Fault-trace crossings against a polyline. Returns distances along
+ *  the polyline (meters from the first vertex), sorted ascending. */
+export function polylineCrossingsAll(vertices: LngLat[], faultLine: LngLat[]): number[] {
+  if (vertices.length < 2) return [];
+  const segs = polylineSegments(vertices);
+  const out: number[] = [];
+  for (const seg of segs) {
+    for (let i = 0; i + 1 < faultLine.length; i++) {
+      const hit = segmentIntersection(seg.a, seg.b, faultLine[i]!, faultLine[i + 1]!);
+      if (!hit) continue;
+      const { distanceAlong } = projectOntoLine(hit, seg.a, seg.b);
+      out.push(seg.startOffsetM + distanceAlong);
+    }
+  }
+  return out.sort((x, y) => x - y);
+}
+
+/** Given a distance along the polyline, return the LngLat at that
+ *  point + which segment it falls on. Used to deep-link to fault
+ *  midpoints, render endpoint markers, etc. */
+export function lngLatAtDistance(
+  vertices: LngLat[],
+  distM: number,
+): { lngLat: LngLat; segmentIndex: number } {
+  if (vertices.length < 2) {
+    return { lngLat: vertices[0] ?? [0, 0], segmentIndex: 0 };
+  }
+  const segs = polylineSegments(vertices);
+  for (let i = 0; i < segs.length; i++) {
+    const seg = segs[i]!;
+    if (distM <= seg.startOffsetM + seg.lengthM || i === segs.length - 1) {
+      const tLocal = seg.lengthM > 0
+        ? Math.max(0, Math.min(1, (distM - seg.startOffsetM) / seg.lengthM))
+        : 0;
+      return {
+        lngLat: [
+          seg.a[0] + (seg.b[0] - seg.a[0]) * tLocal,
+          seg.a[1] + (seg.b[1] - seg.a[1]) * tLocal,
+        ],
+        segmentIndex: i,
+      };
+    }
+  }
+  return { lngLat: vertices[vertices.length - 1]!, segmentIndex: segs.length - 1 };
+}

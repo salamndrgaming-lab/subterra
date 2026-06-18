@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Link } from 'react-router-dom';
@@ -161,20 +161,22 @@ export function MapPage() {
   // the section URL self-contained: any visitor opening the link sees
   // the same A/B line with real topo + geology data.
   const initialCsFromUrl = useMemo(() => parseCsParam(), []);
-  const [csMode, setCsMode] = useState<'off' | 'pickingA' | 'pickingB' | 'open'>(
+  // Multi-segment cross-section state: polyline of N vertices (N >= 2).
+  // 2-vertex case behaves identically to the prior A→B section; 3+
+  // vertices render a bent-line section.
+  const [csMode, setCsMode] = useState<'off' | 'picking' | 'open'>(
     initialCsFromUrl ? 'open' : 'off',
   );
-  const [csA, setCsA] = useState<LngLat | null>(initialCsFromUrl?.a ?? null);
-  const [csB, setCsB] = useState<LngLat | null>(initialCsFromUrl?.b ?? null);
+  const [csVertices, setCsVertices] = useState<LngLat[]>(initialCsFromUrl ?? []);
   const [csMrds, setCsMrds] = useState<CrossSectionMrds[]>([]);
   const [csClaims, setCsClaims] = useState<CrossSectionClaim[]>([]);
   const [csGeochem, setCsGeochem] = useState<CrossSectionGeochem[]>([]);
   const [csAgencies, setCsAgencies] = useState<CrossSectionAgency[]>([]);
   const [csFaults, setCsFaults] = useState<CrossSectionFault[]>([]);
-  /** Mirror csMode + csA into refs so the mount-time click handler can
-   *  read the latest value without re-binding. */
-  const csModeRef = useRef<'off' | 'pickingA' | 'pickingB' | 'open'>('off');
-  const csARef = useRef<LngLat | null>(null);
+  /** Mirror csMode + csVertices into refs so the mount-time click
+   *  handler can read the latest values without re-binding. */
+  const csModeRef = useRef<'off' | 'picking' | 'open'>('off');
+  const csVerticesRef = useRef<LngLat[]>([]);
   /** Mobile sidebar: hidden by default on small screens, always visible
    *  on md+. Auto-closes when the user picks a search result or starts
    *  drawing so the map is unobstructed. */
@@ -338,158 +340,22 @@ export function MapPage() {
     const map = mapRef.current;
     if (!map) return;
     const onClick = (e: maplibregl.MapMouseEvent): void => {
-      // Cross-section picker intercepts feature clicks while picking
-      // points A and B. ESC clears the mode via the keydown effect below.
+      // Cross-section picker: each click while in 'picking' mode appends
+      // a vertex to the polyline. 2 vertices = a simple A→B section;
+      // 3+ = a bent-line section. The user finalizes via the "Done"
+      // button (or ESC to cancel) — see Map sidebar controls.
       const csCur = csModeRef.current;
-      if (csCur === 'pickingA') {
+      if (csCur === 'picking') {
         const p: LngLat = [e.lngLat.lng, e.lngLat.lat];
-        csARef.current = p;
-        setCsA(p);
-        setCsMode('pickingB');
-        csModeRef.current = 'pickingB';
+        const prev = csVerticesRef.current;
+        // Reject same-pixel duplicates so the SVG isn't degenerate.
+        const last = prev[prev.length - 1];
+        if (last && Math.abs(p[0] - last[0]) < 1e-6 && Math.abs(p[1] - last[1]) < 1e-6) return;
+        const next = [...prev, p];
+        csVerticesRef.current = next;
+        setCsVertices(next);
         return;
       }
-      if (csCur === 'pickingB') {
-        const aPt = csARef.current;
-        if (!aPt) {
-          setCsMode('off');
-          csModeRef.current = 'off';
-          return;
-        }
-        const bPt: LngLat = [e.lngLat.lng, e.lngLat.lat];
-        // Reject A==B (or near it — same pixel) so the SVG isn't degenerate.
-        if (Math.abs(bPt[0] - aPt[0]) < 1e-6 && Math.abs(bPt[1] - aPt[1]) < 1e-6) return;
-        setCsB(bPt);
-        // Sample MRDS within a generous queryRenderedFeatures rect over
-        // the bbox of AB (buffer-padded). projectOntoLine in the modal
-        // does the final distance-from-line filtering.
-        const padDeg = 0.05; // ~5 km at mid-latitudes — slop for the buffer
-        const bbox: [maplibregl.PointLike, maplibregl.PointLike] = [
-          map.project([Math.min(aPt[0], bPt[0]) - padDeg, Math.min(aPt[1], bPt[1]) - padDeg]),
-          map.project([Math.max(aPt[0], bPt[0]) + padDeg, Math.max(aPt[1], bPt[1]) + padDeg]),
-        ];
-        const mrdsHits = map.getLayer('mrds')
-          ? map.queryRenderedFeatures(bbox, { layers: ['mrds'] })
-          : [];
-        const mrdsSeen = new Set<string>();
-        const collected: CrossSectionMrds[] = [];
-        for (const h of mrdsHits) {
-          const attrs = (h.properties ?? {}) as Record<string, unknown>;
-          const key = String(attrs.dep_id ?? attrs.id ?? `${h.geometry.type}-${collected.length}`);
-          if (mrdsSeen.has(key)) continue;
-          mrdsSeen.add(key);
-          if (h.geometry.type !== 'Point') continue;
-          const coords = h.geometry.coordinates as [number, number];
-          collected.push({
-            lng: coords[0],
-            lat: coords[1],
-            name: String(attrs.name ?? attrs.site_name ?? '') || undefined,
-            commodity: String(attrs.commodity ?? '') || undefined,
-          });
-        }
-        setCsMrds(collected);
-
-        // Mining claims in the same bbox — projected to triangles
-        // above the topo line in the cross-section so the user sees
-        // competition without leaving the modal.
-        const claimHits = map.getLayer('mining-claims')
-          ? map.queryRenderedFeatures(bbox, { layers: ['mining-claims'] })
-          : [];
-        const claimSeen = new Set<string>();
-        const collectedClaims: CrossSectionClaim[] = [];
-        for (const h of claimHits) {
-          const attrs = (h.properties ?? {}) as Record<string, unknown>;
-          const serial = String(attrs.serial ?? '');
-          if (!serial || claimSeen.has(serial)) continue;
-          claimSeen.add(serial);
-          const c = polygonCentroid(h.geometry);
-          if (!c) continue;
-          collectedClaims.push({
-            lng: c[0],
-            lat: c[1],
-            serial,
-            claimant: String(attrs.claimant ?? '') || undefined,
-            acreage: String(attrs.acreage ?? '') || undefined,
-          });
-        }
-        setCsClaims(collectedClaims);
-
-        // Geochemistry points in the bbox — projected as anomaly
-        // markers above the topo line. May be empty if the layer
-        // hasn't been turned on yet.
-        const gcHits = map.getLayer('geochemistry')
-          ? map.queryRenderedFeatures(bbox, { layers: ['geochemistry'] })
-          : [];
-        const collectedGc: CrossSectionGeochem[] = [];
-        for (const h of gcHits) {
-          if (h.geometry.type !== 'Point') continue;
-          const attrs = (h.properties ?? {}) as Record<string, unknown>;
-          const coords = h.geometry.coordinates as [number, number];
-          const as = Number(attrs.as_ppm ?? attrs.as ?? NaN);
-          collectedGc.push({
-            lng: coords[0],
-            lat: coords[1],
-            asPpm: Number.isFinite(as) ? as : undefined,
-            element: String(attrs.element ?? 'As') || undefined,
-          });
-        }
-        setCsGeochem(collectedGc);
-
-        // Federal-lands polygon centroids in the bbox — the section
-        // uses these to color a surface-management strip beneath
-        // the geology band so stakeable BLM ground is visible at a
-        // glance even when the user hasn't toggled the layer on.
-        const flHits = map.getLayer('federal-lands')
-          ? map.queryRenderedFeatures(bbox, { layers: ['federal-lands'] })
-          : [];
-        const collectedAg: CrossSectionAgency[] = [];
-        const agSeen = new Set<string>();
-        for (const h of flHits) {
-          const attrs = (h.properties ?? {}) as Record<string, unknown>;
-          const c = polygonCentroid(h.geometry);
-          if (!c) continue;
-          const agency = String(attrs.agency ?? 'OTHER');
-          const name = String(attrs.name ?? '');
-          const key = `${agency}|${c[0].toFixed(4)},${c[1].toFixed(4)}`;
-          if (agSeen.has(key)) continue;
-          agSeen.add(key);
-          collectedAg.push({ lng: c[0], lat: c[1], agency, name: name || undefined });
-        }
-        setCsAgencies(collectedAg);
-
-        // Quaternary fault traces in the bbox — the modal computes the
-        // exact crossings with the AB line. LineString + MultiLineString
-        // both flatten to coordinate arrays.
-        const faultHits = map.getLayer('quaternary-faults')
-          ? map.queryRenderedFeatures(bbox, { layers: ['quaternary-faults'] })
-          : [];
-        const collectedFaults: CrossSectionFault[] = [];
-        for (const h of faultHits) {
-          const attrs = (h.properties ?? {}) as Record<string, unknown>;
-          const lines: LngLat[][] =
-            h.geometry.type === 'LineString'
-              ? [h.geometry.coordinates as LngLat[]]
-              : h.geometry.type === 'MultiLineString'
-                ? (h.geometry.coordinates as LngLat[][])
-                : [];
-          for (const coords of lines) {
-            if (coords.length < 2) continue;
-            collectedFaults.push({
-              coords,
-              name: String(attrs.name ?? attrs.fault_name ?? '') || undefined,
-              slipSense: String(attrs.slip_sense ?? '') || undefined,
-              slipRate: String(attrs.slip_rate ?? '') || undefined,
-              age: String(attrs.age ?? '') || undefined,
-            });
-          }
-        }
-        setCsFaults(collectedFaults);
-
-        setCsMode('open');
-        csModeRef.current = 'open';
-        return;
-      }
-
       const liveLayerIds = LAYERS.map((l) => l.id).filter((id) => !!map.getLayer(id));
       const hits = map.queryRenderedFeatures(e.point, { layers: liveLayerIds });
 
@@ -566,6 +432,131 @@ export function MapPage() {
     return () => {
       map.off('click', onClick);
     };
+  }, []);
+
+  // Finalize an in-progress polyline pick: validate ≥2 vertices, then
+  // collect MRDS/claims/geochem/agencies/faults within the bbox of ALL
+  // vertices for the cross-section modal to project. Called from the
+  // "Done" button in the cross-section toolbar.
+  const finishCsPicking = useCallback(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const verts = csVerticesRef.current;
+    if (verts.length < 2) return; // no-op below the minimum
+    // bbox of all vertices, padded ~5 km for buffer slop.
+    const padDeg = 0.05;
+    const lngs = verts.map((v) => v[0]);
+    const lats = verts.map((v) => v[1]);
+    const bbox: [maplibregl.PointLike, maplibregl.PointLike] = [
+      map.project([Math.min(...lngs) - padDeg, Math.min(...lats) - padDeg]),
+      map.project([Math.max(...lngs) + padDeg, Math.max(...lats) + padDeg]),
+    ];
+    const mrdsHits = map.getLayer('mrds')
+      ? map.queryRenderedFeatures(bbox, { layers: ['mrds'] })
+      : [];
+    const mrdsSeen = new Set<string>();
+    const collected: CrossSectionMrds[] = [];
+    for (const h of mrdsHits) {
+      const attrs = (h.properties ?? {}) as Record<string, unknown>;
+      const key = String(attrs.dep_id ?? attrs.id ?? `${h.geometry.type}-${collected.length}`);
+      if (mrdsSeen.has(key)) continue;
+      mrdsSeen.add(key);
+      if (h.geometry.type !== 'Point') continue;
+      const coords = h.geometry.coordinates as [number, number];
+      collected.push({
+        lng: coords[0],
+        lat: coords[1],
+        name: String(attrs.name ?? attrs.site_name ?? '') || undefined,
+        commodity: String(attrs.commodity ?? '') || undefined,
+      });
+    }
+    setCsMrds(collected);
+
+    const claimHits = map.getLayer('mining-claims')
+      ? map.queryRenderedFeatures(bbox, { layers: ['mining-claims'] })
+      : [];
+    const claimSeen = new Set<string>();
+    const collectedClaims: CrossSectionClaim[] = [];
+    for (const h of claimHits) {
+      const attrs = (h.properties ?? {}) as Record<string, unknown>;
+      const serial = String(attrs.serial ?? '');
+      if (!serial || claimSeen.has(serial)) continue;
+      claimSeen.add(serial);
+      const c = polygonCentroid(h.geometry);
+      if (!c) continue;
+      collectedClaims.push({
+        lng: c[0],
+        lat: c[1],
+        serial,
+        claimant: String(attrs.claimant ?? '') || undefined,
+        acreage: String(attrs.acreage ?? '') || undefined,
+      });
+    }
+    setCsClaims(collectedClaims);
+
+    const gcHits = map.getLayer('geochemistry')
+      ? map.queryRenderedFeatures(bbox, { layers: ['geochemistry'] })
+      : [];
+    const collectedGc: CrossSectionGeochem[] = [];
+    for (const h of gcHits) {
+      if (h.geometry.type !== 'Point') continue;
+      const attrs = (h.properties ?? {}) as Record<string, unknown>;
+      const coords = h.geometry.coordinates as [number, number];
+      const as = Number(attrs.as_ppm ?? attrs.as ?? NaN);
+      collectedGc.push({
+        lng: coords[0],
+        lat: coords[1],
+        asPpm: Number.isFinite(as) ? as : undefined,
+        element: String(attrs.element ?? 'As') || undefined,
+      });
+    }
+    setCsGeochem(collectedGc);
+
+    const flHits = map.getLayer('federal-lands')
+      ? map.queryRenderedFeatures(bbox, { layers: ['federal-lands'] })
+      : [];
+    const collectedAg: CrossSectionAgency[] = [];
+    const agSeen = new Set<string>();
+    for (const h of flHits) {
+      const attrs = (h.properties ?? {}) as Record<string, unknown>;
+      const c = polygonCentroid(h.geometry);
+      if (!c) continue;
+      const agency = String(attrs.agency ?? 'OTHER');
+      const name = String(attrs.name ?? '');
+      const key = `${agency}|${c[0].toFixed(4)},${c[1].toFixed(4)}`;
+      if (agSeen.has(key)) continue;
+      agSeen.add(key);
+      collectedAg.push({ lng: c[0], lat: c[1], agency, name: name || undefined });
+    }
+    setCsAgencies(collectedAg);
+
+    const faultHits = map.getLayer('quaternary-faults')
+      ? map.queryRenderedFeatures(bbox, { layers: ['quaternary-faults'] })
+      : [];
+    const collectedFaults: CrossSectionFault[] = [];
+    for (const h of faultHits) {
+      const attrs = (h.properties ?? {}) as Record<string, unknown>;
+      const lines: LngLat[][] =
+        h.geometry.type === 'LineString'
+          ? [h.geometry.coordinates as LngLat[]]
+          : h.geometry.type === 'MultiLineString'
+            ? (h.geometry.coordinates as LngLat[][])
+            : [];
+      for (const coords of lines) {
+        if (coords.length < 2) continue;
+        collectedFaults.push({
+          coords,
+          name: String(attrs.name ?? attrs.fault_name ?? '') || undefined,
+          slipSense: String(attrs.slip_sense ?? '') || undefined,
+          slipRate: String(attrs.slip_rate ?? '') || undefined,
+          age: String(attrs.age ?? '') || undefined,
+        });
+      }
+    }
+    setCsFaults(collectedFaults);
+
+    setCsMode('open');
+    csModeRef.current = 'open';
   }, []);
 
   // 2c. Imagery basemap toggle — setStyle swaps the basemap. The install
@@ -657,12 +648,12 @@ export function MapPage() {
   // Mirror the open cross-section into the URL as `?cs=...` for
   // shareability. Writes on open + endpoint change, clears on close.
   useEffect(() => {
-    if (csMode === 'open' && csA && csB) {
-      writeCsParam({ a: csA, b: csB });
+    if (csMode === 'open' && csVertices.length >= 2) {
+      writeCsParam(csVertices);
     } else if (csMode === 'off') {
       writeCsParam(null);
     }
-  }, [csMode, csA, csB]);
+  }, [csMode, csVertices]);
 
   // Cross-section: ESC cancels at any non-'off' state; sync csMode ref
   // for the click handler. The cursor effect uses the mode too — same
@@ -677,9 +668,8 @@ export function MapPage() {
       if (e.key === 'Escape') {
         setCsMode('off');
         csModeRef.current = 'off';
-        setCsA(null);
-        csARef.current = null;
-        setCsB(null);
+        setCsVertices([]);
+        csVerticesRef.current = [];
         setCsMrds([]);
         setCsClaims([]);
         setCsGeochem([]);
@@ -691,9 +681,9 @@ export function MapPage() {
     return () => document.removeEventListener('keydown', onKey);
   }, [csMode]);
 
-  // Temp AB-line map layer for visual feedback while picking + after
-  // capture. Uses a dedicated source ID; rebuilt on each csA/csB change
-  // and torn down when csMode returns to 'off'.
+  // Temp polyline map layer for visual feedback while picking + after
+  // capture. Uses a dedicated source ID; rebuilt on each csVertices
+  // change and torn down when csMode returns to 'off'.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -704,11 +694,16 @@ export function MapPage() {
         if (map.getLayer(`${SRC}-endpoints`)) map.removeLayer(`${SRC}-endpoints`);
         if (map.getSource(SRC)) map.removeSource(SRC);
       };
-      if (csMode === 'off' || !csA) {
+      if (csMode === 'off' || csVertices.length === 0) {
         removeAll();
         return;
       }
-      const lineCoords: LngLat[] = csB ? [csA, csB] : [csA, csA];
+      // Polyline through all vertices; the line needs >= 2 coords to
+      // render — duplicate the first vertex when there's only one
+      // (mid-pick state).
+      const lineCoords: LngLat[] = csVertices.length >= 2
+        ? csVertices
+        : [csVertices[0]!, csVertices[0]!];
       const data: GeoJSON.FeatureCollection = {
         type: 'FeatureCollection',
         features: [
@@ -717,7 +712,7 @@ export function MapPage() {
             geometry: { type: 'LineString', coordinates: lineCoords },
             properties: { kind: 'line' },
           },
-          ...[csA, csB].filter((p): p is LngLat => p != null).map((p) => ({
+          ...csVertices.map((p) => ({
             type: 'Feature' as const,
             geometry: { type: 'Point' as const, coordinates: p },
             properties: { kind: 'endpoint' },
@@ -756,13 +751,13 @@ export function MapPage() {
     };
     if (map.isStyleLoaded()) apply();
     else map.once('load', apply);
-  }, [csMode, csA, csB]);
+  }, [csMode, csVertices]);
 
   // Cursor cue while picking — crosshair through point-B click.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    if (csMode === 'pickingA' || csMode === 'pickingB') {
+    if (csMode === 'picking') {
       map.getCanvas().style.cursor = 'crosshair';
     } else if (drawMode !== 'drawing') {
       map.getCanvas().style.cursor = '';
@@ -1342,24 +1337,24 @@ export function MapPage() {
         />
         <CrossSectionControls
           mode={csMode}
+          vertexCount={csVertices.length}
           onStart={() => {
-            setCsA(null);
-            csARef.current = null;
-            setCsB(null);
+            setCsVertices([]);
+            csVerticesRef.current = [];
             setCsMrds([]);
             setCsClaims([]);
             setCsGeochem([]);
             setCsAgencies([]);
             setCsFaults([]);
-            setCsMode('pickingA');
-            csModeRef.current = 'pickingA';
+            setCsMode('picking');
+            csModeRef.current = 'picking';
           }}
+          onFinish={finishCsPicking}
           onCancel={() => {
             setCsMode('off');
             csModeRef.current = 'off';
-            setCsA(null);
-            csARef.current = null;
-            setCsB(null);
+            setCsVertices([]);
+            csVerticesRef.current = [];
             setCsMrds([]);
             setCsClaims([]);
             setCsGeochem([]);
@@ -1417,10 +1412,9 @@ export function MapPage() {
             }}
           />
         )}
-        {csMode === 'open' && csA && csB && (
+        {csMode === 'open' && csVertices.length >= 2 && (
           <CrossSection
-            a={csA}
-            b={csB}
+            vertices={csVertices}
             mrds={csMrds}
             claims={csClaims}
             geochem={csGeochem}
@@ -1429,9 +1423,8 @@ export function MapPage() {
             onClose={() => {
               setCsMode('off');
               csModeRef.current = 'off';
-              setCsA(null);
-              csARef.current = null;
-              setCsB(null);
+              setCsVertices([]);
+              csVerticesRef.current = [];
               setCsMrds([]);
               setCsClaims([]);
               setCsGeochem([]);
@@ -1783,14 +1776,26 @@ function ViewModeButton({
  *  Sits just below ViewModeControls (which is at top:3). */
 function CrossSectionControls({
   mode,
+  vertexCount,
   onStart,
+  onFinish,
   onCancel,
 }: {
-  mode: 'off' | 'pickingA' | 'pickingB' | 'open';
+  mode: 'off' | 'picking' | 'open';
+  vertexCount: number;
   onStart: () => void;
+  onFinish: () => void;
   onCancel: () => void;
 }) {
-  const picking = mode === 'pickingA' || mode === 'pickingB';
+  const picking = mode === 'picking';
+  // Letters A, B, C, … for vertex labels in the banner.
+  const nextLetter = String.fromCharCode(65 + vertexCount);
+  const lastLetter = vertexCount >= 1 ? String.fromCharCode(65 + vertexCount - 1) : '';
+  const banner = (() => {
+    if (vertexCount === 0) return 'Click point A';
+    if (vertexCount === 1) return 'Click point B (or ESC to cancel)';
+    return `Click point ${nextLetter} to bend the line, or Done to finish at ${lastLetter}`;
+  })();
   return (
     <div className="absolute left-3 top-14 z-10 flex items-center gap-2">
       <button
@@ -1798,7 +1803,7 @@ function CrossSectionControls({
         onClick={picking ? onCancel : onStart}
         data-testid="toggle-cross-section"
         data-mode={mode}
-        title={picking ? 'Cancel cross-section picking' : 'Click two points on the map to draw a cross-section'}
+        title={picking ? 'Cancel cross-section picking' : 'Click two or more points on the map to draw a cross-section (bent-line allowed)'}
         className={cn(
           'rounded-md border bg-bg-surface/90 px-2.5 py-1 font-mono text-[11px] shadow-lg backdrop-blur transition',
           picking
@@ -1809,12 +1814,25 @@ function CrossSectionControls({
         {picking ? 'Cancel section' : 'Cross-section'}
       </button>
       {picking && (
-        <span
-          data-testid="cs-picker-banner"
-          className="rounded-md border border-accent/40 bg-accent/10 px-2 py-1 font-mono text-[11px] text-accent shadow-lg backdrop-blur"
-        >
-          {mode === 'pickingA' ? 'Click point A' : 'Click point B (ESC to cancel)'}
-        </span>
+        <>
+          <span
+            data-testid="cs-picker-banner"
+            className="rounded-md border border-accent/40 bg-accent/10 px-2 py-1 font-mono text-[11px] text-accent shadow-lg backdrop-blur"
+          >
+            {banner}
+          </span>
+          {vertexCount >= 2 && (
+            <button
+              type="button"
+              onClick={onFinish}
+              data-testid="cs-picker-done"
+              title="Finish the section at the last picked point"
+              className="rounded-md border border-accent/60 bg-accent/20 px-2.5 py-1 font-mono text-[11px] text-accent shadow-lg backdrop-blur hover:bg-accent/30"
+            >
+              ✓ Done
+            </button>
+          )}
+        </>
       )}
     </div>
   );
@@ -3196,32 +3214,38 @@ function hotspotScoreColor(score: number): string {
  *  exactly once at mount in Map.tsx to restore a shared section.
  *  Returns null when the param is missing OR malformed — the user gets
  *  the normal map instead of an error. */
-function parseCsParam(): { a: LngLat; b: LngLat } | null {
+/** Parse the cross-section query param. Format: `?cs=lng1,lat1,lng2,lat2[,lng3,lat3,...]`.
+ *  Supports 2+ vertices (2 = single-segment A→B section, 3+ = bent-line
+ *  section). Returns null when the param is missing OR malformed — the
+ *  user gets the normal map instead of an error. */
+function parseCsParam(): LngLat[] | null {
   if (typeof window === 'undefined') return null;
   const raw = new URL(window.location.href).searchParams.get('cs');
   if (!raw) return null;
   const parts = raw.split(',').map((s) => Number(s.trim()));
-  if (parts.length < 4) return null;
-  const [lng1, lat1, lng2, lat2] = parts as [number, number, number, number];
-  if (![lng1, lat1, lng2, lat2].every((n) => Number.isFinite(n))) return null;
-  // Sanity bounds — protects against malformed URLs putting a section
-  // halfway across the antimeridian.
-  if (Math.abs(lat1) > 90 || Math.abs(lat2) > 90) return null;
-  if (Math.abs(lng1) > 180 || Math.abs(lng2) > 180) return null;
-  return { a: [lng1, lat1], b: [lng2, lat2] };
+  if (parts.length < 4 || parts.length % 2 !== 0) return null;
+  if (!parts.every((n) => Number.isFinite(n))) return null;
+  const out: LngLat[] = [];
+  for (let i = 0; i + 1 < parts.length; i += 2) {
+    const lng = parts[i]!;
+    const lat = parts[i + 1]!;
+    if (Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+    out.push([lng, lat]);
+  }
+  return out;
 }
 
 /** Write or clear the cross-section query param. Uses history.replaceState
  *  (not pushState) so the back button still navigates to the previous
  *  page rather than collecting a history entry per slider tweak. */
-function writeCsParam(pair: { a: LngLat; b: LngLat } | null): void {
+function writeCsParam(vertices: LngLat[] | null): void {
   if (typeof window === 'undefined') return;
   const url = new URL(window.location.href);
-  if (pair) {
+  if (vertices && vertices.length >= 2) {
     const fmt = (n: number) => n.toFixed(5);
     url.searchParams.set(
       'cs',
-      `${fmt(pair.a[0])},${fmt(pair.a[1])},${fmt(pair.b[0])},${fmt(pair.b[1])}`,
+      vertices.map((v) => `${fmt(v[0])},${fmt(v[1])}`).join(','),
     );
   } else {
     url.searchParams.delete('cs');
