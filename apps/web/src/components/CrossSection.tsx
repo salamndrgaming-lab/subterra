@@ -1766,6 +1766,24 @@ function SectionSvg({
         </g>
       )}
 
+      {/* ── side-panel: raw Macrostrat column at cursor ──
+          Desktop-only floating overlay on the right edge. Shows the
+          FULL stratigraphic column for the nearest geology sample to
+          the hover position (or to the section midpoint when no hover
+          is active). The cross-section's column blocks INTERPOLATE
+          between samples; this panel is the raw data feed so a reader
+          can see what we're working from. */}
+      {!compact && geology.length > 0 && (
+        <StratColumnPanel
+          geology={geology}
+          hoverDistM={hoverDist}
+          totalDistM={totalDistM}
+          W={W}
+          PADDING={PADDING}
+          innerH={innerH}
+        />
+      )}
+
       {/* ── citation stamp (bottom-right) ──
           Rendered as SVG text so it's captured by the PNG export.
           One short line per ~80 chars; the buildCitation() output is
@@ -1783,6 +1801,124 @@ function SectionSvg({
         ))}
       </g>
     </svg>
+  );
+}
+
+/** Floating side panel showing the FULL Macrostrat stratigraphic
+ *  column for the geology sample nearest the cursor. Rendered as an
+ *  SVG group anchored to the right edge of the chart so PNG exports
+ *  capture it. Desktop only — mobile is too narrow for a side rail. */
+function StratColumnPanel({
+  geology,
+  hoverDistM,
+  totalDistM,
+  W,
+  PADDING,
+  innerH,
+}: {
+  geology: GeoSample[];
+  hoverDistM: number | null;
+  totalDistM: number;
+  W: number;
+  PADDING: { l: number; r: number; t: number; b: number };
+  innerH: number;
+}) {
+  // Pick the sample nearest to the cursor distance. When no hover, use
+  // the section midpoint — guarantees the panel is always populated and
+  // the PNG export captures something useful.
+  const targetDistM = hoverDistM ?? totalDistM / 2;
+  let nearest: GeoSample | null = null;
+  let bestGap = Infinity;
+  for (const g of geology) {
+    const gap = Math.abs(g.distM - targetDistM);
+    if (gap < bestGap) {
+      bestGap = gap;
+      nearest = g;
+    }
+  }
+  if (!nearest || nearest.strat.length === 0) return null;
+
+  // Panel geometry — anchored to the right edge inside PADDING.r,
+  // floating in the upper-right of the chart.
+  const panelW = 170;
+  const panelX = W - PADDING.r - panelW - 6;
+  const panelY = PADDING.t + 56; // below the stats callout
+  const headerH = 22;
+  const maxBodyH = Math.min(420, innerH - 80);
+  // Equal-area bars by default; weight by thickness when available so
+  // the column visualizes proportionally.
+  const totalThick = nearest.strat.reduce((acc, u) => {
+    const t = typeof u.thicknessM === 'number' && u.thicknessM > 0 ? u.thicknessM : 50;
+    return acc + t;
+  }, 0);
+  const bodyH = maxBodyH;
+  let cum = 0;
+  const distKm = (nearest.distM / 1000).toFixed(2);
+
+  return (
+    <g
+      transform={`translate(${panelX}, ${panelY})`}
+      fontFamily="ui-monospace, monospace"
+      pointerEvents="none"
+    >
+      <rect
+        x={0}
+        y={0}
+        width={panelW}
+        height={headerH + bodyH}
+        rx={3}
+        fill="#0a0c10"
+        stroke="#1f2937"
+        strokeWidth={1}
+        opacity={0.94}
+      />
+      {/* Header */}
+      <text x={6} y={14} fontSize={9} fill="#94a3b8">
+        {strField('Column @ ') + distKm + ' km'}
+      </text>
+      {nearest.columnId != null && (
+        <text x={panelW - 6} y={14} textAnchor="end" fontSize={9} fill="#94a3b8">
+          {`#${nearest.columnId}`}
+        </text>
+      )}
+      <line x1={4} y1={headerH - 2} x2={panelW - 4} y2={headerH - 2} stroke="#1f2937" strokeWidth={0.6} />
+      {/* Units stack top → bottom */}
+      <g transform={`translate(0, ${headerH})`}>
+        {nearest.strat.map((u, i) => {
+          const thick = typeof u.thicknessM === 'number' && u.thicknessM > 0 ? u.thicknessM : 50;
+          const h = Math.max(2, (thick / totalThick) * bodyH);
+          const y = cum;
+          cum += h;
+          const fill = lithologyColor(u.lithology) ?? u.color ?? '#475569';
+          const showLabel = h > 9;
+          const name = strField(u.name) || '(unnamed)';
+          return (
+            <g key={`strat-${i}`}>
+              <rect
+                x={0}
+                y={y}
+                width={panelW}
+                height={h}
+                fill={fill}
+                opacity={0.85}
+                stroke="#0a0c10"
+                strokeWidth={0.4}
+              />
+              {showLabel && (
+                <text
+                  x={6}
+                  y={y + h / 2 + 3}
+                  fontSize={Math.min(9, Math.max(7, h - 2))}
+                  fill={contrastTextColor(fill)}
+                >
+                  {truncate(name, 22)}
+                </text>
+              )}
+            </g>
+          );
+        })}
+      </g>
+    </g>
   );
 }
 
