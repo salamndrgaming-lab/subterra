@@ -616,6 +616,8 @@ function CrossSectionInner({
           ) : (
             <SectionSvg
               svgRef={svgRef}
+              a={pair.a}
+              b={pair.b}
               totalDistM={totalDistM}
               bearing={bearing}
               elev={elev}
@@ -960,6 +962,8 @@ function Footer({
 
 function SectionSvg({
   svgRef,
+  a,
+  b,
   totalDistM,
   bearing,
   elev,
@@ -977,6 +981,8 @@ function SectionSvg({
   citationText,
 }: {
   svgRef: React.MutableRefObject<SVGSVGElement | null>;
+  a: LngLat;
+  b: LngLat;
   totalDistM: number;
   bearing: number;
   elev: ElevSample[];
@@ -1430,20 +1436,36 @@ function SectionSvg({
                   `${style.inferred ? ' (inferred from slip sense — true dip not in dataset)' : ''}`}
               </title>
             </line>
-            {/* surface tick + label */}
+            {/* surface tick + label (label is clickable → USGS Q-Faults
+                viewer centered on the fault's interpolated midpoint.
+                The USGS dataset doesn't carry a stable fault ID we can
+                deep-link to, so we point at the canonical web app at
+                the fault's coords and let the user identify it on the
+                interactive map). */}
             <polygon
               points={`${x - 5},${surfY - 9} ${x + 5},${surfY - 9} ${x},${surfY - 2}`}
               fill={style.color}
             />
-            <text
-              x={x + 4}
-              y={surfY - 14}
-              fontFamily="ui-monospace, monospace"
-              fontSize={9}
-              fill={style.color}
+            <a
+              href={(() => {
+                const lng = a[0] + (b[0] - a[0]) * f.t;
+                const lat = a[1] + (b[1] - a[1]) * f.t;
+                return `https://usgs.maps.arcgis.com/apps/webappviewer/index.html?id=5a6038b3a1684561a9b0aadf88412fcf&center=${lng.toFixed(5)},${lat.toFixed(5)}&level=13`;
+              })()}
+              target="_blank"
+              rel="noreferrer"
             >
-              {truncate(f.name, 26)}
-            </text>
+              <text
+                x={x + 4}
+                y={surfY - 14}
+                fontFamily="ui-monospace, monospace"
+                fontSize={9}
+                fill={style.color}
+                style={{ cursor: 'pointer', textDecoration: 'underline' }}
+              >
+                {truncate(strField(f.name) || '(unnamed fault)', 26)} ↗
+              </text>
+            </a>
           </g>
         );
       })}
