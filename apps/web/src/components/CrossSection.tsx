@@ -44,7 +44,7 @@ import { Component, useCallback, useEffect, useMemo, useRef, useState } from 're
 import type * as React from 'react';
 
 import { fetchElevation } from '@/lib/elevation';
-import { fetchGeology, type StratUnit } from '@/lib/macrostrat';
+import { columnViewerUrl, fetchGeology, type StratUnit } from '@/lib/macrostrat';
 import {
   bearingDeg,
   interpolatePolyline,
@@ -607,6 +607,150 @@ function CrossSectionInner({
     await svgToPngDownload(svg, `cross-section-${Date.now()}.png`);
   }, []);
 
+  // Download the section as a GeoJSON FeatureCollection — useful for
+  // re-opening in QGIS / ArcGIS Pro. Includes the polyline itself
+  // (LineString), every sampled elevation point, every sampled
+  // geology point, every projected MRDS / claim / geochem, and every
+  // fault crossing. Each feature has a `kind` property so the QGIS
+  // user can split by symbology.
+  const downloadGeoJson = useCallback(() => {
+    const features: Array<Record<string, unknown>> = [];
+    // 1. Polyline itself
+    features.push({
+      type: 'Feature',
+      geometry: { type: 'LineString', coordinates: polyVertices },
+      properties: {
+        kind: 'section_polyline',
+        totalDistM,
+        vertexCount: polyVertices.length,
+      },
+    });
+    // 2. Vertex markers (A, B, C, …)
+    polyVertices.forEach((v, i) => {
+      features.push({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: v },
+        properties: { kind: 'section_vertex', letter: String.fromCharCode(65 + i) },
+      });
+    });
+    // 3. Sampled elevation points (with distance + elev)
+    elev.forEach((e, i) => {
+      const { lngLat } = lngLatAtDistance(polyVertices, e.distM);
+      features.push({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: lngLat },
+        properties: {
+          kind: 'elev_sample',
+          index: i,
+          distM: e.distM,
+          elevM: e.elevM,
+        },
+      });
+    });
+    // 4. Sampled geology points (with column id + top unit name)
+    geology.forEach((g, i) => {
+      const { lngLat } = lngLatAtDistance(polyVertices, g.distM);
+      features.push({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: lngLat },
+        properties: {
+          kind: 'geo_sample',
+          index: i,
+          distM: g.distM,
+          columnId: g.columnId,
+          unitName: strField(g.label),
+          age: g.age,
+          lithology: g.lithology,
+          unitsCount: g.strat.length,
+        },
+      });
+    });
+    // 5. Projected MRDS / claims / geochem (in section-coordinate space)
+    projectedMrds.forEach((m) => {
+      const { lngLat } = lngLatAtDistance(polyVertices, m.distM);
+      features.push({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: lngLat },
+        properties: {
+          kind: 'mrds_projection',
+          distM: m.distM,
+          distFromLineM: m.distFromLineM,
+          name: m.name,
+          commodity: m.commodity,
+          category: m.category,
+        },
+      });
+    });
+    projectedClaims.forEach((c) => {
+      const { lngLat } = lngLatAtDistance(polyVertices, c.distM);
+      features.push({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: lngLat },
+        properties: {
+          kind: 'claim_projection',
+          distM: c.distM,
+          distFromLineM: c.distFromLineM,
+          serial: c.serial,
+          claimant: c.claimant,
+          acreage: c.acreage,
+        },
+      });
+    });
+    projectedGeochem.forEach((g) => {
+      const { lngLat } = lngLatAtDistance(polyVertices, g.distM);
+      features.push({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: lngLat },
+        properties: {
+          kind: 'geochem_projection',
+          distM: g.distM,
+          distFromLineM: g.distFromLineM,
+          asPpm: g.asPpm,
+          element: g.element,
+        },
+      });
+    });
+    // 6. Fault crossings (with USGS deep-link URL embedded)
+    faultCrossings.forEach((f) => {
+      const { lngLat } = lngLatAtDistance(polyVertices, f.distM);
+      features.push({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: lngLat },
+        properties: {
+          kind: 'fault_crossing',
+          distM: f.distM,
+          name: f.name,
+          slipSense: f.slipSense,
+          slipRate: f.slipRate,
+          age: f.age,
+          usgsViewerUrl: `https://usgs.maps.arcgis.com/apps/webappviewer/index.html?id=5a6038b3a1684561a9b0aadf88412fcf&center=${lngLat[0].toFixed(5)},${lngLat[1].toFixed(5)}&level=13`,
+        },
+      });
+    });
+
+    const fc = {
+      type: 'FeatureCollection',
+      metadata: {
+        generator: 'Subterra cross-section',
+        generatedAt: new Date().toISOString(),
+        verticalExaggeration: trueScale ? 1 : ve,
+        bufferM,
+        depthM,
+        sourceUrl: typeof window !== 'undefined' ? window.location.href : '',
+      },
+      features,
+    };
+    const blob = new Blob([JSON.stringify(fc, null, 2)], { type: 'application/geo+json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `cross-section-${Date.now()}.geojson`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [polyVertices, totalDistM, elev, geology, projectedMrds, projectedClaims, projectedGeochem, faultCrossings, trueScale, ve, bufferM, depthM]);
+
   // Copy a plain-text citation block to the clipboard. Pairs with the
   // shareable `?cs=...` URL written by the Map route so the citation
   // contains a permalink that reproduces the exact section.
@@ -664,6 +808,7 @@ function CrossSectionInner({
           onClose={onClose}
           onReverse={reverse}
           onDownload={downloadPng}
+          onDownloadGeoJson={downloadGeoJson}
           onCopyCitation={copyCitation}
           citationCopied={citationCopied}
         />
@@ -747,6 +892,7 @@ function Header({
   onClose,
   onReverse,
   onDownload,
+  onDownloadGeoJson,
   onCopyCitation,
   citationCopied,
 }: {
@@ -756,6 +902,7 @@ function Header({
   onClose: () => void;
   onReverse: () => void;
   onDownload: () => void;
+  onDownloadGeoJson: () => void;
   onCopyCitation: () => void;
   citationCopied: boolean;
 }) {
@@ -818,6 +965,15 @@ function Header({
           title="Download the cross-section as a PNG"
         >
           ⬇ png
+        </button>
+        <button
+          type="button"
+          onClick={onDownloadGeoJson}
+          data-testid="cs-download-geojson"
+          className="rounded border border-border bg-bg-panel px-2 py-1 text-text-muted hover:border-accent hover:text-accent"
+          title="Download the section as GeoJSON — opens cleanly in QGIS / ArcGIS Pro for downstream analysis"
+        >
+          ⬇ geojson
         </button>
         <button
           type="button"
@@ -1530,6 +1686,29 @@ function SectionSvg({
                   strokeDasharray="6 4"
                   opacity={0.9}
                 />
+              )}
+              {/* Macrostrat column deep-link badge — only on real
+                  columns (positive id), not synthesized fallback
+                  blocks (negative id from the surface-unit fallback).
+                  Gated on width so it doesn't overflow narrow blocks. */}
+              {block.columnId != null && block.columnId > 0 && w > 56 && (
+                <a
+                  href={columnViewerUrl(block.columnId)}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <text
+                    x={x0 + w - 4}
+                    y={topoBottomY - 4}
+                    textAnchor="end"
+                    fontFamily="ui-monospace, monospace"
+                    fontSize={8}
+                    fill="#94a3b8"
+                    style={{ cursor: 'pointer', textDecoration: 'underline' }}
+                  >
+                    #{block.columnId} ↗
+                  </text>
+                </a>
               )}
             </g>
           );

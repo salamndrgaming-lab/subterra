@@ -226,3 +226,11 @@ async function fetchColumnUnits(columnId: number): Promise<StratUnit[]> {
 export function columnImageUrl(columnId: number): string {
   return `https://macrostrat.org/api/v2/columns/${columnId}/image?width=180`;
 }
+
+/** Deep-link to Macrostrat's interactive column viewer for a column
+ *  id — shows the full column with every formation, age, lithology,
+ *  thickness, and source citation. Opens in a new tab from the
+ *  cross-section column blocks. */
+export function columnViewerUrl(columnId: number): string {
+  return `https://macrostrat.org/sift/#/column/${columnId}`;
+}
