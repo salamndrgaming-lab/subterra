@@ -391,9 +391,14 @@ function CrossSectionInner({
   // rate-limited or temporarily down). Track success/failure counts so
   // the footer can surface "Macrostrat unreachable" instead of just
   // showing an empty section that looks like "no data here".
-  const [geoFetchStats, setGeoFetchStats] = useState<{ ok: number; failed: number }>({
+  const [geoFetchStats, setGeoFetchStats] = useState<{
+    ok: number;
+    failed: number;
+    withColumn: number;
+  }>({
     ok: 0,
     failed: 0,
+    withColumn: 0,
   });
   // Bumped to re-trigger the data-fetch effect when the user clicks
   // "Retry" — separate from polyline/vertex changes so we can refetch
@@ -516,6 +521,16 @@ function CrossSectionInner({
       if (cancelRef.current) return;
       let okCount = 0;
       let failCount = 0;
+      let withColumnCount = 0;
+      // String hash → negative integer, used as a synthetic columnId
+      // when Macrostrat has no real column for a sample (so consecutive
+      // same-surface-unit samples still group into a single column
+      // block in buildColumnBlocks instead of getting silently dropped).
+      const synthId = (s: string): number => {
+        let h = 0;
+        for (let j = 0; j < s.length; j++) h = ((h << 5) - h + s.charCodeAt(j)) | 0;
+        return -(Math.abs(h) || 1);
+      };
       const out: GeoSample[] = settled.map((s, i) => {
         const t = i / geoSamples;
         let color = '#475569';
@@ -535,13 +550,34 @@ function CrossSectionInner({
           }
           columnId = s.value.columnId;
           strat = s.value.strat;
+          if (strat.length > 0) {
+            withColumnCount++;
+          } else if (top) {
+            // Synthesize a "shallow stratigraphy" placeholder from the
+            // SURFACE map unit when no real Macrostrat column exists
+            // for this point (true for most of the western US — columns
+            // are regional transects, not nationwide). The fake unit
+            // gets a 200 m default thickness and a stable synthetic
+            // columnId so consecutive same-unit samples coalesce into
+            // a visible block instead of disappearing. Disclaimer
+            // banner + footer pill flag this for the user.
+            const fakeName = strField(top.name) || strField(top.lithology) || 'unknown';
+            columnId = synthId(fakeName);
+            strat = [{
+              name: fakeName,
+              age: top.age ?? '',
+              thicknessM: 200,
+              color: top.color,
+              lithology: top.lithology,
+            }];
+          }
         } else {
           failCount++;
         }
         return { t, distM: t * totalDistM, color, label, age, lithology, columnId, strat };
       });
       setGeology(out);
-      setGeoFetchStats({ ok: okCount, failed: failCount });
+      setGeoFetchStats({ ok: okCount, failed: failCount, withColumn: withColumnCount });
       setLoading((p) => ({ ...p, geology: false }));
     });
 
@@ -907,9 +943,9 @@ function Toolbar({
  *  question "but how do you know unit X extends 8 km east?" — answer:
  *  we don't, and we're not claiming to. */
 function ContinuityDisclaimer() {
-  // Bumped suffix when the disclaimer wording changed. Users who
-  // dismissed v2 see v3 (uncertainty bands mentioned) once.
-  const KEY = 'subterra:cs:continuity-disclaimer-dismissed-v3';
+  // Bumped suffix when the disclaimer wording changed (surface-unit
+  // fallback for sections outside Macrostrat column coverage).
+  const KEY = 'subterra:cs:continuity-disclaimer-dismissed-v4';
   const [dismissed, setDismissed] = useState<boolean>(() => {
     if (typeof window === 'undefined') return true;
     return window.sessionStorage.getItem(KEY) === '1';
@@ -922,8 +958,10 @@ function ContinuityDisclaimer() {
         Hung-column section. Apparent dip computed from inter-column
         elevation differences (along-section component only). Fault dip
         inferred from slip-sense. Dashed-stripe overlay = Macrostrat
-        min-to-max thickness uncertainty. Lateral continuity between
-        columns is NOT interpolated — gaps mean the data ends.
+        min-to-max thickness uncertainty. Where no Macrostrat column
+        covers the section, a 200 m surface-unit fallback is shown;
+        the footer column-coverage badge tells you which spans are
+        real columns vs fallback.
       </span>
       <button
         type="button"
@@ -964,19 +1002,27 @@ function Footer({
   bufferM: number;
   stats: SectionStats;
   mrds: ProjectedMrds[];
-  geoFetchStats: { ok: number; failed: number };
+  geoFetchStats: { ok: number; failed: number; withColumn: number };
   onRetryGeology: () => void;
 }) {
   // Macrostrat fetch status: distinct from generic loading because
   // failures are silent (Promise.allSettled hides them). Visible
   // outcomes:
   //  - loading.geology=true            → "loading geology" amber pill
-  //  - !loading + 0 failed             → silent (everything fetched OK)
+  //  - !loading + 0 failed + 0 cols    → "surface-fallback (no Macrostrat
+  //                                       columns cover this section)"
+  //  - !loading + 0 failed + N cols    → "Macrostrat: N/M with column"
+  //                                       (silent when all OK to avoid noise)
   //  - !loading + failed > 0 + ok > 0  → "Macrostrat partial (N/M)"
   //  - !loading + failed > 0 + ok == 0 → "Macrostrat unreachable" + retry
   const total = geoFetchStats.ok + geoFetchStats.failed;
   const allFailed = !loading.geology && total > 0 && geoFetchStats.ok === 0;
   const partial = !loading.geology && geoFetchStats.failed > 0 && geoFetchStats.ok > 0;
+  const noColumns = !loading.geology && total > 0 && geoFetchStats.failed === 0 && geoFetchStats.withColumn === 0;
+  const partialColumns = !loading.geology
+    && geoFetchStats.failed === 0
+    && geoFetchStats.withColumn > 0
+    && geoFetchStats.withColumn < total;
   const commodityCounts = useMemo(() => {
     const out: Record<string, number> = {};
     for (const m of mrds) out[m.category] = (out[m.category] ?? 0) + 1;
@@ -1018,6 +1064,22 @@ function Footer({
               >
                 Retry
               </button>
+            </span>
+          )}
+          {noColumns && (
+            <span
+              className="text-amber-300"
+              title="Macrostrat columns are regional study transects, not nationwide. Pick a section near a Macrostrat-covered area (e.g. the Wasatch Front, the Front Range, the Grand Canyon) to see real subsurface columns. Surface-unit fallback shown."
+            >
+              · surface-unit fallback (0/{total} Macrostrat columns cover this section)
+            </span>
+          )}
+          {partialColumns && (
+            <span
+              className="text-text-muted"
+              title="Macrostrat column coverage is sparse here; surface-unit fallback fills the gaps."
+            >
+              · columns: {geoFetchStats.withColumn}/{total} · rest = surface-unit fallback
             </span>
           )}
         </div>
