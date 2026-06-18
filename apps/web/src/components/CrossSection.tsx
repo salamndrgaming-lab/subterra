@@ -170,6 +170,9 @@ export interface CrossSectionMrds {
   lat: number;
   name?: string;
   commodity?: string;
+  /** USGS MRDS `dep_id` — used to deep-link to the
+   *  show-mrds.php deposit-detail page from the section's MRDS dots. */
+  depId?: string;
 }
 
 export interface CrossSectionClaim {
@@ -247,6 +250,7 @@ interface ProjectedMrds extends ProjectedPoint {
   name: string;
   commodity: string;
   category: keyof typeof COMMODITY_CATEGORY_COLORS;
+  depId?: string;
 }
 
 interface ProjectedClaim extends ProjectedPoint {
@@ -422,6 +426,7 @@ function CrossSectionInner({
         rank: COMMODITY_RANK[cat] ?? 99,
         name: m.name ?? '(unnamed)',
         commodity: m.commodity ?? '',
+        depId: m.depId,
       });
     }
     return out.sort((x, y) => x.distM - y.distM);
@@ -873,6 +878,8 @@ function CrossSectionInner({
           bufferM={bufferM}
           stats={stats}
           mrds={projectedMrds}
+          faultCrossings={faultCrossings}
+          vertices={polyVertices}
           geoFetchStats={geoFetchStats}
           onRetryGeology={() => setRetryToken((n) => n + 1)}
         />
@@ -1151,6 +1158,8 @@ function Footer({
   bufferM,
   stats,
   mrds,
+  faultCrossings,
+  vertices,
   geoFetchStats,
   onRetryGeology,
 }: {
@@ -1158,6 +1167,8 @@ function Footer({
   bufferM: number;
   stats: SectionStats;
   mrds: ProjectedMrds[];
+  faultCrossings: FaultCrossing[];
+  vertices: LngLat[];
   geoFetchStats: { ok: number; failed: number; withColumn: number };
   onRetryGeology: () => void;
 }) {
@@ -1261,6 +1272,36 @@ function Footer({
           · Max slope <span className="text-text">{stats.maxSlopePct.toFixed(1)}%</span>
           · Avg elevation <span className="text-text">{Math.round(stats.meanElevM)} m</span>
           · Samples <span className="text-text">{stats.validSamples}/{stats.totalSamples}</span>
+        </div>
+      )}
+      {faultCrossings.length > 0 && (
+        // Faults legend — list every detected crossing with name +
+        // slip sense + age, each clickable to its USGS Q-Faults
+        // viewer link. Mirrors the commodity-counts row above but for
+        // structural geology. Sorted by distance along the polyline.
+        <div className="mt-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-1 border-t border-border/40 pt-1.5">
+          <span className="text-text-muted">
+            Faults ({faultCrossings.length}):
+          </span>
+          {faultCrossings.map((f, i) => {
+            const { lngLat } = lngLatAtDistance(vertices, f.distM);
+            const url = `https://usgs.maps.arcgis.com/apps/webappviewer/index.html?id=5a6038b3a1684561a9b0aadf88412fcf&center=${lngLat[0].toFixed(5)},${lngLat[1].toFixed(5)}&level=13`;
+            const sense = strField(f.slipSense) || 'unknown sense';
+            const name = truncate(strField(f.name) || '(unnamed)', 30);
+            const age = strField(f.age);
+            return (
+              <a
+                key={`fl-${i}`}
+                href={url}
+                target="_blank"
+                rel="noreferrer"
+                className="rounded border border-border/60 bg-bg-elevated/40 px-1.5 py-0.5 text-[10px] text-text hover:border-accent hover:text-accent"
+                title={`${strField(f.name) || '(unnamed)'} · ${sense}${age ? ` · ${age}` : ''}\nOpen in USGS Q-Faults viewer`}
+              >
+                {(f.distM / 1000).toFixed(1)} km · {name} ({sense}) ↗
+              </a>
+            );
+          })}
         </div>
       )}
     </footer>
@@ -1921,25 +1962,47 @@ function SectionSvg({
         );
       })}
 
-      {/* ── MRDS dots (on topo, sized by category rank) ── */}
+      {/* ── MRDS dots (on topo, sized by category rank) ──
+          When the MRDS feature carries a USGS dep_id, the dot is
+          wrapped in an <a> that deep-links to the show-mrds.php
+          deposit-detail page so an academic reviewer can verify the
+          deposit's full attributes (host rock, ore minerals, primary
+          reference, production history) in one click. */}
       {mrds.map((m, i) => {
         const cx = xOf(m.distM);
         const nearest = nearestSample(elev, m.distM);
         const cy = nearest?.elevM != null ? yOf(nearest.elevM) - 5 : PADDING.t + 28;
         const r = mrdsRadius(m.category);
+        const circle = (
+          <circle
+            cx={cx}
+            cy={cy}
+            r={r}
+            fill={m.color}
+            stroke="#f8fafc"
+            strokeWidth={0.7}
+            opacity={0.95}
+            style={m.depId ? { cursor: 'pointer' } : undefined}
+          >
+            <title>
+              {`${m.name} — ${m.commodity || 'commodity unknown'} (${(m.distFromLineM / 1609.34).toFixed(2)} mi off-line)` +
+                (m.depId ? '\nclick → open in USGS MRDS' : '')}
+            </title>
+          </circle>
+        );
         return (
           <g key={`mrds-${i}`}>
-            <circle
-              cx={cx}
-              cy={cy}
-              r={r}
-              fill={m.color}
-              stroke="#f8fafc"
-              strokeWidth={0.7}
-              opacity={0.95}
-            >
-              <title>{`${m.name} — ${m.commodity || 'commodity unknown'} (${(m.distFromLineM / 1609.34).toFixed(2)} mi off-line)`}</title>
-            </circle>
+            {m.depId ? (
+              <a
+                href={`https://mrdata.usgs.gov/mrds/show-mrds.php?dep_id=${encodeURIComponent(m.depId)}`}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {circle}
+              </a>
+            ) : (
+              circle
+            )}
           </g>
         );
       })}

@@ -463,11 +463,13 @@ export function MapPage() {
       mrdsSeen.add(key);
       if (h.geometry.type !== 'Point') continue;
       const coords = h.geometry.coordinates as [number, number];
+      const depId = String(attrs.dep_id ?? attrs.id ?? '').trim();
       collected.push({
         lng: coords[0],
         lat: coords[1],
         name: String(attrs.name ?? attrs.site_name ?? '') || undefined,
         commodity: String(attrs.commodity ?? '') || undefined,
+        depId: depId || undefined,
       });
     }
     setCsMrds(collected);
