@@ -387,6 +387,18 @@ function CrossSectionInner({
     elev: true,
     geology: true,
   });
+  // Macrostrat fetch can silently fail (free public API, occasionally
+  // rate-limited or temporarily down). Track success/failure counts so
+  // the footer can surface "Macrostrat unreachable" instead of just
+  // showing an empty section that looks like "no data here".
+  const [geoFetchStats, setGeoFetchStats] = useState<{ ok: number; failed: number }>({
+    ok: 0,
+    failed: 0,
+  });
+  // Bumped to re-trigger the data-fetch effect when the user clicks
+  // "Retry" — separate from polyline/vertex changes so we can refetch
+  // without re-projecting all the MRDS/claims data.
+  const [retryToken, setRetryToken] = useState(0);
   const cancelRef = useRef(false);
   const svgRef = useRef<SVGSVGElement | null>(null);
 
@@ -502,6 +514,8 @@ function CrossSectionInner({
 
     void Promise.allSettled(gPts.map((p) => fetchGeology(p[0], p[1]))).then((settled) => {
       if (cancelRef.current) return;
+      let okCount = 0;
+      let failCount = 0;
       const out: GeoSample[] = settled.map((s, i) => {
         const t = i / geoSamples;
         let color = '#475569';
@@ -511,6 +525,7 @@ function CrossSectionInner({
         let columnId: number | undefined;
         let strat: StratUnit[] = [];
         if (s.status === 'fulfilled') {
+          okCount++;
           const top = s.value.units[0];
           if (top) {
             color = top.color ?? '#475569';
@@ -520,17 +535,20 @@ function CrossSectionInner({
           }
           columnId = s.value.columnId;
           strat = s.value.strat;
+        } else {
+          failCount++;
         }
         return { t, distM: t * totalDistM, color, label, age, lithology, columnId, strat };
       });
       setGeology(out);
+      setGeoFetchStats({ ok: okCount, failed: failCount });
       setLoading((p) => ({ ...p, geology: false }));
     });
 
     return () => {
       cancelRef.current = true;
     };
-  }, [polyVertices, totalDistM]);
+  }, [polyVertices, totalDistM, retryToken]);
 
   // ESC closes.
   useEffect(() => {
@@ -674,6 +692,8 @@ function CrossSectionInner({
           bufferM={bufferM}
           stats={stats}
           mrds={projectedMrds}
+          geoFetchStats={geoFetchStats}
+          onRetryGeology={() => setRetryToken((n) => n + 1)}
         />
       </div>
     </div>
@@ -937,12 +957,26 @@ function Footer({
   bufferM,
   stats,
   mrds,
+  geoFetchStats,
+  onRetryGeology,
 }: {
   loading: { elev: boolean; geology: boolean };
   bufferM: number;
   stats: SectionStats;
   mrds: ProjectedMrds[];
+  geoFetchStats: { ok: number; failed: number };
+  onRetryGeology: () => void;
 }) {
+  // Macrostrat fetch status: distinct from generic loading because
+  // failures are silent (Promise.allSettled hides them). Visible
+  // outcomes:
+  //  - loading.geology=true            → "loading geology" amber pill
+  //  - !loading + 0 failed             → silent (everything fetched OK)
+  //  - !loading + failed > 0 + ok > 0  → "Macrostrat partial (N/M)"
+  //  - !loading + failed > 0 + ok == 0 → "Macrostrat unreachable" + retry
+  const total = geoFetchStats.ok + geoFetchStats.failed;
+  const allFailed = !loading.geology && total > 0 && geoFetchStats.ok === 0;
+  const partial = !loading.geology && geoFetchStats.failed > 0 && geoFetchStats.ok > 0;
   const commodityCounts = useMemo(() => {
     const out: Record<string, number> = {};
     for (const m of mrds) out[m.category] = (out[m.category] ?? 0) + 1;
@@ -960,6 +994,30 @@ function Footer({
             <span className="text-amber-300">
               {loading.elev ? '· loading elevation' : ''}
               {loading.geology ? '· loading geology' : ''}
+            </span>
+          )}
+          {allFailed && (
+            <span className="flex items-center gap-1.5 text-red-300">
+              · Macrostrat unreachable ({geoFetchStats.failed} fail)
+              <button
+                type="button"
+                onClick={onRetryGeology}
+                className="rounded border border-red-400/50 bg-red-500/10 px-1.5 py-0.5 text-[10px] text-red-200 hover:border-red-300 hover:text-red-100"
+              >
+                Retry
+              </button>
+            </span>
+          )}
+          {partial && (
+            <span className="flex items-center gap-1.5 text-amber-300">
+              · Macrostrat partial ({geoFetchStats.ok}/{total})
+              <button
+                type="button"
+                onClick={onRetryGeology}
+                className="rounded border border-amber-400/50 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-200 hover:border-amber-300 hover:text-amber-100"
+              >
+                Retry
+              </button>
             </span>
           )}
         </div>
