@@ -14,7 +14,7 @@ import {
   type SourceStatus,
 } from '@subterra/shared';
 import { cn } from '@/lib/cn';
-import { CrossSection, type CrossSectionAgency, type CrossSectionClaim, type CrossSectionFault, type CrossSectionGeochem, type CrossSectionMrds } from '@/components/CrossSection';
+import { CrossSection, type CrossSectionAgency, type CrossSectionClaim, type CrossSectionFault, type CrossSectionGeochem, type CrossSectionMrds, type CrossSectionWell } from '@/components/CrossSection';
 import { fetchManifest } from '@/lib/manifest';
 import { fetchMe, signOut } from '@/lib/auth';
 import { checkPmtilesCached, precachePmtiles } from '@/lib/sw';
@@ -173,10 +173,16 @@ export function MapPage() {
   const [csGeochem, setCsGeochem] = useState<CrossSectionGeochem[]>([]);
   const [csAgencies, setCsAgencies] = useState<CrossSectionAgency[]>([]);
   const [csFaults, setCsFaults] = useState<CrossSectionFault[]>([]);
+  const [csWells, setCsWells] = useState<CrossSectionWell[]>([]);
   /** Mirror csMode + csVertices into refs so the mount-time click
    *  handler can read the latest values without re-binding. */
   const csModeRef = useRef<'off' | 'picking' | 'open'>('off');
   const csVerticesRef = useRef<LngLat[]>([]);
+  /** Active snap target while picking — set by the mousemove handler
+   *  when the cursor is within ~12 px of a fault trace. The click
+   *  handler reads this ref and substitutes the snapped coord for the
+   *  raw click coord so vertices land exactly on the fault line. */
+  const csSnapRef = useRef<LngLat | null>(null);
   /** Mobile sidebar: hidden by default on small screens, always visible
    *  on md+. Auto-closes when the user picks a search result or starts
    *  drawing so the map is unobstructed. */
@@ -346,7 +352,13 @@ export function MapPage() {
       // button (or ESC to cancel) — see Map sidebar controls.
       const csCur = csModeRef.current;
       if (csCur === 'picking') {
-        const p: LngLat = [e.lngLat.lng, e.lngLat.lat];
+        // Snap-to-feature: if the mousemove handler stashed a snap
+        // candidate (within 12 px of a fault trace), use its coords
+        // instead of the raw click. This makes "click exactly on the
+        // Walker Lane fault" a one-pixel-tolerance operation instead
+        // of squinting at the cursor.
+        const snapped = csSnapRef.current;
+        const p: LngLat = snapped ?? [e.lngLat.lng, e.lngLat.lat];
         const prev = csVerticesRef.current;
         // Reject same-pixel duplicates so the SVG isn't degenerate.
         const last = prev[prev.length - 1];
@@ -557,6 +569,40 @@ export function MapPage() {
     }
     setCsFaults(collectedFaults);
 
+    // Wellbore laterals — line geometry, projected as drill traces
+    // wherever a lateral physically crosses the section line. Wells
+    // are an O&G-basin signal (Permian/Bakken/DJ); the layer may not
+    // exist on every install (gated on getLayer).
+    const wellHits = map.getLayer('well-laterals')
+      ? map.queryRenderedFeatures(bbox, { layers: ['well-laterals'] })
+      : [];
+    const wellSeen = new Set<string>();
+    const collectedWells: CrossSectionWell[] = [];
+    for (const h of wellHits) {
+      const attrs = (h.properties ?? {}) as Record<string, unknown>;
+      const lines: LngLat[][] =
+        h.geometry.type === 'LineString'
+          ? [h.geometry.coordinates as LngLat[]]
+          : h.geometry.type === 'MultiLineString'
+            ? (h.geometry.coordinates as LngLat[][])
+            : [];
+      const key = String(attrs.api ?? attrs.uwi ?? attrs.id ?? `${h.geometry.type}-${collectedWells.length}`);
+      if (wellSeen.has(key)) continue;
+      wellSeen.add(key);
+      const tvdRaw = Number(attrs.tvd_ft ?? attrs.tvd ?? attrs.true_vertical_depth ?? NaN);
+      for (const coords of lines) {
+        if (coords.length < 2) continue;
+        collectedWells.push({
+          coords,
+          name: String(attrs.name ?? attrs.well_name ?? attrs.api ?? '') || undefined,
+          operator: String(attrs.operator ?? '') || undefined,
+          tvdFt: Number.isFinite(tvdRaw) ? tvdRaw : undefined,
+          status: String(attrs.status ?? '') || undefined,
+        });
+      }
+    }
+    setCsWells(collectedWells);
+
     setCsMode('open');
     csModeRef.current = 'open';
   }, []);
@@ -765,6 +811,127 @@ export function MapPage() {
       map.getCanvas().style.cursor = '';
     }
   }, [csMode, drawMode]);
+
+  // Snap-to-feature: while picking, watch the cursor for proximity to
+  // any rendered fault trace. If within ~12 px, stash the closest
+  // point on the fault as the snap target — the click handler reads
+  // it and substitutes for the raw click coord. A small green pulse
+  // ring on the map (a dedicated geojson source) shows where the
+  // next click would land. Off-by-default; the user opts in by
+  // hovering near a fault line.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const SNAP_SRC = 'cs-snap-target';
+    const ensureSource = (): void => {
+      if (!map.getSource(SNAP_SRC)) {
+        map.addSource(SNAP_SRC, {
+          type: 'geojson',
+          data: { type: 'FeatureCollection', features: [] },
+        });
+        map.addLayer({
+          id: `${SNAP_SRC}-pulse`,
+          source: SNAP_SRC,
+          type: 'circle',
+          paint: {
+            'circle-radius': 7,
+            'circle-color': '#22c55e',
+            'circle-stroke-color': '#0a0c10',
+            'circle-stroke-width': 2,
+            'circle-opacity': 0.85,
+          },
+        });
+      }
+    };
+    const clearSnap = (): void => {
+      csSnapRef.current = null;
+      const src = map.getSource(SNAP_SRC) as maplibregl.GeoJSONSource | undefined;
+      if (src) src.setData({ type: 'FeatureCollection', features: [] });
+    };
+    const onMove = (e: maplibregl.MapMouseEvent): void => {
+      if (csModeRef.current !== 'picking') {
+        if (csSnapRef.current) clearSnap();
+        return;
+      }
+      // Look for fault features within a 12-px box around the cursor.
+      // queryRenderedFeatures handles tile-clipped geometry for us.
+      if (!map.getLayer('quaternary-faults')) {
+        if (csSnapRef.current) clearSnap();
+        return;
+      }
+      const radius = 12;
+      const bbox: [maplibregl.PointLike, maplibregl.PointLike] = [
+        [e.point.x - radius, e.point.y - radius],
+        [e.point.x + radius, e.point.y + radius],
+      ];
+      const hits = map.queryRenderedFeatures(bbox, { layers: ['quaternary-faults'] });
+      if (hits.length === 0) {
+        if (csSnapRef.current) clearSnap();
+        return;
+      }
+      // Find the actually-closest point on ANY hit's geometry to the
+      // cursor (in pixel space, to match the tolerance correctly).
+      const cursorPx = e.point;
+      let best: { lngLat: LngLat; pxDist: number } | null = null;
+      for (const h of hits) {
+        const lines: LngLat[][] =
+          h.geometry.type === 'LineString'
+            ? [h.geometry.coordinates as LngLat[]]
+            : h.geometry.type === 'MultiLineString'
+              ? (h.geometry.coordinates as LngLat[][])
+              : [];
+        for (const line of lines) {
+          for (let i = 0; i + 1 < line.length; i++) {
+            const a = line[i]!;
+            const b = line[i + 1]!;
+            // Project the cursor onto segment AB in pixel space.
+            const ap = map.project(a);
+            const bp = map.project(b);
+            const dx = bp.x - ap.x;
+            const dy = bp.y - ap.y;
+            const lenSq = dx * dx + dy * dy;
+            const t = lenSq === 0 ? 0 : Math.max(0, Math.min(1, ((cursorPx.x - ap.x) * dx + (cursorPx.y - ap.y) * dy) / lenSq));
+            const sx = ap.x + dx * t;
+            const sy = ap.y + dy * t;
+            const px = Math.hypot(cursorPx.x - sx, cursorPx.y - sy);
+            if (best == null || px < best.pxDist) {
+              const snapLngLat = map.unproject([sx, sy]);
+              best = { lngLat: [snapLngLat.lng, snapLngLat.lat], pxDist: px };
+            }
+          }
+        }
+      }
+      if (!best || best.pxDist > radius) {
+        if (csSnapRef.current) clearSnap();
+        return;
+      }
+      csSnapRef.current = best.lngLat;
+      ensureSource();
+      const src = map.getSource(SNAP_SRC) as maplibregl.GeoJSONSource | undefined;
+      if (src) {
+        src.setData({
+          type: 'FeatureCollection',
+          features: [{
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: best.lngLat },
+            properties: {},
+          }],
+        });
+      }
+    };
+    if (csMode === 'picking') {
+      map.on('mousemove', onMove);
+      ensureSource();
+    } else {
+      clearSnap();
+    }
+    return () => {
+      map.off('mousemove', onMove);
+      clearSnap();
+      if (map.getLayer(`${SNAP_SRC}-pulse`)) map.removeLayer(`${SNAP_SRC}-pulse`);
+      if (map.getSource(SNAP_SRC)) map.removeSource(SNAP_SRC);
+    };
+  }, [csMode]);
 
   const handleSaveForOffline = async (): Promise<void> => {
     const url = manifestQuery.data?.pmtilesUrl;
@@ -1348,6 +1515,7 @@ export function MapPage() {
             setCsGeochem([]);
             setCsAgencies([]);
             setCsFaults([]);
+            setCsWells([]);
             setCsMode('picking');
             csModeRef.current = 'picking';
           }}
@@ -1362,6 +1530,7 @@ export function MapPage() {
             setCsGeochem([]);
             setCsAgencies([]);
             setCsFaults([]);
+            setCsWells([]);
           }}
         />
         <AoiControls
@@ -1422,6 +1591,19 @@ export function MapPage() {
             geochem={csGeochem}
             agencies={csAgencies}
             faults={csFaults}
+            wells={csWells}
+            onReopen={(rv) => {
+              // Recents → "open" path. Close the modal, set the new
+              // vertices, and run the picker collection on the new
+              // bbox so MRDS/claims/geochem/agencies/faults/wells
+              // re-populate for the chosen section.
+              setCsVertices(rv);
+              csVerticesRef.current = rv;
+              // Defer one tick so the layer-rebuild effect (which
+              // depends on csVertices) repaints the picker line at the
+              // new location before we queryRenderedFeatures.
+              setTimeout(() => finishCsPicking(), 50);
+            }}
             onClose={() => {
               setCsMode('off');
               csModeRef.current = 'off';
@@ -1432,6 +1614,7 @@ export function MapPage() {
               setCsGeochem([]);
               setCsAgencies([]);
               setCsFaults([]);
+              setCsWells([]);
             }}
           />
         )}

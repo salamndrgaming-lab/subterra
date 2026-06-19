@@ -58,23 +58,23 @@ import {
 } from '@/lib/section-math';
 import { COMMODITY_CATEGORY_COLORS } from '@subterra/shared';
 
-// Sample counts. On narrow viewports we cut these roughly in half so
-// the SVG has fewer elements (~480 rects + labels for 24 columns; ~240
-// for 12). Heavy SVG renders on mobile compete with MapLibre for GPU
-// memory and have been observed to force a WebGL context loss on the
-// map canvas underneath — which read to the user as "the whole site
-// blacks out" because the modal backdrop was semi-transparent and the
-// dead map canvas showed through. The opaque mobile backdrop below
-// hides the map regardless; this just reduces the GPU pressure.
-const ELEV_SAMPLES_DESKTOP = 100;
-const ELEV_SAMPLES_MOBILE = 60;
-const GEOLOGY_SAMPLES_DESKTOP = 24;
-const GEOLOGY_SAMPLES_MOBILE = 14;
-// Default to the desktop values for code paths that run before the
-// per-instance `compact` flag is available (the loading-placeholder
-// label uses these; values are recomputed at fetch time).
-const ELEV_SAMPLES = ELEV_SAMPLES_DESKTOP;
-const GEOLOGY_SAMPLES = GEOLOGY_SAMPLES_DESKTOP;
+// Sample counts. The user-controllable Sample-density slider (Toolbar)
+// drives the active elevation sample count; geology samples derive from
+// it at ~1/4 the cadence so we don't hammer the Macrostrat API. The
+// constants below are the slider's bounds + the default on first open;
+// on narrow viewports we drop the default by ~40 % so the SVG has fewer
+// elements (heavy renders compete with MapLibre for GPU memory and have
+// been observed to force a WebGL context loss on the map canvas
+// underneath — the opaque mobile backdrop hides the resulting black
+// canvas, but reducing the SVG element count keeps the underlying map
+// alive when the modal closes).
+const MIN_SAMPLES = 12;
+const MAX_SAMPLES = 100;
+const DEFAULT_SAMPLES_DESKTOP = 100;
+const DEFAULT_SAMPLES_MOBILE = 60;
+// Geology cadence ratio — number of Macrostrat fetches per N elevation
+// samples. Macrostrat is rate-limited so we keep this conservative.
+const GEO_RATIO = 0.24;
 const DEFAULT_BUFFER_M = 1609; // 1 mile
 const MIN_BUFFER_M = 400;
 const MAX_BUFFER_M = 8000;
@@ -91,16 +91,21 @@ const DEPTH_OPTIONS = [500, 1000, 2000, 4000] as const;
 const DEFAULT_DEPTH_M = 1000;
 
 /** localStorage key for the sticky slider settings (VE / buffer /
- *  depth / true-scale). Endpoints are NOT persisted — those follow the
- *  AOI the user clicked. Bump the version suffix when the schema
- *  changes; older blobs are silently discarded. */
-const PERSIST_KEY = 'subterra:cs:v1';
+ *  depth / true-scale / samples). Endpoints are NOT persisted — those
+ *  follow the AOI the user clicked. Bump the version suffix when the
+ *  schema changes; older blobs are silently discarded. */
+const PERSIST_KEY = 'subterra:cs:v2';
+/** localStorage key for the Recent Sections history. Independent of the
+ *  prefs key so a prefs schema bump doesn't drop history. */
+const RECENTS_KEY = 'subterra:cs:recents:v1';
+const RECENTS_MAX = 10;
 
 interface PersistedPrefs {
   ve: number;
   bufferM: number;
   depthM: number;
   trueScale: boolean;
+  samples: number;
 }
 
 function loadPersistedPrefs(): Partial<PersistedPrefs> {
@@ -114,6 +119,7 @@ function loadPersistedPrefs(): Partial<PersistedPrefs> {
       bufferM: typeof parsed.bufferM === 'number' ? parsed.bufferM : undefined,
       depthM: typeof parsed.depthM === 'number' ? parsed.depthM : undefined,
       trueScale: typeof parsed.trueScale === 'boolean' ? parsed.trueScale : undefined,
+      samples: typeof parsed.samples === 'number' ? parsed.samples : undefined,
     };
   } catch {
     return {};
@@ -127,6 +133,54 @@ function savePersistedPrefs(prefs: PersistedPrefs): void {
   } catch {
     // localStorage may be unavailable (private mode, quota) — silently
     // skip persistence rather than crash the modal.
+  }
+}
+
+/** A saved cross-section in the user's Recents history. Just enough
+ *  data to reconstruct the exact section (vertices + length for the
+ *  label); slider settings are re-applied from the global prefs blob,
+ *  not snapshotted per section. */
+interface RecentSection {
+  vertices: LngLat[];
+  totalKm: number;
+  savedAt: number;
+}
+
+function loadRecents(): RecentSection[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(RECENTS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((r): r is RecentSection =>
+        typeof r === 'object'
+        && r !== null
+        && Array.isArray((r as RecentSection).vertices)
+        && (r as RecentSection).vertices.every(
+          (v) => Array.isArray(v) && v.length === 2 && v.every((n) => typeof n === 'number'),
+        ),
+      )
+      .slice(0, RECENTS_MAX);
+  } catch {
+    return [];
+  }
+}
+
+function saveRecent(vertices: LngLat[], totalKm: number): RecentSection[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const existing = loadRecents();
+    const key = vertices.map((v) => `${v[0].toFixed(4)},${v[1].toFixed(4)}`).join('|');
+    const filtered = existing.filter(
+      (r) => r.vertices.map((v) => `${v[0].toFixed(4)},${v[1].toFixed(4)}`).join('|') !== key,
+    );
+    const next = [{ vertices, totalKm, savedAt: Date.now() }, ...filtered].slice(0, RECENTS_MAX);
+    window.localStorage.setItem(RECENTS_KEY, JSON.stringify(next));
+    return next;
+  } catch {
+    return [];
   }
 }
 
@@ -208,6 +262,21 @@ export interface CrossSectionFault {
   age?: string;
 }
 
+/** A wellbore lateral from the well-laterals layer — line geometry
+ *  plus display attributes. Treated similarly to faults: the modal
+ *  detects crossings with the section line and renders a vertical
+ *  drill trace at each crossing. Niche but valuable in O&G basins
+ *  (Permian, Bakken, DJ, etc.) where lateral density is the play. */
+export interface CrossSectionWell {
+  coords: LngLat[];
+  name?: string;
+  operator?: string;
+  /** True vertical depth in feet — when available, used to size the
+   *  drill trace; otherwise a sensible default (~2000 m) renders. */
+  tvdFt?: number;
+  status?: string;
+}
+
 interface ElevSample {
   t: number;
   distM: number;
@@ -237,6 +306,16 @@ interface FaultCrossing {
   slipSense: string;
   slipRate: string;
   age: string;
+}
+
+interface WellCrossing {
+  /** Distance along the polyline in meters from the first vertex. */
+  distM: number;
+  name: string;
+  operator: string;
+  /** True vertical depth in feet, when known. */
+  tvdFt: number | null;
+  status: string;
 }
 
 interface ProjectedPoint {
@@ -289,6 +368,13 @@ interface CrossSectionProps {
   geochem: CrossSectionGeochem[];
   agencies: CrossSectionAgency[];
   faults: CrossSectionFault[];
+  /** Wellbore laterals — optional; renders as vertical drill traces at
+   *  the crossing point of each lateral with the section line. */
+  wells?: CrossSectionWell[];
+  /** Re-open the picker with these starting vertices — used by the
+   *  Recents dropdown when the user picks a saved section. Optional
+   *  because the modal works without recents/compare integration. */
+  onReopen?: (vertices: LngLat[]) => void;
   onClose: () => void;
 }
 
@@ -342,6 +428,8 @@ function CrossSectionInner({
   geochem = [],
   agencies = [],
   faults = [],
+  wells = [],
+  onReopen,
   onClose,
 }: {
   vertices: LngLat[];
@@ -350,6 +438,8 @@ function CrossSectionInner({
   geochem?: CrossSectionGeochem[];
   agencies?: CrossSectionAgency[];
   faults?: CrossSectionFault[];
+  wells?: CrossSectionWell[];
+  onReopen?: (vertices: LngLat[]) => void;
   onClose: () => void;
 }) {
   // Local polyline state — own subsequent ordering so the Reverse
@@ -357,8 +447,8 @@ function CrossSectionInner({
   // caller. Defaults to the caller-supplied vertices.
   const [polyVertices, setPolyVertices] = useState<LngLat[]>(initialVertices);
   // Restore sticky toolbar settings from localStorage on first mount
-  // so a user's preferred VE / buffer / depth carries between sessions.
-  // Endpoints come from the caller and are NOT persisted.
+  // so a user's preferred VE / buffer / depth / samples carries between
+  // sessions. Endpoints come from the caller and are NOT persisted.
   const persistedRef = useRef(loadPersistedPrefs());
   const [bufferM, setBufferM] = useState(persistedRef.current.bufferM ?? DEFAULT_BUFFER_M);
   const [ve, setVe] = useState(persistedRef.current.ve ?? DEFAULT_VE);
@@ -369,11 +459,30 @@ function CrossSectionInner({
   // dishonesty of "VE 8×" visceral when an academic asks why something
   // looks dramatic. When on, the VE slider is disabled.
   const [trueScale, setTrueScale] = useState<boolean>(persistedRef.current.trueScale ?? false);
+  // User-adjustable sample density (12..100). Higher = sharper topo +
+  // more Macrostrat fetches; lower = faster on slow connections. The
+  // default is viewport-aware so mobile starts conservative.
+  const initialNarrow =
+    typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia('(max-width: 640px)').matches;
+  const [samples, setSamples] = useState<number>(
+    persistedRef.current.samples
+      ?? (initialNarrow ? DEFAULT_SAMPLES_MOBILE : DEFAULT_SAMPLES_DESKTOP),
+  );
+  // Recents history — loaded from localStorage on first mount; updated
+  // when the user opens a section (and also when they pick from the
+  // dropdown to reopen). State so the dropdown re-renders on save.
+  const [recents, setRecents] = useState<RecentSection[]>(() => loadRecents());
+  // Compare-section: when the user picks a recent section to compare,
+  // the modal renders a secondary SectionSvg beneath the primary one
+  // sharing the same toolbar settings. Null = no comparison active.
+  const [compareVertices, setCompareVertices] = useState<LngLat[] | null>(null);
 
   // Persist the sticky preferences whenever they change.
   useEffect(() => {
-    savePersistedPrefs({ ve, bufferM, depthM, trueScale });
-  }, [ve, bufferM, depthM, trueScale]);
+    savePersistedPrefs({ ve, bufferM, depthM, trueScale, samples });
+  }, [ve, bufferM, depthM, trueScale, samples]);
 
   const segments = useMemo(() => polylineSegments(polyVertices), [polyVertices]);
   const totalDistM = useMemo(() => polylineLength(polyVertices), [polyVertices]);
@@ -496,18 +605,37 @@ function CrossSectionInner({
     return out.sort((x, y) => x.distM - y.distM);
   }, [faults, polyVertices]);
 
+  // Well-lateral crossings — same shape as fault crossings but treated
+  // as vertical drill traces. A "well" rendered on the section is a
+  // wellbore lateral that physically crosses the section plane; we
+  // don't render distant wells. TVD is the visual stick length when
+  // available.
+  const wellCrossings: WellCrossing[] = useMemo(() => {
+    const out: WellCrossing[] = [];
+    for (const w of wells) {
+      const dists = polylineCrossingsAll(polyVertices, w.coords);
+      for (const distM of dists) {
+        out.push({
+          distM,
+          name: w.name ?? '(unnamed well)',
+          operator: w.operator ?? '',
+          tvdFt: typeof w.tvdFt === 'number' ? w.tvdFt : null,
+          status: w.status ?? '',
+        });
+      }
+    }
+    return out.sort((x, y) => x.distM - y.distM);
+  }, [wells, polyVertices]);
+
   // ─── data fetching (re-runs only when AB actually changes) ──────
   useEffect(() => {
     cancelRef.current = false;
     setLoading({ elev: true, geology: true });
-    // Sample counts pegged to viewport width — fewer SVG elements on
-    // narrow viewports to avoid the WebGL-context-loss issue we saw
-    // when MapLibre and a heavy SVG fought for GPU memory.
-    const narrow = typeof window !== 'undefined'
-      && typeof window.matchMedia === 'function'
-      && window.matchMedia('(max-width: 640px)').matches;
-    const elevSamples = narrow ? ELEV_SAMPLES_MOBILE : ELEV_SAMPLES_DESKTOP;
-    const geoSamples = narrow ? GEOLOGY_SAMPLES_MOBILE : GEOLOGY_SAMPLES_DESKTOP;
+    // Sample counts now come from the user-controlled `samples` slider
+    // (default chosen per viewport at mount). Geology samples derive at
+    // a fixed ratio so we don't hammer Macrostrat's rate limit.
+    const elevSamples = Math.max(MIN_SAMPLES, Math.min(MAX_SAMPLES, samples));
+    const geoSamples = Math.max(6, Math.round(elevSamples * GEO_RATIO));
     const ePts = interpolatePolyline(polyVertices, elevSamples);
     const gPts = interpolatePolyline(polyVertices, geoSamples);
 
@@ -589,7 +717,15 @@ function CrossSectionInner({
     return () => {
       cancelRef.current = true;
     };
-  }, [polyVertices, totalDistM, retryToken]);
+  }, [polyVertices, totalDistM, retryToken, samples]);
+
+  // Save the current section to Recents whenever the vertices change
+  // (including the first open). Skip the degenerate < 2-vertex case.
+  // De-duped on the vertex chain by saveRecent.
+  useEffect(() => {
+    if (polyVertices.length < 2 || totalDistM <= 0) return;
+    setRecents(saveRecent(polyVertices, totalDistM / 1000));
+  }, [polyVertices, totalDistM]);
 
   // ESC closes.
   useEffect(() => {
@@ -756,6 +892,159 @@ function CrossSectionInner({
     URL.revokeObjectURL(url);
   }, [polyVertices, totalDistM, elev, geology, projectedMrds, projectedClaims, projectedGeochem, faultCrossings, trueScale, ve, bufferM, depthM]);
 
+  // KML export — Google Earth's native format. Wraps the same data the
+  // GeoJSON export ships, but emits a KML <Document> with one folder
+  // per kind so Google Earth's tree view stays readable. Geometries are
+  // limited to point + LineString (KML doesn't support GeoJSON-style
+  // ad-hoc properties, so we put attributes into <ExtendedData> blocks
+  // for round-trip access in QGIS and Google Earth Pro).
+  const downloadKml = useCallback(() => {
+    const esc = (s: unknown): string =>
+      String(s ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    const placemark = (
+      name: string,
+      coords: string,
+      geom: 'Point' | 'LineString',
+      extData: Record<string, string | number | null | undefined>,
+      style?: string,
+    ): string => {
+      const data = Object.entries(extData)
+        .filter(([, v]) => v != null && v !== '')
+        .map(([k, v]) => `<Data name="${esc(k)}"><value>${esc(v)}</value></Data>`)
+        .join('');
+      const geomXml = geom === 'Point'
+        ? `<Point><coordinates>${coords}</coordinates></Point>`
+        : `<LineString><tessellate>1</tessellate><coordinates>${coords}</coordinates></LineString>`;
+      return [
+        '<Placemark>',
+        `<name>${esc(name)}</name>`,
+        style ? `<styleUrl>#${style}</styleUrl>` : '',
+        data ? `<ExtendedData>${data}</ExtendedData>` : '',
+        geomXml,
+        '</Placemark>',
+      ].filter(Boolean).join('');
+    };
+    const sections: string[] = [];
+    // 1. Section polyline (folder: "Section line")
+    {
+      const coords = polyVertices.map((v) => `${v[0]},${v[1]},0`).join(' ');
+      sections.push(`<Folder><name>Section line</name>${placemark(
+        `A→${String.fromCharCode(65 + polyVertices.length - 1)} (${(totalDistM / 1000).toFixed(2)} km)`,
+        coords,
+        'LineString',
+        { vertices: polyVertices.length, totalKm: (totalDistM / 1000).toFixed(3) },
+        'sectionLine',
+      )}</Folder>`);
+    }
+    // 2. Vertex markers
+    {
+      const items = polyVertices.map((v, i) => placemark(
+        String.fromCharCode(65 + i),
+        `${v[0]},${v[1]},0`,
+        'Point',
+        { kind: 'section_vertex', letter: String.fromCharCode(65 + i) },
+        'vertex',
+      )).join('');
+      sections.push(`<Folder><name>Vertices</name>${items}</Folder>`);
+    }
+    // 3. MRDS / claims / geochem / faults — emit at projected positions
+    if (projectedMrds.length > 0) {
+      const items = projectedMrds.map((m) => {
+        const { lngLat } = lngLatAtDistance(polyVertices, m.distM);
+        return placemark(
+          strField(m.name) || '(unnamed MRDS)',
+          `${lngLat[0]},${lngLat[1]},0`,
+          'Point',
+          { kind: 'mrds', commodity: m.commodity, category: m.category, distFromLineM: m.distFromLineM.toFixed(0) },
+          'mrds',
+        );
+      }).join('');
+      sections.push(`<Folder><name>MRDS occurrences</name>${items}</Folder>`);
+    }
+    if (projectedClaims.length > 0) {
+      const items = projectedClaims.map((c) => {
+        const { lngLat } = lngLatAtDistance(polyVertices, c.distM);
+        return placemark(
+          `Claim ${c.serial}`,
+          `${lngLat[0]},${lngLat[1]},0`,
+          'Point',
+          { kind: 'mining_claim', serial: c.serial, claimant: c.claimant, acreage: c.acreage },
+          'claim',
+        );
+      }).join('');
+      sections.push(`<Folder><name>Mining claims</name>${items}</Folder>`);
+    }
+    if (faultCrossings.length > 0) {
+      const items = faultCrossings.map((f) => {
+        const { lngLat } = lngLatAtDistance(polyVertices, f.distM);
+        return placemark(
+          strField(f.name) || '(unnamed fault)',
+          `${lngLat[0]},${lngLat[1]},0`,
+          'Point',
+          { kind: 'fault_crossing', slipSense: f.slipSense, slipRate: f.slipRate, age: f.age },
+          'fault',
+        );
+      }).join('');
+      sections.push(`<Folder><name>Fault crossings</name>${items}</Folder>`);
+    }
+    if (wellCrossings.length > 0) {
+      const items = wellCrossings.map((w) => {
+        const { lngLat } = lngLatAtDistance(polyVertices, w.distM);
+        return placemark(
+          strField(w.name) || '(unnamed well)',
+          `${lngLat[0]},${lngLat[1]},0`,
+          'Point',
+          { kind: 'well_lateral', operator: w.operator, tvdFt: w.tvdFt ?? '', status: w.status },
+          'well',
+        );
+      }).join('');
+      sections.push(`<Folder><name>Well laterals</name>${items}</Folder>`);
+    }
+    // Styles — minimal but distinct per folder
+    const styles = `
+<Style id="sectionLine"><LineStyle><color>ff0b9ef5</color><width>3</width></LineStyle></Style>
+<Style id="vertex"><IconStyle><color>ff0b9ef5</color><scale>1.0</scale><Icon><href>http://maps.google.com/mapfiles/kml/shapes/placemark_circle.png</href></Icon></IconStyle></Style>
+<Style id="mrds"><IconStyle><color>ff24bcfb</color><scale>0.9</scale><Icon><href>http://maps.google.com/mapfiles/kml/shapes/donut.png</href></Icon></IconStyle></Style>
+<Style id="claim"><IconStyle><color>ff0b9ef5</color><scale>0.8</scale><Icon><href>http://maps.google.com/mapfiles/kml/shapes/triangle.png</href></Icon></IconStyle></Style>
+<Style id="fault"><IconStyle><color>ff4444ef</color><scale>0.9</scale><Icon><href>http://maps.google.com/mapfiles/kml/shapes/forbidden.png</href></Icon></IconStyle></Style>
+<Style id="well"><IconStyle><color>ff24bcfb</color><scale>0.9</scale><Icon><href>http://maps.google.com/mapfiles/kml/shapes/cabs.png</href></Icon></IconStyle></Style>
+`.trim();
+    const kml = `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+<Document>
+<name>Subterra cross-section</name>
+<description>${esc(buildCitation({
+      vertices: polyVertices, ve, bufferM, depthM, trueScale,
+      url: typeof window !== 'undefined' ? window.location.href : '',
+    }))}</description>
+${styles}
+${sections.join('\n')}
+</Document>
+</kml>`;
+    const blob = new Blob([kml], { type: 'application/vnd.google-earth.kml+xml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `cross-section-${Date.now()}.kml`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [polyVertices, totalDistM, projectedMrds, projectedClaims, faultCrossings, wellCrossings, trueScale, ve, bufferM, depthM]);
+
+  // Build the macrostrat.org/map URL for the section midpoint — used by
+  // the "🗺 strat" header button so the user can hop straight to
+  // Macrostrat's interactive map and explore the surrounding region.
+  const macrostratMapUrl = useMemo(() => {
+    if (polyVertices.length < 2) return '#';
+    const mid = lngLatAtDistance(polyVertices, totalDistM / 2).lngLat;
+    return `https://macrostrat.org/map/dev#x=${mid[0].toFixed(4)}&y=${mid[1].toFixed(4)}&z=10`;
+  }, [polyVertices, totalDistM]);
+
   // Copy a plain-text citation block to the clipboard. Pairs with the
   // shareable `?cs=...` URL written by the Map route so the citation
   // contains a permalink that reproduces the exact section.
@@ -814,8 +1103,28 @@ function CrossSectionInner({
           onReverse={reverse}
           onDownload={downloadPng}
           onDownloadGeoJson={downloadGeoJson}
+          onDownloadKml={downloadKml}
           onCopyCitation={copyCitation}
           citationCopied={citationCopied}
+          macrostratMapUrl={macrostratMapUrl}
+          recents={recents}
+          onPickRecent={(rv) => {
+            // Re-open the modal with the chosen section's vertices.
+            // We close the current modal and re-open via the parent so
+            // the URL ?cs= is rewritten and the per-vertex MRDS/claims/
+            // wells/etc. are re-collected by the map handler.
+            if (onReopen) {
+              onReopen(rv);
+            } else {
+              // Fallback: replace the local polyline. Downstream
+              // projections (MRDS/claims) will be stale — onReopen is
+              // the supported path.
+              setPolyVertices(rv);
+            }
+          }}
+          onCompareRecent={(rv) => setCompareVertices(rv)}
+          compareActive={compareVertices != null}
+          onClearCompare={() => setCompareVertices(null)}
         />
 
         <Toolbar
@@ -827,11 +1136,14 @@ function CrossSectionInner({
           onDepthChange={setDepthM}
           trueScale={trueScale}
           onTrueScaleChange={setTrueScale}
+          samples={samples}
+          onSamplesChange={setSamples}
           counts={{
             mrds: projectedMrds.length,
             claims: projectedClaims.length,
             geochem: projectedGeochem.length,
             faults: faultCrossings.length,
+            wells: wellCrossings.length,
           }}
         />
 
@@ -840,7 +1152,7 @@ function CrossSectionInner({
         <div className="overflow-auto p-4">
           {loading.elev && loading.geology ? (
             <div className="flex h-72 items-center justify-center font-mono text-[11px] text-text-muted">
-              Sampling {ELEV_SAMPLES + 1} elevation points + {GEOLOGY_SAMPLES + 1} geology points…
+              Sampling {samples + 1} elevation points + {Math.max(6, Math.round(samples * GEO_RATIO)) + 1} geology points…
             </div>
           ) : (
             <SectionSvg
@@ -856,6 +1168,7 @@ function CrossSectionInner({
               geochem={projectedGeochem}
               agencyStrip={agencyStrip}
               faultCrossings={faultCrossings}
+              wellCrossings={wellCrossings}
               stats={stats}
               ve={ve}
               bufferM={bufferM}
@@ -869,6 +1182,17 @@ function CrossSectionInner({
                 trueScale,
                 url: typeof window !== 'undefined' ? window.location.href : '',
               })}
+            />
+          )}
+          {compareVertices && (
+            <CompareSection
+              vertices={compareVertices}
+              ve={ve}
+              bufferM={bufferM}
+              depthM={depthM}
+              trueScale={trueScale}
+              samples={samples}
+              onClose={() => setCompareVertices(null)}
             />
           )}
         </div>
@@ -900,8 +1224,15 @@ function Header({
   onReverse,
   onDownload,
   onDownloadGeoJson,
+  onDownloadKml,
   onCopyCitation,
   citationCopied,
+  macrostratMapUrl,
+  recents,
+  onPickRecent,
+  onCompareRecent,
+  compareActive,
+  onClearCompare,
 }: {
   totalDistM: number;
   bearing: number;
@@ -910,8 +1241,15 @@ function Header({
   onReverse: () => void;
   onDownload: () => void;
   onDownloadGeoJson: () => void;
+  onDownloadKml: () => void;
   onCopyCitation: () => void;
   citationCopied: boolean;
+  macrostratMapUrl: string;
+  recents: RecentSection[];
+  onPickRecent: (vertices: LngLat[]) => void;
+  onCompareRecent: (vertices: LngLat[]) => void;
+  compareActive: boolean;
+  onClearCompare: () => void;
 }) {
   const lengthMi = totalDistM / 1609.34;
   // Vertex letters: A, B, C, ... — first + last get linked buttons;
@@ -922,6 +1260,10 @@ function Header({
   const intermediateCount = Math.max(0, vertices.length - 2);
   const firstLetter = 'A';
   const lastLetter = String.fromCharCode(65 + vertices.length - 1);
+  const [recentsOpen, setRecentsOpen] = useState(false);
+  // Key the current section to dim it in the recents dropdown ("current"
+  // marker) — same vertex-chain comparison saveRecent() uses.
+  const currentKey = vertices.map((v) => `${v[0].toFixed(4)},${v[1].toFixed(4)}`).join('|');
   return (
     <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-2.5 font-mono text-[11px]">
       <div className="flex items-center gap-3 text-text">
@@ -932,7 +1274,7 @@ function Header({
           {intermediateCount > 0 && ` · +${intermediateCount} bend${intermediateCount === 1 ? '' : 's'}`}
         </span>
       </div>
-      <div className="flex items-center gap-1.5">
+      <div className="flex flex-wrap items-center justify-end gap-1.5">
         {first && (
           <a
             href={`https://www.google.com/maps?q=${first[1]},${first[0]}`}
@@ -984,6 +1326,15 @@ function Header({
         </button>
         <button
           type="button"
+          onClick={onDownloadKml}
+          data-testid="cs-download-kml"
+          className="rounded border border-border bg-bg-panel px-2 py-1 text-text-muted hover:border-accent hover:text-accent"
+          title="Download as KML for Google Earth (and Google Earth Pro)"
+        >
+          ⬇ kml
+        </button>
+        <button
+          type="button"
           onClick={onCopyCitation}
           data-testid="cs-citation"
           className="rounded border border-border bg-bg-panel px-2 py-1 text-text-muted hover:border-accent hover:text-accent"
@@ -991,6 +1342,107 @@ function Header({
         >
           {citationCopied ? '✓ copied' : '⎘ cite'}
         </button>
+        <a
+          href={macrostratMapUrl}
+          target="_blank"
+          rel="noreferrer"
+          data-testid="cs-macrostrat-map"
+          className="rounded border border-border bg-bg-panel px-2 py-1 text-text-muted hover:border-accent hover:text-accent"
+          title="Open the section midpoint in Macrostrat's interactive map"
+        >
+          🗺 strat ↗
+        </a>
+        {compareActive && (
+          <button
+            type="button"
+            onClick={onClearCompare}
+            data-testid="cs-compare-clear"
+            className="rounded border border-amber-500/60 bg-amber-500/15 px-2 py-1 text-amber-200 hover:bg-amber-500/25"
+            title="Close the comparison panel"
+          >
+            ✕ compare
+          </button>
+        )}
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setRecentsOpen((v) => !v)}
+            data-testid="cs-recents-toggle"
+            className={cnHeaderBtn(recentsOpen)}
+            title="Recent sections — reopen or compare side-by-side"
+          >
+            Recents {recentsOpen ? '▴' : '▾'} ({recents.length})
+          </button>
+          {recentsOpen && (
+            <div
+              className="absolute right-0 top-[calc(100%+4px)] z-30 w-[280px] rounded-md border border-border shadow-2xl"
+              data-testid="cs-recents-dropdown"
+              style={{ backgroundColor: '#1c2230' }}
+              onMouseLeave={() => setRecentsOpen(false)}
+            >
+              <div className="border-b border-border px-3 py-2 text-[10px] text-text-muted">
+                Last {RECENTS_MAX} sections you opened
+              </div>
+              {recents.length === 0 && (
+                <div className="px-3 py-3 text-[10px] text-text-muted">
+                  Nothing yet — open a section to start collecting history.
+                </div>
+              )}
+              <ul className="max-h-72 overflow-auto">
+                {recents.map((r) => {
+                  const rKey = r.vertices.map((v) => `${v[0].toFixed(4)},${v[1].toFixed(4)}`).join('|');
+                  const isCurrent = rKey === currentKey;
+                  const first = r.vertices[0]!;
+                  const lastV = r.vertices[r.vertices.length - 1]!;
+                  const ago = humanAgo(r.savedAt);
+                  return (
+                    <li
+                      key={rKey}
+                      className="flex items-center justify-between gap-2 border-b border-border/40 px-3 py-2 last:border-b-0"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-[11px] text-text">
+                          {first[1].toFixed(3)},{first[0].toFixed(3)} → {lastV[1].toFixed(3)},{lastV[0].toFixed(3)}
+                          {isCurrent && <span className="ml-1 text-accent">·current</span>}
+                        </div>
+                        <div className="text-[10px] text-text-muted">
+                          {r.totalKm.toFixed(2)} km · {r.vertices.length} pts · {ago}
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onPickRecent(r.vertices);
+                            setRecentsOpen(false);
+                          }}
+                          disabled={isCurrent}
+                          className="rounded border border-border bg-bg-panel px-1.5 py-0.5 text-[10px] text-text-muted hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-40"
+                          title="Reopen this section"
+                        >
+                          open
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onCompareRecent(r.vertices);
+                            setRecentsOpen(false);
+                          }}
+                          disabled={isCurrent}
+                          data-testid="cs-recents-compare"
+                          className="rounded border border-border bg-bg-panel px-1.5 py-0.5 text-[10px] text-text-muted hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-40"
+                          title="Render this section side-by-side with the current one"
+                        >
+                          ⇄ compare
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+        </div>
         <button
           type="button"
           onClick={onClose}
@@ -1004,6 +1456,23 @@ function Header({
   );
 }
 
+function cnHeaderBtn(active: boolean): string {
+  return active
+    ? 'rounded border border-accent/60 bg-accent/15 px-2 py-1 text-accent'
+    : 'rounded border border-border bg-bg-panel px-2 py-1 text-text-muted hover:border-accent hover:text-accent';
+}
+
+function humanAgo(ts: number): string {
+  const s = Math.round((Date.now() - ts) / 1000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.round(h / 24);
+  return `${d}d ago`;
+}
+
 function Toolbar({
   ve,
   onVeChange,
@@ -1013,6 +1482,8 @@ function Toolbar({
   onDepthChange,
   trueScale,
   onTrueScaleChange,
+  samples,
+  onSamplesChange,
   counts,
 }: {
   ve: number;
@@ -1023,7 +1494,9 @@ function Toolbar({
   onDepthChange: (m: number) => void;
   trueScale: boolean;
   onTrueScaleChange: (v: boolean) => void;
-  counts: { mrds: number; claims: number; geochem: number; faults: number };
+  samples: number;
+  onSamplesChange: (n: number) => void;
+  counts: { mrds: number; claims: number; geochem: number; faults: number; wells: number };
 }) {
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-border bg-bg-panel/30 px-4 py-2 font-mono text-[10px]">
@@ -1088,11 +1561,29 @@ function Toolbar({
           ))}
         </select>
       </label>
-      <div className="ml-auto flex items-center gap-3 text-text-muted">
+      <label
+        className="flex items-center gap-2 text-text-muted"
+        title="Number of evenly-spaced samples along the section. Higher = sharper topo + more Macrostrat fetches; lower = faster on slow / mobile connections. Persisted between sessions."
+      >
+        <span>Samples</span>
+        <input
+          type="range"
+          min={MIN_SAMPLES}
+          max={MAX_SAMPLES}
+          step={4}
+          value={samples}
+          onChange={(e) => onSamplesChange(Number(e.target.value))}
+          data-testid="cs-samples-slider"
+          className="h-1 w-24 accent-accent"
+        />
+        <span className="w-8 text-accent">{samples}</span>
+      </label>
+      <div className="ml-auto flex flex-wrap items-center gap-3 text-text-muted">
         <CountBadge label="MRDS" value={counts.mrds} color="#fbbf24" />
         <CountBadge label="Claims" value={counts.claims} color="#f59e0b" />
         <CountBadge label="Geochem" value={counts.geochem} color="#a78bfa" />
         <CountBadge label="Faults" value={counts.faults} color="#ef4444" />
+        <CountBadge label="Wells" value={counts.wells} color="#fbbf24" />
       </div>
     </div>
   );
@@ -1325,6 +1816,7 @@ function SectionSvg({
   geochem,
   agencyStrip,
   faultCrossings,
+  wellCrossings = [],
   stats,
   ve,
   bufferM,
@@ -1344,6 +1836,7 @@ function SectionSvg({
   geochem: ProjectedGeochem[];
   agencyStrip: AgencySegment[];
   faultCrossings: FaultCrossing[];
+  wellCrossings?: WellCrossing[];
   stats: SectionStats;
   ve: number;
   bufferM: number;
@@ -1355,12 +1848,13 @@ function SectionSvg({
   citationText: string;
 }) {
   const W = 1200;
-  const H = 640;
-  const PADDING = { l: 70, r: 24, t: 28, b: 92 };
+  const H = 660;
+  const PADDING = { l: 70, r: 24, t: 28, b: 110 };
   const innerW = W - PADDING.l - PADDING.r;
   const innerH = H - PADDING.t - PADDING.b;
   const GEO_BAND_H = 22;
   const AGENCY_BAND_H = 12;
+  const STAKE_BAND_H = 10;
   const STRIP_GAP = 4;
 
   // ── elevation domain (continuous through the subsurface) ─────────
@@ -1397,6 +1891,12 @@ function SectionSvg({
   const topoBottomY = PADDING.t + innerH;
   const geoTopY = topoBottomY + STRIP_GAP;
   const agencyTopY = geoTopY + GEO_BAND_H + STRIP_GAP;
+  // Stake-clarity strip sits beneath the agency strip — same segments,
+  // recolored by stake-eligibility (green = stakeable BLM/USFS; red =
+  // blocked NPS/BIA/FWS/DOD; amber = mixed/state/BoR; gray = private
+  // or unknown). One quick-read for "where on this section can I
+  // actually file?"
+  const stakeTopY = agencyTopY + AGENCY_BAND_H + STRIP_GAP;
 
   // ── subsurface column blocks ──────────────────────────────────────
   // Group adjacent geology samples sharing a Macrostrat column id into
@@ -1845,6 +2345,62 @@ function SectionSvg({
         );
       })}
 
+      {/* ── well lateral drill traces ──
+          Each wellbore lateral that physically crosses the section
+          line renders as a vertical amber stick from the topo surface
+          downward, sized by TVD when known (default 2000m). A small
+          derrick triangle at the top marks the surface trace; hover
+          for operator/status. Mostly meaningful in O&G basins where
+          lateral density is the play (Permian, Bakken, DJ). */}
+      {wellCrossings.map((w, i) => {
+        const tFrac = totalDistM > 0 ? w.distM / totalDistM : 0;
+        const x = PADDING.l + tFrac * innerW;
+        const surfY = (() => {
+          const e = interpElev(elev, w.distM);
+          return e != null ? yOf(e) : PADDING.t + 40;
+        })();
+        // Visual stick length: TVD when available (capped to depth
+        // window so it doesn't poke off the chart). Defaults to 2000m.
+        const tvdM = w.tvdFt != null ? w.tvdFt * 0.3048 : 2000;
+        const surfElev = interpElev(elev, w.distM) ?? dataMax;
+        const botElev = Math.max(surfElev - tvdM, subsurfaceFloor);
+        const yBot = Math.min(yOf(botElev), topoBottomY);
+        return (
+          <g key={`well-${i}`} opacity={0.92}>
+            <line
+              x1={x}
+              y1={surfY}
+              x2={x}
+              y2={yBot}
+              stroke="#fbbf24"
+              strokeWidth={1.5}
+              strokeLinecap="round"
+            >
+              <title>
+                {`${strField(w.name) || '(unnamed well)'}` +
+                  `${w.operator ? `\noperator: ${w.operator}` : ''}` +
+                  `${w.tvdFt != null ? `\nTVD: ${Math.round(w.tvdFt)} ft (${Math.round(w.tvdFt * 0.3048)} m)` : '\nTVD: unknown (showing 2 km default)'}` +
+                  `${w.status ? `\nstatus: ${w.status}` : ''}`}
+              </title>
+            </line>
+            {/* Tiny derrick triangle at surface */}
+            <polygon
+              points={`${x - 3},${surfY - 1} ${x + 3},${surfY - 1} ${x},${surfY - 7}`}
+              fill="#fbbf24"
+            />
+            {/* TD tick */}
+            <line
+              x1={x - 3}
+              y1={yBot}
+              x2={x + 3}
+              y2={yBot}
+              stroke="#fbbf24"
+              strokeWidth={1.4}
+            />
+          </g>
+        );
+      })}
+
       {/* ── topo fill (gradient) + line ── */}
       {topoFillPath && (
         <path d={topoFillPath} fill="url(#cs-topo-fill)" stroke="none" />
@@ -1913,6 +2469,31 @@ function SectionSvg({
             opacity={0.85}
           >
             <title>{`${seg.agency}${seg.name ? ` — ${seg.name}` : ''}`}</title>
+          </rect>
+        );
+      })}
+
+      {/* ── stake-clarity strip ──
+          One band painted by location-can-stake eligibility. Mirrors
+          the agency strip's segments but recolors by stake rules:
+          BLM/USFS = green (open), NPS/BIA/FWS/DOD = red (blocked),
+          BOR/STATE = amber (varies), PRIVATE/OTHER = gray. Reads as
+          a "can I file here?" overview at a glance. */}
+      {agencyStrip.map((seg, i) => {
+        const x0 = xOf(seg.start);
+        const x1 = xOf(seg.end);
+        const stake = stakeClarityFor(seg.agency);
+        return (
+          <rect
+            key={`stake-${i}`}
+            x={x0}
+            y={stakeTopY}
+            width={Math.max(0.5, x1 - x0)}
+            height={STAKE_BAND_H}
+            fill={stake.color}
+            opacity={0.9}
+          >
+            <title>{`${stake.label} (${seg.agency || 'unknown'}${seg.name ? ` — ${seg.name}` : ''})`}</title>
           </rect>
         );
       })}
@@ -2180,6 +2761,15 @@ function SectionSvg({
       >
         surface
       </text>
+      <text
+        x={W - PADDING.r + 6}
+        y={stakeTopY + STAKE_BAND_H / 2 + 3}
+        fontFamily="ui-monospace, monospace"
+        fontSize={9}
+        fill="#94a3b8"
+      >
+        stakeable
+      </text>
 
       {/* ── hover crosshair + readout ── */}
       {hover && hoverDist != null && (
@@ -2256,6 +2846,178 @@ function SectionSvg({
         ))}
       </g>
     </svg>
+  );
+}
+
+/** Stake-clarity color + label for a surface-management agency code.
+ *  Three-state model the user can read at a glance:
+ *    green  — open for location of mining claims (BLM, USFS)
+ *    red    — closed to location (NPS, BIA, FWS, DOD)
+ *    amber  — depends on jurisdiction (BOR, STATE, OTHER, withdrawn)
+ *    gray   — private surface (state-by-state rules) or unknown
+ *  Used by both the SVG strip rect fill and its hover title. */
+function stakeClarityFor(agency: string | undefined): { color: string; label: string } {
+  const a = (agency ?? '').toUpperCase();
+  if (a === 'BLM' || a === 'USFS') return { color: '#22c55e', label: 'open to location (BLM/USFS)' };
+  if (a === 'NPS' || a === 'BIA' || a === 'FWS' || a === 'DOD') {
+    return { color: '#ef4444', label: `closed to location (${a})` };
+  }
+  if (a === 'BOR' || a === 'STATE') return { color: '#f59e0b', label: `varies (${a})` };
+  if (a === 'PRIVATE') return { color: '#475569', label: 'private surface (state rules apply)' };
+  return { color: '#334155', label: 'unknown / mixed' };
+}
+
+/** Compare panel — renders a secondary mini cross-section beneath the
+ *  primary one when the user picks a recent section from the Recents
+ *  dropdown. Self-contained: owns its own elev + geology fetches so
+ *  the comparison doesn't perturb the primary's loading state.
+ *  Shares the primary's toolbar settings (VE, buffer, depth, samples)
+ *  for an apples-to-apples comparison. */
+function CompareSection({
+  vertices,
+  ve,
+  bufferM,
+  depthM,
+  trueScale,
+  samples,
+  onClose,
+}: {
+  vertices: LngLat[];
+  ve: number;
+  bufferM: number;
+  depthM: number;
+  trueScale: boolean;
+  samples: number;
+  onClose: () => void;
+}) {
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const cancelRef = useRef(false);
+  const totalDistM = useMemo(() => polylineLength(vertices), [vertices]);
+  const segments = useMemo(() => polylineSegments(vertices), [vertices]);
+  const bearing = useMemo(
+    () => (vertices.length >= 2 ? bearingDeg(vertices[0]!, vertices[1]!) : 0),
+    [vertices],
+  );
+  const [elev, setElev] = useState<ElevSample[]>([]);
+  const [geology, setGeology] = useState<GeoSample[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    cancelRef.current = false;
+    setLoading(true);
+    const elevSamples = Math.max(MIN_SAMPLES, Math.min(MAX_SAMPLES, samples));
+    const geoSamples = Math.max(6, Math.round(elevSamples * GEO_RATIO));
+    const ePts = interpolatePolyline(vertices, elevSamples);
+    const gPts = interpolatePolyline(vertices, geoSamples);
+    void Promise.allSettled(ePts.map((p) => fetchElevation(p[0], p[1]))).then((settled) => {
+      if (cancelRef.current) return;
+      setElev(settled.map((s, i) => {
+        const t = i / elevSamples;
+        const elevM = s.status === 'fulfilled' && s.value ? s.value.meters : null;
+        return { t, distM: t * totalDistM, elevM };
+      }));
+    });
+    void Promise.allSettled(gPts.map((p) => fetchGeology(p[0], p[1]))).then((settled) => {
+      if (cancelRef.current) return;
+      const synthId = (s: string): number => {
+        let h = 0;
+        for (let j = 0; j < s.length; j++) h = ((h << 5) - h + s.charCodeAt(j)) | 0;
+        return -(Math.abs(h) || 1);
+      };
+      setGeology(settled.map((s, i) => {
+        const t = i / geoSamples;
+        let color = '#475569';
+        let label = 'unknown';
+        let age: string | undefined;
+        let lithology: string | undefined;
+        let columnId: number | undefined;
+        let strat: StratUnit[] = [];
+        if (s.status === 'fulfilled') {
+          const top = s.value.units[0];
+          if (top) {
+            color = top.color ?? '#475569';
+            label = top.name || top.lithology || 'unknown';
+            age = top.age;
+            lithology = top.lithology;
+          }
+          columnId = s.value.columnId;
+          strat = s.value.strat;
+          if (strat.length === 0 && top) {
+            const fakeName = strField(top.name) || strField(top.lithology) || 'unknown';
+            columnId = synthId(fakeName);
+            strat = [{
+              name: fakeName,
+              age: top.age ?? '',
+              thicknessM: 200,
+              color: top.color,
+              lithology: top.lithology,
+            }];
+          }
+        }
+        return { t, distM: t * totalDistM, color, label, age, lithology, columnId, strat };
+      }));
+      setLoading(false);
+    });
+    return () => {
+      cancelRef.current = true;
+    };
+  }, [vertices, totalDistM, samples]);
+
+  const stats = useMemo(() => computeStats(elev), [elev]);
+  const lastLetter = String.fromCharCode(65 + vertices.length - 1);
+
+  return (
+    <div
+      data-testid="cs-compare-panel"
+      className="mt-4 rounded-lg border border-amber-500/40"
+      style={{ backgroundColor: '#0f1218' }}
+    >
+      <div className="flex items-center justify-between border-b border-amber-500/30 bg-amber-500/10 px-3 py-1.5 font-mono text-[11px]">
+        <div className="text-amber-200">
+          ⇄ Comparison: A ({vertices[0]![1].toFixed(3)},{vertices[0]![0].toFixed(3)}) →{' '}
+          {lastLetter} ({vertices[vertices.length - 1]![1].toFixed(3)},{vertices[vertices.length - 1]![0].toFixed(3)}) ·{' '}
+          {(totalDistM / 1000).toFixed(2)} km · bearing {bearing.toFixed(0)}°
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close comparison"
+          className="rounded px-1 text-amber-300 hover:bg-amber-500/20"
+        >
+          ✕
+        </button>
+      </div>
+      <div className="p-2">
+        {loading && (
+          <div className="flex h-32 items-center justify-center font-mono text-[10px] text-text-muted">
+            Loading comparison data…
+          </div>
+        )}
+        {!loading && (
+          <SectionSvg
+            svgRef={svgRef}
+            vertices={vertices}
+            segments={segments}
+            totalDistM={totalDistM}
+            bearing={bearing}
+            elev={elev}
+            geology={geology}
+            mrds={[]}
+            claims={[]}
+            geochem={[]}
+            agencyStrip={[]}
+            faultCrossings={[]}
+            wellCrossings={[]}
+            stats={stats}
+            ve={ve}
+            bufferM={bufferM}
+            depthM={depthM}
+            trueScale={trueScale}
+            citationText={`Subterra comparison section · ${(totalDistM / 1000).toFixed(2)} km, bearing ${bearing.toFixed(0)}°`}
+          />
+        )}
+      </div>
+    </div>
   );
 }
 
