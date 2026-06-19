@@ -76,7 +76,7 @@ export const LAYERS: readonly LayerDef[] = [
   },
   {
     id: 'mrds',
-    label: 'USGS Mineral Occurrences',
+    label: 'USGS Mineral Occurrences (MRDS legacy)',
     group: 'present',
     defaultVisible: true,
     tilesetLayer: 'mrds',
@@ -85,6 +85,36 @@ export const LAYERS: readonly LayerDef[] = [
     // MRDS dots are color-coded by commodity category (Map.tsx special-cases);
     // this fallback is used when the commodity is unknown.
     color: '#94a3b8',
+  },
+  {
+    // USGS USMIN — 2020+ successor to MRDS. Smaller (~80k vs 310k)
+    // but every record is peer-reviewed against modern commodity codes
+    // and deposit-type classifications. Ship side-by-side with MRDS;
+    // drop MRDS from default-visible once coverage parity is verified.
+    id: 'usmin',
+    label: 'USGS USMIN (vetted occurrences)',
+    group: 'present',
+    defaultVisible: false,
+    tilesetLayer: 'usmin',
+    geometry: 'point',
+    minZoom: 4,
+    // Match expression reuses MRDS commodity-category coloring (Map.tsx
+    // special-case checks layerId === 'usmin' too).
+    color: '#cbd5e1', // slate-300 fallback for unknown commodity
+  },
+  {
+    // USGS Critical Minerals Mapping Initiative — dedicated layer for
+    // REE / Li / Co / Ni / Ga / Ge / In / Sc / Ta / V / W / Te occurrences.
+    // Magenta-violet palette so critical-mineral hits visually pop
+    // against the gray/amber MRDS + USMIN dot field.
+    id: 'cmmi',
+    label: 'USGS Critical Minerals (CMMI)',
+    group: 'present',
+    defaultVisible: false,
+    tilesetLayer: 'cmmi',
+    geometry: 'point',
+    minZoom: 4,
+    color: '#d946ef', // magenta — critical-mineral discriminator
   },
   {
     id: 'open-blm-land',

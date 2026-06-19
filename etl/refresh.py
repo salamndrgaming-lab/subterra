@@ -38,6 +38,8 @@ OUT.mkdir(parents=True, exist_ok=True)
 # module is ready.
 SOURCES = [
     "mrds",          # Phase 1 — USGS Mineral Resources Data System (~310k points)
+    "usmin",         # USGS USMIN — modern MRDS successor (~80k vetted occurrences)
+    "cmmi",          # USGS Critical Minerals Mapping Initiative (~10k vetted hits)
     "blm_claims",    # Phase 2 — BLM MLRS active mining claims (~550k polygons)
     "blm_leases",    # Phase 2 — BLM MLRS active oil & gas leases (~24k polygons)
     "plss",          # Phase 2 — BLM National PLSS township grid (~50k lines)
@@ -80,6 +82,11 @@ SOURCES = [
 # only checked for the "0 features" boundary case.
 EXPECTED_MIN_FEATURES: dict[str, int] = {
     "mrds":              200_000,
+    # USMIN is a vetted subset of MRDS — ~80k records; floor at 50k absorbs
+    # CMMI removal of low-confidence sites between versions.
+    "usmin":              50_000,
+    # CMMI is small + curated — ~10k critical-mineral hits.
+    "cmmi":                5_000,
     "blm_claims":        300_000,    # historical ~552k; floor at 300k
     "blm_leases":         50_000,
     "plss":            1_500_000,
@@ -141,6 +148,12 @@ ACCEPT_BROKEN: set[str] = {
     # may need URL tuning if the v2 item layout has shifted. Accept
     # broken until we've seen one good production run.
     "sgmc",
+    # USMIN + CMMI are new (first run on this branch); the canonical
+    # mrdata.usgs.gov/<dataset>/<dataset>-csv.zip URL pattern is well-
+    # attested for MRDS but unverified for these. Accept broken on
+    # first run; iterate the URL via the *_URL env vars if needed.
+    "usmin",
+    "cmmi",
 }
 
 

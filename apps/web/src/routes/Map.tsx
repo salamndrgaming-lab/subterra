@@ -464,24 +464,44 @@ export function MapPage() {
       map.project([Math.min(...lngs) - padDeg, Math.min(...lats) - padDeg]),
       map.project([Math.max(...lngs) + padDeg, Math.max(...lats) + padDeg]),
     ];
-    const mrdsHits = map.getLayer('mrds')
-      ? map.queryRenderedFeatures(bbox, { layers: ['mrds'] })
+    // Mineral occurrences: collect MRDS + USMIN + CMMI together so the
+    // cross-section's projection path includes all three. Each layer
+    // has its own ID field (dep_id / usmin_id / cmmi_id) and slightly
+    // different commodity column; coalesce via attribute fallback so
+    // the downstream CrossSectionMrds shape stays the same.
+    const mineralLayers = ['mrds', 'usmin', 'cmmi'].filter((id) => !!map.getLayer(id));
+    const mineralHits = mineralLayers.length > 0
+      ? map.queryRenderedFeatures(bbox, { layers: mineralLayers })
       : [];
     const mrdsSeen = new Set<string>();
     const collected: CrossSectionMrds[] = [];
-    for (const h of mrdsHits) {
+    for (const h of mineralHits) {
       const attrs = (h.properties ?? {}) as Record<string, unknown>;
-      const key = String(attrs.dep_id ?? attrs.id ?? `${h.geometry.type}-${collected.length}`);
+      // De-dup across layers: a deposit appearing in both MRDS and USMIN
+      // would otherwise render as two overlapping dots. Per-layer ID
+      // prefixes prevent name collisions between datasets.
+      const layerId = (h.layer?.id ?? 'mineral').slice(0, 6);
+      const rawId = String(
+        attrs.dep_id ?? attrs.usmin_id ?? attrs.cmmi_id ?? attrs.id ?? '',
+      ).trim();
+      const key = `${layerId}:${rawId || `${h.geometry.type}-${collected.length}`}`;
       if (mrdsSeen.has(key)) continue;
       mrdsSeen.add(key);
       if (h.geometry.type !== 'Point') continue;
       const coords = h.geometry.coordinates as [number, number];
-      const depId = String(attrs.dep_id ?? attrs.id ?? '').trim();
+      // Only MRDS supports the USGS show-mrds.php deep-link; USMIN and
+      // CMMI dots render without the cross-section's wrap-in-anchor.
+      const depId = h.layer?.id === 'mrds' ? rawId : '';
+      // CMMI's primary commodity field is `critical_minerals` (comma-
+      // joined). USMIN + MRDS use `commodity`. Fall back across both.
+      const commodity = String(
+        attrs.commodity ?? attrs.critical_minerals ?? '',
+      ).trim();
       collected.push({
         lng: coords[0],
         lat: coords[1],
         name: String(attrs.name ?? attrs.site_name ?? '') || undefined,
-        commodity: String(attrs.commodity ?? '') || undefined,
+        commodity: commodity || undefined,
         depId: depId || undefined,
       });
     }
@@ -3031,6 +3051,9 @@ function DetailDrawer({
     (feature.properties.serial as string | undefined) ||
     // SGMC bedrock-geology — formation/unit name lives in `unit_name`
     (feature.properties.unit_name as string | undefined) ||
+    // USMIN / CMMI — site identifier when name is absent
+    (feature.properties.usmin_id as string | undefined) ||
+    (feature.properties.cmmi_id as string | undefined) ||
     feature.layerLabel;
 
   // Tabs are only shown when they have meaningful content for the
@@ -3885,11 +3908,14 @@ function buildLayer(
 
   if (def.geometry === 'point') {
     // MRDS dots are color-coded by commodity category so the most useful
-    // signal (what mineral) is visible at a glance. Geochemistry samples
-    // are graduated by a pathfinder element (As — classic gold vectoring)
-    // so anomalies pop. Other point layers just use their registry color.
+    // signal (what mineral) is visible at a glance. USMIN inherits the
+    // same expression — its rows carry the same `commodity` string. CMMI
+    // gets the registry magenta directly (critical-mineral hits are the
+    // signal; commodity sub-categorization adds noise here). Geochemistry
+    // samples are graduated by a pathfinder element (As — classic gold
+    // vectoring) so anomalies pop. Other point layers use their registry color.
     const circleColor: maplibregl.DataDrivenPropertyValueSpecification<string> =
-      def.tilesetLayer === 'mrds'
+      def.tilesetLayer === 'mrds' || def.tilesetLayer === 'usmin'
         ? mrdsCommodityColorExpr()
         : def.tilesetLayer === 'geochemistry'
           ? geochemColorExpr()
