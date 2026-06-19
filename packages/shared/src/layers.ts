@@ -223,6 +223,24 @@ export const LAYERS: readonly LayerDef[] = [
     minZoom: 4,
     color: '#2dd4bf', // teal — airborne survey footprints
   },
+  {
+    // USGS State Geologic Map Compilation v2 — surface bedrock polygons
+    // covering the western US. First on-map bedrock layer; complements
+    // (does not replace) the cross-section's Macrostrat stratigraphic
+    // column lookup. Per-polygon fill comes from a MapLibre `match`
+    // expression on the normalized `lithology` property — see Map.tsx
+    // `buildLayer` SGMC branch.
+    id: 'bedrock-geology',
+    label: 'Bedrock Geology (USGS SGMC)',
+    group: 'subsurface',
+    defaultVisible: false,
+    tilesetLayer: 'sgmc',
+    geometry: 'polygon',
+    minZoom: 6,
+    // `color` is ignored for this layer; Map.tsx's buildLayer pulls the
+    // multi-color match expression from buildSgmcFillExpression().
+    color: '#7dd3fc',
+  },
 
   // Stake-ability constraints — eligibility blockers a clicked point can hit.
   {

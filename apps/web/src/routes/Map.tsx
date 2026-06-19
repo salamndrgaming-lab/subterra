@@ -8,6 +8,7 @@ import {
   COMMODITY_CATEGORY_COLORS,
   LAYERS,
   LAYER_GROUPS,
+  buildSgmcFillExpression,
   type LayerDef,
   type TopHotspot,
   type CommodityPrices,
@@ -3028,6 +3029,8 @@ function DetailDrawer({
   const headline =
     (feature.properties.name as string | undefined) ||
     (feature.properties.serial as string | undefined) ||
+    // SGMC bedrock-geology — formation/unit name lives in `unit_name`
+    (feature.properties.unit_name as string | undefined) ||
     feature.layerLabel;
 
   // Tabs are only shown when they have meaningful content for the
@@ -3939,6 +3942,32 @@ function buildLayer(
         'line-opacity': isCadastral ? 0.55 : 0.9,
       },
     }];
+  }
+
+  // Bedrock geology (USGS SGMC) — multi-color polygon fill driven by
+  // the normalized `lithology` property emitted by the ETL. Buckets +
+  // hex colors live in packages/shared/src/lithology-colors.ts so the
+  // cross-section's lithology coloring stays in sync. Outline is a
+  // dark slate at low opacity so adjacent unit boundaries stay visible
+  // without overwhelming the surrounding layers.
+  if (def.id === 'bedrock-geology') {
+    const fillColor = buildSgmcFillExpression() as unknown as maplibregl.DataDrivenPropertyValueSpecification<string>;
+    const fill: maplibregl.LayerSpecification = {
+      ...common,
+      type: 'fill',
+      paint: { 'fill-color': fillColor, 'fill-opacity': 0.55 },
+    };
+    const outline: maplibregl.LayerSpecification = {
+      ...common,
+      id: def.id + OUTLINE_SUFFIX,
+      type: 'line',
+      paint: {
+        'line-color': '#0f172a',
+        'line-width': ['interpolate', ['linear'], ['zoom'], 6, 0.3, 10, 0.7, 14, 1.2],
+        'line-opacity': 0.55,
+      },
+    };
+    return [fill, outline];
   }
 
   // Geophysics survey footprints — low-fill coverage overlay with a

@@ -56,7 +56,7 @@ import {
   type PolylineSegment,
   type LngLat,
 } from '@/lib/section-math';
-import { COMMODITY_CATEGORY_COLORS } from '@subterra/shared';
+import { COMMODITY_CATEGORY_COLORS, lithologyColor } from '@subterra/shared';
 
 // Sample counts. The user-controllable Sample-density slider (Toolbar)
 // drives the active elevation sample count; geology samples derive from
@@ -3743,46 +3743,9 @@ function strField(x: unknown): string {
   return String(x);
 }
 
-function lithologyColor(lithology: unknown): string | null {
-  // Macrostrat's `lithology` field is loosely typed — some unit
-  // records return an array of lith objects ({name, lith_class, ...})
-  // or a comma-joined string, others return null. Coerce to a single
-  // searchable string defensively; the type annotation can't be trusted.
-  if (lithology == null) return null;
-  let str: string;
-  if (typeof lithology === 'string') {
-    str = lithology;
-  } else if (Array.isArray(lithology)) {
-    str = lithology
-      .map((x) => (typeof x === 'string' ? x : (x && typeof x === 'object' && 'name' in x ? String((x as { name: unknown }).name) : '')))
-      .filter(Boolean)
-      .join(' ');
-  } else if (typeof lithology === 'object' && 'name' in lithology) {
-    str = String((lithology as { name: unknown }).name);
-  } else {
-    str = String(lithology);
-  }
-  if (!str) return null;
-  const l = str.toLowerCase();
-  // Sedimentary — most common in the western US prospecting target
-  if (/(limestone|dolomite|carbonate)/.test(l)) return '#7dd3fc';
-  if (/(sandstone|\bss\b|arenite)/.test(l)) return '#fde68a';
-  if (/(shale|mudstone|claystone|siltstone)/.test(l)) return '#94a3b8';
-  if (/conglomerate/.test(l)) return '#fcd34d';
-  if (/(evaporite|gypsum|halite|anhydrite)/.test(l)) return '#fce7f3';
-  if (/coal/.test(l)) return '#1f2937';
-  if (/(chert|jasperoid)/.test(l)) return '#fb923c';
-  // Igneous
-  if (/(granite|granodiorite|tonalite|diorite|monzonite)/.test(l)) return '#fda4af';
-  if (/(basalt|gabbro|diabase|dolerite)/.test(l)) return '#7c3aed';
-  if (/(rhyolite|tuff|ignimbrite|dacite|andesite|volcanic)/.test(l)) return '#f43f5e';
-  // Metamorphic
-  if (/(schist|gneiss|amphibolite)/.test(l)) return '#86efac';
-  if (/quartzite/.test(l)) return '#fef3c7';
-  if (/marble/.test(l)) return '#e0f2fe';
-  if (/(slate|phyllite)/.test(l)) return '#64748b';
-  return null;
-}
+// lithologyColor() is now imported from @subterra/shared so the SGMC
+// map layer's MapLibre match expression and this cross-section's
+// subsurface unit fills stay in sync. See packages/shared/src/lithology-colors.ts.
 
 /** Render style for a fault crossing, inferred from `slipSense`.
  *  When the USGS Quaternary Faults dataset carries slip-sense, we

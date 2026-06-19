@@ -48,6 +48,7 @@ SOURCES = [
     "well_laterals",    # multi-state wellbore directional surveys (lines)
     "geochemistry",  # Phase 9 — USGS NGDB stream-sediment/soil samples (~1.5M points)
     "geophysics",    # Phase 9 — USGS Earth MRI airborne survey footprints
+    "sgmc",          # USGS State Geologic Map Compilation v2 — surface bedrock polygons
     # Stake-ability constraint layers — needed for legally-correct
     # "open BLM land" identification and the eligibility check in the
     # detail drawer. Each is a polygon source consumed by both the
@@ -96,6 +97,10 @@ EXPECTED_MIN_FEATURES: dict[str, int] = {
     "pipelines_crude":     2_000,
     "geochemistry":       50_000,
     "geophysics":            500,
+    # SGMC western-US bbox-filtered: CONUS-wide polygon count is ~1M;
+    # western-only is ~300k. Conservative floor at 50k absorbs partial
+    # downloads / per-state ScienceBase enumeration variance.
+    "sgmc":               50_000,
     "withdrawals":         1_000,
     "critical_habitat":   10_000,
     "indian_lands":          500,
@@ -131,6 +136,11 @@ ACCEPT_BROKEN: set[str] = {
     #
     # Empty set is the goal. Keep this dict here so future broken
     # upstreams can be added without re-deriving the threshold pattern.
+    #
+    # SGMC is new (first run on this branch); ScienceBase enumeration
+    # may need URL tuning if the v2 item layout has shifted. Accept
+    # broken until we've seen one good production run.
+    "sgmc",
 }
 
 
