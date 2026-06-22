@@ -48,6 +48,7 @@ SOURCES = [
     "pipelines_crude",  # Phase 2 — EIA crude-oil trunk pipelines
     "wells",            # Phase 2 — multi-state ECMC/DMR/WOGCC wells (~1M points)
     "well_laterals",    # multi-state wellbore directional surveys (lines)
+    "drill_holes",      # USGS NURE drillhole bulk — historical drill collars + U assays
     "geochemistry",  # Phase 9 — USGS NGDB stream-sediment/soil samples (~1.5M points)
     "geophysics",    # Phase 9 — USGS Earth MRI airborne survey footprints
     "sgmc",          # USGS State Geologic Map Compilation v2 — surface bedrock polygons
@@ -102,6 +103,9 @@ EXPECTED_MIN_FEATURES: dict[str, int] = {
     "well_laterals":      10_000,
     "pipelines_natgas":    5_000,
     "pipelines_crude":     2_000,
+    # NURE published ~50k drill holes nationally; floor at 20k absorbs
+    # bulk-CSV schema drift between vintages.
+    "drill_holes":        20_000,
     "geochemistry":       50_000,
     "geophysics":            500,
     # SGMC western-US bbox-filtered: CONUS-wide polygon count is ~1M;
@@ -154,6 +158,9 @@ ACCEPT_BROKEN: set[str] = {
     # first run; iterate the URL via the *_URL env vars if needed.
     "usmin",
     "cmmi",
+    # drill_holes: USGS NURE bulk uses same canonical pattern — first
+    # run grace; iterate via NURE_URL if the path drifts.
+    "drill_holes",
 }
 
 

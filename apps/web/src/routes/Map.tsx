@@ -15,7 +15,7 @@ import {
   type SourceStatus,
 } from '@subterra/shared';
 import { cn } from '@/lib/cn';
-import { CrossSection, type CrossSectionAgency, type CrossSectionClaim, type CrossSectionFault, type CrossSectionGeochem, type CrossSectionMrds, type CrossSectionWell } from '@/components/CrossSection';
+import { CrossSection, type CrossSectionAgency, type CrossSectionClaim, type CrossSectionDrillHole, type CrossSectionFault, type CrossSectionGeochem, type CrossSectionMrds, type CrossSectionWell } from '@/components/CrossSection';
 import { fetchManifest } from '@/lib/manifest';
 import { fetchMe, signOut } from '@/lib/auth';
 import { checkPmtilesCached, precachePmtiles } from '@/lib/sw';
@@ -175,6 +175,7 @@ export function MapPage() {
   const [csAgencies, setCsAgencies] = useState<CrossSectionAgency[]>([]);
   const [csFaults, setCsFaults] = useState<CrossSectionFault[]>([]);
   const [csWells, setCsWells] = useState<CrossSectionWell[]>([]);
+  const [csDrillHoles, setCsDrillHoles] = useState<CrossSectionDrillHole[]>([]);
   /** Mirror csMode + csVertices into refs so the mount-time click
    *  handler can read the latest values without re-binding. */
   const csModeRef = useRef<'off' | 'picking' | 'open'>('off');
@@ -623,6 +624,36 @@ export function MapPage() {
       }
     }
     setCsWells(collectedWells);
+
+    // USGS NURE drill holes — point-collar layer; project as vertical
+    // drill sticks on the section. Layer may not exist on every install
+    // (gated on getLayer). Same per-feature bbox query as MRDS.
+    const drillHits = map.getLayer('drill-holes')
+      ? map.queryRenderedFeatures(bbox, { layers: ['drill-holes'] })
+      : [];
+    const drillSeen = new Set<string>();
+    const collectedDrills: CrossSectionDrillHole[] = [];
+    for (const h of drillHits) {
+      if (h.geometry.type !== 'Point') continue;
+      const attrs = (h.properties ?? {}) as Record<string, unknown>;
+      const key = String(attrs.nure_id ?? attrs.id ?? `${h.geometry.type}-${collectedDrills.length}`);
+      if (drillSeen.has(key)) continue;
+      drillSeen.add(key);
+      const coords = h.geometry.coordinates as [number, number];
+      const depthRaw = Number(attrs.depth_ft ?? attrs.depth ?? NaN);
+      const assayRaw = Number(attrs.u_ppm ?? attrs.assay_ppm ?? NaN);
+      collectedDrills.push({
+        lng: coords[0],
+        lat: coords[1],
+        name: String(attrs.name ?? attrs.nure_id ?? '') || undefined,
+        depthFt: Number.isFinite(depthRaw) ? depthRaw : undefined,
+        assayPpm: Number.isFinite(assayRaw) ? assayRaw : undefined,
+        element: String(attrs.element ?? 'U') || undefined,
+        operator: String(attrs.operator ?? '') || undefined,
+        year: String(attrs.year ?? '') || undefined,
+      });
+    }
+    setCsDrillHoles(collectedDrills);
 
     setCsMode('open');
     csModeRef.current = 'open';
@@ -1537,6 +1568,7 @@ export function MapPage() {
             setCsAgencies([]);
             setCsFaults([]);
             setCsWells([]);
+            setCsDrillHoles([]);
             setCsMode('picking');
             csModeRef.current = 'picking';
           }}
@@ -1552,6 +1584,7 @@ export function MapPage() {
             setCsAgencies([]);
             setCsFaults([]);
             setCsWells([]);
+            setCsDrillHoles([]);
           }}
         />
         <AoiControls
@@ -1613,6 +1646,7 @@ export function MapPage() {
             agencies={csAgencies}
             faults={csFaults}
             wells={csWells}
+            drillHoles={csDrillHoles}
             onReopen={(rv) => {
               // Recents → "open" path. Close the modal, set the new
               // vertices, and run the picker collection on the new
@@ -1636,6 +1670,7 @@ export function MapPage() {
               setCsAgencies([]);
               setCsFaults([]);
               setCsWells([]);
+              setCsDrillHoles([]);
             }}
           />
         )}

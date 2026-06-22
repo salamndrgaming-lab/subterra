@@ -196,6 +196,21 @@ export const LAYERS: readonly LayerDef[] = [
     color: '#fbbf24', // amber — pairs with the orange wells
   },
   {
+    // USGS NURE drill holes — historical (1973-1984) uranium-targeted
+    // drilling with co-collected pathfinder assays. Best-bulk-published
+    // national drillhole archive. Renders as collar dots on the map at
+    // zoom 7+; cross-section projects each within the buffer as a
+    // vertical drill stick sized by depth_ft.
+    id: 'drill-holes',
+    label: 'Drill Holes (USGS NURE)',
+    group: 'subsurface',
+    defaultVisible: false,
+    tilesetLayer: 'drill_holes',
+    geometry: 'point',
+    minZoom: 7,
+    color: '#2dd4bf', // teal — distinct from MRDS/USMIN/CMMI mineral colors
+  },
+  {
     id: 'leases',
     label: 'BLM Federal O&G Leases',
     group: 'present',

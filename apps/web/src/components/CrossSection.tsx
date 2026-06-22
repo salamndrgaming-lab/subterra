@@ -277,6 +277,27 @@ export interface CrossSectionWell {
   status?: string;
 }
 
+/** A USGS NURE drill hole — collar point + depth + commodity assay.
+ *  Projected onto the cross-section as a vertical drill stick at the
+ *  collar's perpendicular position on the polyline, sized by depthFt
+ *  when known. Pathfinder assay (Uranium for NURE) drives the stick's
+ *  color intensity. */
+export interface CrossSectionDrillHole {
+  lng: number;
+  lat: number;
+  name?: string;
+  /** Total depth in feet — sizes the vertical drill stick. */
+  depthFt?: number;
+  /** Primary assay value in ppm (Uranium for NURE; other elements
+   *  for future state-survey augmentations). Drives the stick color
+   *  intensity — higher value = redder. */
+  assayPpm?: number;
+  /** Display label for the assay element (default "U" for NURE). */
+  element?: string;
+  operator?: string;
+  year?: string;
+}
+
 interface ElevSample {
   t: number;
   distM: number;
@@ -343,6 +364,15 @@ interface ProjectedGeochem extends ProjectedPoint {
   element: string;
 }
 
+interface ProjectedDrillHole extends ProjectedPoint {
+  name: string;
+  depthFt: number | null;
+  assayPpm: number | null;
+  element: string;
+  operator: string;
+  year: string;
+}
+
 /** Wraps the real CrossSection component in an error boundary so a
  *  render exception inside it (e.g. a bad data shape from a Macrostrat
  *  response) doesn't blank the surrounding UI — surfaces a useful
@@ -371,6 +401,10 @@ interface CrossSectionProps {
   /** Wellbore laterals — optional; renders as vertical drill traces at
    *  the crossing point of each lateral with the section line. */
   wells?: CrossSectionWell[];
+  /** USGS NURE drill holes — collars projected as vertical drill sticks
+   *  at their perpendicular position on the polyline. Stick length =
+   *  depthFt; color intensity = assayPpm. Optional. */
+  drillHoles?: CrossSectionDrillHole[];
   /** Re-open the picker with these starting vertices — used by the
    *  Recents dropdown when the user picks a saved section. Optional
    *  because the modal works without recents/compare integration. */
@@ -429,6 +463,7 @@ function CrossSectionInner({
   agencies = [],
   faults = [],
   wells = [],
+  drillHoles = [],
   onReopen,
   onClose,
 }: {
@@ -439,6 +474,7 @@ function CrossSectionInner({
   agencies?: CrossSectionAgency[];
   faults?: CrossSectionFault[];
   wells?: CrossSectionWell[];
+  drillHoles?: CrossSectionDrillHole[];
   onReopen?: (vertices: LngLat[]) => void;
   onClose: () => void;
 }) {
@@ -575,6 +611,28 @@ function CrossSectionInner({
     }
     return out;
   }, [geochem, polyVertices, bufferM]);
+
+  // NURE drill holes — project each within the buffer to its
+  // perpendicular position on the polyline. Render path uses depthFt
+  // for stick length + assayPpm for color intensity.
+  const projectedDrillHoles: ProjectedDrillHole[] = useMemo(() => {
+    const out: ProjectedDrillHole[] = [];
+    for (const d of drillHoles) {
+      const proj = projectOntoPolyline([d.lng, d.lat], polyVertices);
+      if (proj.distanceFrom > bufferM) continue;
+      out.push({
+        distM: proj.distanceAlong,
+        distFromLineM: proj.distanceFrom,
+        name: d.name ?? '',
+        depthFt: typeof d.depthFt === 'number' ? d.depthFt : null,
+        assayPpm: typeof d.assayPpm === 'number' ? d.assayPpm : null,
+        element: d.element ?? 'U',
+        operator: d.operator ?? '',
+        year: d.year ?? '',
+      });
+    }
+    return out.sort((x, y) => x.distM - y.distM);
+  }, [drillHoles, polyVertices, bufferM]);
 
   // Agencies are sampled along the line at 60 evenly-spaced points
   // (distributed across polyline segments by length) — they're large
@@ -1144,6 +1202,7 @@ ${sections.join('\n')}
             geochem: projectedGeochem.length,
             faults: faultCrossings.length,
             wells: wellCrossings.length,
+            drillHoles: projectedDrillHoles.length,
           }}
         />
 
@@ -1169,6 +1228,7 @@ ${sections.join('\n')}
               agencyStrip={agencyStrip}
               faultCrossings={faultCrossings}
               wellCrossings={wellCrossings}
+              drillHoles={projectedDrillHoles}
               stats={stats}
               ve={ve}
               bufferM={bufferM}
@@ -1496,7 +1556,7 @@ function Toolbar({
   onTrueScaleChange: (v: boolean) => void;
   samples: number;
   onSamplesChange: (n: number) => void;
-  counts: { mrds: number; claims: number; geochem: number; faults: number; wells: number };
+  counts: { mrds: number; claims: number; geochem: number; faults: number; wells: number; drillHoles: number };
 }) {
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-border bg-bg-panel/30 px-4 py-2 font-mono text-[10px]">
@@ -1584,6 +1644,7 @@ function Toolbar({
         <CountBadge label="Geochem" value={counts.geochem} color="#a78bfa" />
         <CountBadge label="Faults" value={counts.faults} color="#ef4444" />
         <CountBadge label="Wells" value={counts.wells} color="#fbbf24" />
+        <CountBadge label="Drill" value={counts.drillHoles} color="#2dd4bf" />
       </div>
     </div>
   );
@@ -1817,6 +1878,7 @@ function SectionSvg({
   agencyStrip,
   faultCrossings,
   wellCrossings = [],
+  drillHoles = [],
   stats,
   ve,
   bufferM,
@@ -1837,6 +1899,7 @@ function SectionSvg({
   agencyStrip: AgencySegment[];
   faultCrossings: FaultCrossing[];
   wellCrossings?: WellCrossing[];
+  drillHoles?: ProjectedDrillHole[];
   stats: SectionStats;
   ve: number;
   bufferM: number;
@@ -2396,6 +2459,78 @@ function SectionSvg({
               y2={yBot}
               stroke="#fbbf24"
               strokeWidth={1.4}
+            />
+          </g>
+        );
+      })}
+
+      {/* ── NURE drill holes (vertical sticks) ──
+          Each drill collar within the buffer renders as a thin teal
+          vertical stick from the topo surface down to depth. Stick
+          length = depth_ft (default 500 ft when unknown). When the
+          NURE row has a uranium assay, the stick is colored with a
+          red-to-orange gradient at the assay peak — instantly shows
+          "this hole hit something." Hover for hole name + operator +
+          year + depth + assay. */}
+      {drillHoles.map((d, i) => {
+        const tFrac = totalDistM > 0 ? d.distM / totalDistM : 0;
+        const x = PADDING.l + tFrac * innerW;
+        const surfY = (() => {
+          const e = interpElev(elev, d.distM);
+          return e != null ? yOf(e) : PADDING.t + 40;
+        })();
+        const depthM = d.depthFt != null ? d.depthFt * 0.3048 : 152; // default 500 ft
+        const surfElev = interpElev(elev, d.distM) ?? dataMax;
+        const botElev = Math.max(surfElev - depthM, subsurfaceFloor);
+        const yBot = Math.min(yOf(botElev), topoBottomY);
+        // Assay-based color: > 5 ppm U = red, 1-5 = orange, < 1 = teal.
+        // NURE pathfinder thresholds tuned for visual signal-to-noise.
+        const assayColor = d.assayPpm == null
+          ? '#2dd4bf'
+          : d.assayPpm >= 5
+            ? '#dc2626'
+            : d.assayPpm >= 1
+              ? '#f97316'
+              : '#2dd4bf';
+        return (
+          <g key={`drill-${i}`} opacity={0.95}>
+            <line
+              x1={x}
+              y1={surfY}
+              x2={x}
+              y2={yBot}
+              stroke={assayColor}
+              strokeWidth={1.4}
+              strokeLinecap="round"
+            >
+              <title>
+                {`${d.name || '(unnamed drill hole)'}` +
+                  `${d.operator ? `\noperator: ${d.operator}` : ''}` +
+                  `${d.year ? `\nyear: ${d.year}` : ''}` +
+                  `${d.depthFt != null ? `\ndepth: ${Math.round(d.depthFt)} ft (${Math.round(d.depthFt * 0.3048)} m)` : '\ndepth: unknown (showing 500 ft default)'}` +
+                  `${d.assayPpm != null ? `\n${d.element} assay: ${d.assayPpm.toFixed(2)} ppm` : ''}` +
+                  `\noffset from section: ${(d.distFromLineM / 1609.34).toFixed(2)} mi`}
+              </title>
+            </line>
+            {/* Collar marker — small square at the surface so collar
+                position reads as distinct from the stick body. */}
+            <rect
+              x={x - 2.5}
+              y={surfY - 2.5}
+              width={5}
+              height={5}
+              fill={assayColor}
+              stroke="#0a0c10"
+              strokeWidth={0.6}
+            />
+            {/* TD tick at hole bottom */}
+            <line
+              x1={x - 2.5}
+              y1={yBot}
+              x2={x + 2.5}
+              y2={yBot}
+              stroke={assayColor}
+              strokeWidth={1.2}
             />
           </g>
         );
