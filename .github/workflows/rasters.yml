@@ -29,7 +29,7 @@ on:
         options:
           - gravity
           - aeromag
-          # radiometric follows once a verified GeoTIFF URL is in hand.
+          - radiometric
       source_url:
         description: >-
           Verified upstream GeoTIFF URL. REQUIRED — the dataset script
@@ -78,6 +78,8 @@ jobs:
           GRAVITY_MAX_ZOOM: ${{ inputs.dataset == 'gravity' && inputs.max_zoom || '' }}
           AEROMAG_GEOTIFF_URL: ${{ inputs.dataset == 'aeromag' && inputs.source_url || '' }}
           AEROMAG_MAX_ZOOM: ${{ inputs.dataset == 'aeromag' && inputs.max_zoom || '' }}
+          RADIOMETRIC_GEOTIFF_URL: ${{ inputs.dataset == 'radiometric' && inputs.source_url || '' }}
+          RADIOMETRIC_MAX_ZOOM: ${{ inputs.dataset == 'radiometric' && inputs.max_zoom || '' }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}

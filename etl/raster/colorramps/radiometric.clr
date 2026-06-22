@@ -1,0 +1,22 @@
+# Radiometric total-count gamma-ray color ramp — counts per second (cps).
+# gdaldem color-relief format: <value> <r> <g> <b> [<a>]
+# Sequential cmap (gamma counts are non-negative); transparent for nodata.
+# Stops tuned for a typical CONUS aero-radiometric TC range (~0-3000 cps),
+# with the upper tail biased toward known felsic / U-rich provinces
+# (Marysvale volcanics, Bingham Canyon, granitic Sierra Nevada batholith).
+#
+# Adjust stops if the source GeoTIFF uses different units (eg µR/h,
+# eU ppm, eTh ppm, K% — each ranges differently) or if the survey
+# covers a province with a flatter or wilder dynamic range.
+
+nv 0 0 0 0
+   0 255 252 200 0
+  50 255 252 200 180
+ 200 254 230 140 200
+ 500 254 200 90 215
+1000 253 160 50 220
+1500 240 110 30 225
+2000 215 60 20 230
+2500 170 20 30 235
+3000 110 0 30 240
+4000  60 0 30 245

@@ -393,6 +393,36 @@ export const LAYERS: readonly LayerDef[] = [
     rasterOpacity: 0.6,
   },
 
+  // Radiometric total-count gamma-ray — third Earth MRI pre-tiled
+  // raster after gravity and aeromag. Same architecture: pre-tiled
+  // by .github/workflows/rasters.yml (manual dispatch with a verified
+  // USGS GeoTIFF URL), served through the Worker /rasters/radiometric/
+  // route, layer entry ships unconditionally so the sidebar toggle
+  // appears the moment tiles land in R2.
+  //
+  // Reads as a felsic-vs-mafic discriminator (K-feldspar / granitic
+  // terranes light up; mafic + ultramafic stay dark) and a first-pass
+  // uranium-prospecting filter. Pairs with the U dots already in
+  // MRDS / USMIN / CMMI to vector uranium roll-fronts (Wyoming Basin,
+  // Grants Mineral Belt) and felsic-volcanic-hosted U (Marysvale).
+  // Together with gravity (basin / basement structure) and aeromag
+  // (magnetic basement / mafic intrusives) this completes the
+  // three-channel geophysics view the buried-deposit explorer wants.
+  {
+    id: 'radiometric',
+    label: 'Radiometric Total Count (USGS)',
+    group: 'subsurface',
+    defaultVisible: false,
+    tilesetLayer: 'radiometric',
+    geometry: 'raster',
+    minZoom: 0,
+    rasterTiles: ['{base}/rasters/radiometric/{z}/{x}/{y}.png'],
+    rasterTileSize: 256,
+    rasterMaxZoom: 9,
+    rasterAttribution: 'USGS Earth MRI Radiometric Compilation · pre-tiled by Subterra ETL',
+    rasterOpacity: 0.6,
+  },
+
   // Stake-ability constraints — eligibility blockers a clicked point can hit.
   {
     id: 'withdrawals',
