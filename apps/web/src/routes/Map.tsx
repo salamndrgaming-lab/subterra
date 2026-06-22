@@ -311,6 +311,22 @@ export function MapPage() {
         });
       }
       for (const def of LAYERS) {
+        // Raster layers carry their own external tile source; one source
+        // per raster layer, keyed by `raster-<id>` so two raster overlays
+        // can coexist without source-id collision. Vector layers share
+        // the single `subterra` PMTiles source registered above.
+        if (def.geometry === 'raster' && def.rasterTiles) {
+          const rasterSrcId = `raster-${def.id}`;
+          if (!map.getSource(rasterSrcId)) {
+            map.addSource(rasterSrcId, {
+              type: 'raster',
+              tiles: [...def.rasterTiles],
+              tileSize: def.rasterTileSize ?? 256,
+              ...(def.rasterMaxZoom != null ? { maxzoom: def.rasterMaxZoom } : {}),
+              ...(def.rasterAttribution ? { attribution: def.rasterAttribution } : {}),
+            });
+          }
+        }
         if (map.getLayer(def.id)) continue;
         // buildLayer returns one or two specs — fill polygons emit a
         // paired outline line layer. Click + hover only target the
@@ -2882,7 +2898,7 @@ function Swatch({
 }: {
   color: string;
   label: string;
-  kind: 'point' | 'line' | 'polygon';
+  kind: 'point' | 'line' | 'polygon' | 'raster';
 }) {
   return (
     <div className="flex items-center gap-2 text-text">
@@ -2893,8 +2909,11 @@ function Swatch({
           kind === 'point' && 'h-2 w-2 rounded-full',
           kind === 'line' && 'h-0.5 w-4',
           kind === 'polygon' && 'h-2 w-3 rounded-sm border',
+          // Raster legend swatch — a tiny gradient strip hints "image
+          // overlay" rather than a discrete categorical color.
+          kind === 'raster' && 'h-2 w-3 rounded-sm bg-gradient-to-r from-slate-700 to-slate-300',
         )}
-        style={{
+        style={kind === 'raster' ? undefined : {
           backgroundColor: kind === 'polygon' ? `${color}38` : color,
           borderColor: kind === 'polygon' ? color : undefined,
         }}
@@ -3940,6 +3959,24 @@ function buildLayer(
       ? { filter: def.filter as unknown as maplibregl.FilterSpecification }
       : {}),
   };
+
+  // Raster layers read from a per-layer external source (registered in
+  // the install loop above as `raster-<id>`), not the shared `subterra`
+  // PMTiles source. The non-interactive raster overlay paints under
+  // the vector layers but over the basemap — no click handling, no
+  // source-layer, no filter.
+  if (def.geometry === 'raster') {
+    return [{
+      id: def.id,
+      type: 'raster',
+      source: `raster-${def.id}`,
+      minzoom: def.minZoom,
+      layout: { visibility } as { visibility: 'visible' | 'none' },
+      paint: {
+        'raster-opacity': def.rasterOpacity ?? 0.7,
+      },
+    }];
+  }
 
   if (def.geometry === 'point') {
     // MRDS dots are color-coded by commodity category so the most useful

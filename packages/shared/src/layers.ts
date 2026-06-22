@@ -19,19 +19,42 @@ export interface LayerDef {
    *  any layer needs it — sidebar empty groups stay hidden. */
   group: 'stake' | 'present' | 'economic' | 'subsurface' | 'reference';
   defaultVisible: boolean;
-  /** Tippecanoe layer id inside the PMTiles file. */
+  /** Tippecanoe layer id inside the PMTiles file. Unused for raster
+   *  layers (which have their own external tile source) but kept
+   *  required so the registry shape stays uniform; raster entries
+   *  set it to the layer id by convention. */
   tilesetLayer: string;
-  /** GeoJSON geometry kind painted by this layer. */
-  geometry: 'point' | 'line' | 'polygon';
+  /** GeoJSON geometry kind for vector layers, or 'raster' for external
+   *  raster-tile overlays (XYZ / TMS endpoints — not WMS, MapLibre
+   *  doesn't speak WMS natively). Raster layers ignore tilesetLayer
+   *  and read their data from rasterTiles instead. */
+  geometry: 'point' | 'line' | 'polygon' | 'raster';
   /** Minimum zoom at which the layer renders. */
   minZoom: number;
-  /** Layer-specific paint color (overrides the group default). Hex like #f59e0b. */
+  /** Layer-specific paint color (overrides the group default). Hex like #f59e0b.
+   *  Ignored for raster layers. */
   color?: string;
   /** Optional MapLibre filter expression. Lets multiple layers share one
    *  tilesetLayer with different filters (e.g. open-blm-land is just
    *  federal_lands filtered to agency=BLM). Type is `unknown[]` because
    *  the maplibre Filter type isn't available in @subterra/shared. */
   filter?: readonly unknown[];
+  /** Raster-only: XYZ tile URL templates (e.g. {z}/{x}/{y}). Plural
+   *  to allow tile-server load balancing across mirrors. MapLibre will
+   *  pick from the list. Required when geometry === 'raster'. */
+  rasterTiles?: readonly string[];
+  /** Raster-only: tile size in pixels (256 for legacy XYZ, 512 for
+   *  retina-style). Defaults to 256 when omitted. */
+  rasterTileSize?: number;
+  /** Raster-only: max zoom at which the upstream serves tiles. MapLibre
+   *  over-zooms (resamples) above this. */
+  rasterMaxZoom?: number;
+  /** Raster-only: attribution string surfaced in the map's
+   *  attribution control. Required by upstream licenses. */
+  rasterAttribution?: string;
+  /** Raster-only: paint opacity (0..1). Defaults to 0.7 so the overlay
+   *  blends with the vector basemap. */
+  rasterOpacity?: number;
 }
 
 export const LAYERS: readonly LayerDef[] = [
@@ -285,6 +308,36 @@ export const LAYERS: readonly LayerDef[] = [
     // `color` is ignored for this layer; Map.tsx's buildLayer pulls the
     // multi-color match expression from buildSgmcFillExpression().
     color: '#7dd3fc',
+  },
+
+  // USGS National Map shaded relief — first raster overlay on the
+  // app. The main map is otherwise a flat vector basemap, which hides
+  // the structural information terrain carries (range-and-basin
+  // fabric, fault scarps, alluvial fans). Toggling this overlay
+  // restores visible topography without needing the full 3D-terrain
+  // mode (which requires DEM + GPU pitch). XYZ tiles served from
+  // the USGS National Map basemap service — production-stable,
+  // public, no auth, no rate limit at our use volume.
+  //
+  // First raster-geometry layer in the registry; unlocks the
+  // architectural path for future Earth MRI aeromag + Bouguer
+  // gravity overlays (PR 4b) that need the same source-and-paint
+  // shape.
+  {
+    id: 'hillshade',
+    label: 'Shaded Relief (USGS)',
+    group: 'subsurface',
+    defaultVisible: false,
+    tilesetLayer: 'hillshade',
+    geometry: 'raster',
+    minZoom: 0,
+    rasterTiles: [
+      'https://basemap.nationalmap.gov/arcgis/rest/services/USGSShadedReliefOnly/MapServer/tile/{z}/{y}/{x}',
+    ],
+    rasterTileSize: 256,
+    rasterMaxZoom: 15,
+    rasterAttribution: 'USGS The National Map: 3DEP',
+    rasterOpacity: 0.55,
   },
 
   // Stake-ability constraints — eligibility blockers a clicked point can hit.
