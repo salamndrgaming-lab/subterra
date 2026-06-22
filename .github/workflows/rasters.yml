@@ -1,0 +1,93 @@
+name: rasters
+
+# One-shot raster pre-tile workflow for USGS geophysics products
+# (Bouguer gravity, aeromag, future radiometric). Manual-dispatch only:
+# never runs on push, never on a schedule. USGS GeoTIFF download URLs
+# aren't stable enough to assume they'll keep working on every commit,
+# so triggering is a deliberate maintainer action with the verified URL
+# passed as a workflow input.
+#
+# Pipeline per dataset:
+#   download GeoTIFF → reproject to EPSG:3857 → apply color ramp →
+#   gdal2tiles to PNG pyramid → upload to R2 at rasters/<dataset>/{z}/{x}/{y}.png
+#
+# After a successful run, the corresponding LayerDef in
+# packages/shared/src/layers.ts can be toggled in the sidebar and the
+# Worker route apps/api/src/index.ts /rasters/* will serve the new tiles.
+#
+# Cost note: a CONUS GeoTIFF tiled 0-9 is ~50k PNG files (~300 MB).
+# R2 upload takes ~5 min over the workflow's network; tippecanoe-class
+# upload concurrency from boto3 keeps it bounded.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dataset:
+        description: 'Which dataset to pre-tile'
+        required: true
+        type: choice
+        options:
+          - gravity
+          # aeromag + radiometric will land here as follow-up commits
+          # once gravity proves the pipeline end-to-end.
+      source_url:
+        description: >-
+          Verified upstream GeoTIFF URL. REQUIRED — the dataset script
+          refuses to run without one. Find via USGS mrdata.usgs.gov,
+          USGS ScienceBase, or the dataset's documentation page.
+        required: true
+        type: string
+      max_zoom:
+        description: 'Maximum tile pyramid zoom (default 9)'
+        required: false
+        type: string
+        default: '9'
+
+jobs:
+  pre-tile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install GDAL
+        # ubuntu-24.04 ships gdal-bin 3.8+, plenty new enough for
+        # gdal2tiles.py --xyz (added in 3.1). python3-gdal isn't
+        # strictly required since tile.py shells out to the CLIs only.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gdal-bin
+          gdalinfo --version
+          gdal2tiles.py --help | head -5
+
+      - name: Install Python deps
+        run: |
+          pip install --quiet -r etl/requirements.txt
+
+      - name: Pre-tile dataset → R2
+        env:
+          GRAVITY_GEOTIFF_URL: ${{ inputs.dataset == 'gravity' && inputs.source_url || '' }}
+          GRAVITY_MAX_ZOOM: ${{ inputs.dataset == 'gravity' && inputs.max_zoom || '' }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          python -m etl.raster.${{ inputs.dataset }}
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Raster pre-tile: ${{ inputs.dataset }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Source URL: ${{ inputs.source_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Max zoom: ${{ inputs.max_zoom }}" >> $GITHUB_STEP_SUMMARY
+          echo "- R2 key prefix: rasters/${{ inputs.dataset }}/" >> $GITHUB_STEP_SUMMARY
+          echo "- Worker URL pattern: /rasters/${{ inputs.dataset }}/{z}/{x}/{y}.png" >> $GITHUB_STEP_SUMMARY

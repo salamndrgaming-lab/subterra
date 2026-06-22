@@ -1,0 +1,22 @@
+# Bouguer gravity anomaly color ramp — mGal.
+# gdaldem color-relief format: <value> <r> <g> <b> [<a>]
+# Diverging cmap centered on zero; transparent for nodata.
+# Stops tuned for typical CONUS Bouguer range (~-250 to +50 mGal,
+# heavily negative because crustal thickening dominates).
+#
+# Adjust stops if the source GeoTIFF uses different units (e.g. µGal,
+# Gal, or values already in milligals-times-100).
+
+nv 0 0 0 0
+-300 8 8 80 220
+-200 30 60 180 220
+-150 30 120 200 220
+-100 60 170 220 220
+ -50 140 210 230 220
+ -25 200 230 240 220
+   0 255 255 255 220
+  25 255 230 200 220
+  50 250 200 140 220
+ 100 240 140 60 220
+ 150 220 60 30 220
+ 200 150 0 0 220

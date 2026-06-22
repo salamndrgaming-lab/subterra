@@ -310,6 +310,18 @@ export function MapPage() {
           attribution: 'BLM · USGS · EPA · HIFLD',
         });
       }
+      // Worker origin for {base} substitution in raster tile templates.
+      // Derived from the manifest's pmtilesUrl (which the Worker rewrites
+      // to its own origin) so dev/preview/prod each get the right Worker
+      // without environment-specific registry entries.
+      const workerOrigin = (() => {
+        try {
+          return new URL(manifest.pmtilesUrl).origin;
+        } catch {
+          return '';
+        }
+      })();
+
       for (const def of LAYERS) {
         // Raster layers carry their own external tile source; one source
         // per raster layer, keyed by `raster-<id>` so two raster overlays
@@ -318,9 +330,14 @@ export function MapPage() {
         if (def.geometry === 'raster' && def.rasterTiles) {
           const rasterSrcId = `raster-${def.id}`;
           if (!map.getSource(rasterSrcId)) {
+            // Substitute {base} → Worker origin for layers proxied
+            // through our own /rasters/* route. Layers pointing at
+            // external CDNs (like USGS hillshade) have no {base} token
+            // and pass through unchanged.
+            const tiles = def.rasterTiles.map(t => t.replace('{base}', workerOrigin));
             map.addSource(rasterSrcId, {
               type: 'raster',
-              tiles: [...def.rasterTiles],
+              tiles,
               tileSize: def.rasterTileSize ?? 256,
               ...(def.rasterMaxZoom != null ? { maxzoom: def.rasterMaxZoom } : {}),
               ...(def.rasterAttribution ? { attribution: def.rasterAttribution } : {}),

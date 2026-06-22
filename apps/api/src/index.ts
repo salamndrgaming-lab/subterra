@@ -215,6 +215,31 @@ app.get('/features/subterra-features.db', (c) =>
   serveR2(c, 'features/subterra-features.db', 'application/vnd.sqlite3'),
 );
 
+// Raster tile proxy for the geophysics overlays (Bouguer gravity,
+// aeromag, future radiometric). Pre-tiled by .github/workflows/rasters.yml
+// (manual dispatch only) and stored in R2 under rasters/<dataset>/<z>/<x>/<y>.png.
+// LayerDef.rasterTiles in the registry uses the {base}/rasters/<dataset>/{z}/{x}/{y}.png
+// template; the web app substitutes {base} with this Worker's origin at
+// install time, so a request lands here.
+//
+// Dataset + coordinate components are validated: dataset matches a
+// short-name whitelist, z/x/y must be integers. Otherwise an attacker
+// could probe arbitrary R2 keys via path traversal.
+const RASTER_DATASETS = new Set(['gravity', 'aeromag', 'radiometric']);
+app.get('/rasters/:dataset/:z/:x/:y{.+\\.png}', async (c) => {
+  const dataset = c.req.param('dataset');
+  const z = c.req.param('z');
+  const x = c.req.param('x');
+  // The :y param includes the .png suffix (regex `.+\.png`); strip it.
+  const yWithExt = c.req.param('y');
+  const y = yWithExt.replace(/\.png$/, '');
+  if (!RASTER_DATASETS.has(dataset)) return new Response('unknown dataset', { status: 404 });
+  if (!/^\d+$/.test(z) || !/^\d+$/.test(x) || !/^\d+$/.test(y)) {
+    return new Response('bad tile coords', { status: 400 });
+  }
+  return serveR2(c, `rasters/${dataset}/${z}/${x}/${y}.png`, 'image/png');
+});
+
 // ─── routes filled in by later phases ───────────────────────────────────
 
 const NOT_YET = (phase: string) => (c: { json: (b: unknown, s?: number) => Response }) =>

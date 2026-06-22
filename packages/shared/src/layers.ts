@@ -340,6 +340,36 @@ export const LAYERS: readonly LayerDef[] = [
     rasterOpacity: 0.55,
   },
 
+  // Bouguer gravity anomaly — first proxied raster overlay (the
+  // hillshade above is hosted by USGS directly; this one is pre-tiled
+  // from a USGS GeoTIFF by .github/workflows/rasters.yml and served
+  // through our Worker's /rasters/gravity/{z}/{x}/{y}.png route).
+  //
+  // The `{base}` token gets substituted at MapLibre install time
+  // (Map.tsx) with the Worker origin derived from the manifest's
+  // pmtilesUrl — keeps the registry Worker-URL-agnostic so local dev,
+  // preview, and prod each point at their own Worker.
+  //
+  // Defaults to invisible; tiles only exist after a maintainer runs
+  // the rasters.yml workflow with a verified GeoTIFF URL. The layer
+  // entry ships unconditionally so the toggle appears in the sidebar
+  // the moment tiles land in R2 — no follow-up commit needed to
+  // expose it.
+  {
+    id: 'gravity',
+    label: 'Bouguer Gravity (USGS)',
+    group: 'subsurface',
+    defaultVisible: false,
+    tilesetLayer: 'gravity',
+    geometry: 'raster',
+    minZoom: 0,
+    rasterTiles: ['{base}/rasters/gravity/{z}/{x}/{y}.png'],
+    rasterTileSize: 256,
+    rasterMaxZoom: 9,
+    rasterAttribution: 'USGS Bouguer Gravity Anomaly · pre-tiled by Subterra ETL',
+    rasterOpacity: 0.6,
+  },
+
   // Stake-ability constraints — eligibility blockers a clicked point can hit.
   {
     id: 'withdrawals',
