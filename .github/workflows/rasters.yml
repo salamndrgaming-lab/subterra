@@ -28,8 +28,8 @@ on:
         type: choice
         options:
           - gravity
-          # aeromag + radiometric will land here as follow-up commits
-          # once gravity proves the pipeline end-to-end.
+          - aeromag
+          # radiometric follows once a verified GeoTIFF URL is in hand.
       source_url:
         description: >-
           Verified upstream GeoTIFF URL. REQUIRED — the dataset script
@@ -76,6 +76,8 @@ jobs:
         env:
           GRAVITY_GEOTIFF_URL: ${{ inputs.dataset == 'gravity' && inputs.source_url || '' }}
           GRAVITY_MAX_ZOOM: ${{ inputs.dataset == 'gravity' && inputs.max_zoom || '' }}
+          AEROMAG_GEOTIFF_URL: ${{ inputs.dataset == 'aeromag' && inputs.source_url || '' }}
+          AEROMAG_MAX_ZOOM: ${{ inputs.dataset == 'aeromag' && inputs.max_zoom || '' }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}

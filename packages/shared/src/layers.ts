@@ -370,6 +370,29 @@ export const LAYERS: readonly LayerDef[] = [
     rasterOpacity: 0.6,
   },
 
+  // Aeromagnetic total-field anomaly — second pre-tiled raster from
+  // the USGS Earth MRI geophysics compilation. Same architecture as
+  // gravity above (proxied via Worker /rasters/aeromag/... route,
+  // pre-tiled by .github/workflows/rasters.yml manual dispatch, layer
+  // toggle visible the moment tiles land in R2). Together with
+  // gravity, paints the buried structure that the surface bedrock
+  // (SGMC) layer can't show: magnetic basement, mafic intrusives,
+  // gravity-low sediment basins.
+  {
+    id: 'aeromag',
+    label: 'Aeromagnetic Total Field (USGS)',
+    group: 'subsurface',
+    defaultVisible: false,
+    tilesetLayer: 'aeromag',
+    geometry: 'raster',
+    minZoom: 0,
+    rasterTiles: ['{base}/rasters/aeromag/{z}/{x}/{y}.png'],
+    rasterTileSize: 256,
+    rasterMaxZoom: 9,
+    rasterAttribution: 'USGS Earth MRI Aeromagnetic Compilation · pre-tiled by Subterra ETL',
+    rasterOpacity: 0.6,
+  },
+
   // Stake-ability constraints — eligibility blockers a clicked point can hit.
   {
     id: 'withdrawals',
