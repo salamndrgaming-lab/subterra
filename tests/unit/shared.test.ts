@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { COMMODITIES, LAYERS, LAYER_GROUPS, CONUS_STATES } from '../../packages/shared/src/index';
+import {
+  COMMODITIES,
+  LAYERS,
+  LAYER_GROUPS,
+  LAYER_PRESETS,
+  CONUS_STATES,
+} from '../../packages/shared/src/index';
 
 describe('shared registry', () => {
   it('every layer references a known group', () => {
@@ -34,5 +40,22 @@ describe('shared registry', () => {
     expect(ids.has('withdrawals')).toBe(true);
     expect(ids.has('critical-habitat')).toBe(true);
     expect(ids.has('indian-lands')).toBe(true);
+  });
+
+  it('every preset references only registered layer ids', () => {
+    const known = new Set(LAYERS.map((l) => l.id));
+    for (const p of LAYER_PRESETS) {
+      for (const id of p.visible) {
+        expect(known.has(id), `preset ${p.id} references unknown layer ${id}`).toBe(true);
+      }
+    }
+  });
+
+  it('preset ids are unique', () => {
+    const ids = new Set<string>();
+    for (const p of LAYER_PRESETS) {
+      expect(ids.has(p.id), `duplicate preset id: ${p.id}`).toBe(false);
+      ids.add(p.id);
+    }
   });
 });

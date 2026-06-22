@@ -8,8 +8,10 @@ import {
   COMMODITY_CATEGORY_COLORS,
   LAYERS,
   LAYER_GROUPS,
+  LAYER_PRESETS,
   buildSgmcFillExpression,
   type LayerDef,
+  type LayerPreset,
   type TopHotspot,
   type CommodityPrices,
   type SourceStatus,
@@ -191,6 +193,7 @@ export function MapPage() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const visibility = useLayerVisibility((s) => s.visibility);
   const toggle = useLayerVisibility((s) => s.toggle);
+  const applyPreset = useLayerVisibility((s) => s.applyPreset);
   const terrain3d = useViewMode((s) => s.terrain3d);
   const imagery = useViewMode((s) => s.imagery);
   const setTerrain3d = useViewMode((s) => s.setTerrain3d);
@@ -1433,6 +1436,11 @@ export function MapPage() {
             )}
           </div>
           <div className="mt-1 font-mono text-sm text-text">Map controls</div>
+          <PresetRow
+            presets={LAYER_PRESETS}
+            visibility={visibility}
+            onApply={(p) => applyPreset(p)}
+          />
           <input
             type="search"
             value={layerSearch}
@@ -1714,6 +1722,52 @@ export function MapPage() {
 }
 
 // ─── small components ──────────────────────────────────────────────────
+
+/** Curated preset row above the layer search — one-click layer loadouts.
+ *  Highlights the active preset if current visibility exactly matches it,
+ *  so the user can see which mode they're in (or that they've drifted off
+ *  any preset by hand-toggling). */
+function PresetRow({
+  presets,
+  visibility,
+  onApply,
+}: {
+  presets: readonly LayerPreset[];
+  visibility: Record<string, boolean>;
+  onApply: (preset: LayerPreset) => void;
+}) {
+  const activeId = presets.find((p) => {
+    const wanted = new Set(p.visible);
+    return LAYERS.every((l) => (visibility[l.id] ?? false) === wanted.has(l.id));
+  })?.id;
+  return (
+    <div className="mt-2" data-testid="preset-row">
+      <div className="grid grid-cols-3 gap-1">
+        {presets.map((p) => {
+          const isActive = p.id === activeId;
+          return (
+            <button
+              key={p.id}
+              type="button"
+              onClick={() => onApply(p)}
+              title={p.description}
+              data-testid={`preset-${p.id}`}
+              data-active={isActive}
+              className={cn(
+                'rounded border px-1.5 py-1 font-mono text-[10px] transition-colors',
+                isActive
+                  ? 'border-accent bg-accent/15 text-accent'
+                  : 'border-border bg-bg-panel text-text hover:border-accent/60 hover:text-text',
+              )}
+            >
+              {p.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (

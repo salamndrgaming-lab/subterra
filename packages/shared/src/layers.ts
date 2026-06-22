@@ -483,6 +483,72 @@ export const LAYER_GROUPS: Record<LayerDef['group'], string> = {
   reference: 'Reference',
 };
 
+/** Curated layer-visibility presets — one-click loadouts for common
+ *  user modes. Applying a preset sets every layer in `visible` to on
+ *  and every other registered layer to off, so the sidebar swaps to
+ *  a focused view instead of compounding on top of whatever was
+ *  toggled before. Built-in only in v1; user-saved presets (Prospector-
+ *  tier feature) come later. */
+export interface LayerPreset {
+  id: string;
+  label: string;
+  description: string;
+  /** Layer ids (matching LayerDef.id) to set visible. Every other
+   *  registered layer goes invisible when the preset applies. Unknown
+   *  ids are silently ignored so a preset doesn't break if a layer
+   *  is renamed or removed. */
+  visible: readonly string[];
+}
+
+export const LAYER_PRESETS: readonly LayerPreset[] = [
+  {
+    id: 'prospecting',
+    label: 'Prospecting',
+    description: 'Stake-blockers + claims + occurrences + subsurface signal',
+    visible: [
+      'federal-lands',
+      'open-blm-land',
+      'withdrawals',
+      'critical-habitat',
+      'indian-lands',
+      'mining-claims',
+      'mrds',
+      'usmin',
+      'cmmi',
+      'drill-holes',
+      'geochemistry',
+      'bedrock-geology',
+    ],
+  },
+  {
+    id: 'oil-gas',
+    label: 'Oil & Gas',
+    description: 'Wells, leases, pipelines, basement faults',
+    visible: [
+      'federal-lands',
+      'wells',
+      'well-laterals',
+      'leases',
+      'pipelines-natgas',
+      'pipelines-crude',
+      'quaternary-faults',
+    ],
+  },
+  {
+    id: 'field',
+    label: 'Field',
+    description: 'Terrain + claims + survey grid for on-the-ground use',
+    visible: [
+      'hillshade',
+      'federal-lands',
+      'mining-claims',
+      'open-blm-land',
+      'plss',
+      'parcels',
+    ],
+  },
+] as const;
+
 /** Commodity-category colors used by MRDS (matched at render time). */
 export const COMMODITY_CATEGORY_COLORS: Record<string, string> = {
   precious: '#fbbf24',    // amber-yellow (gold, silver, Pt, Pd)
