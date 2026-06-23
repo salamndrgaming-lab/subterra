@@ -19,6 +19,8 @@ import {
 import { cn } from '@/lib/cn';
 import { CrossSection, type CrossSectionAgency, type CrossSectionClaim, type CrossSectionDrillHole, type CrossSectionFault, type CrossSectionGeochem, type CrossSectionMrds, type CrossSectionWell } from '@/components/CrossSection';
 import { fetchManifest } from '@/lib/manifest';
+import { fetchDiff } from '@/lib/diff';
+import { getLastSeenVersion, markSeen } from '@/lib/diff-store';
 import { fetchMe, signOut } from '@/lib/auth';
 import { checkPmtilesCached, precachePmtiles } from '@/lib/sw';
 import { useLayerVisibility } from '@/stores/layers';
@@ -206,6 +208,33 @@ export function MapPage() {
     queryFn: fetchManifest,
     staleTime: 5 * 60_000,
   });
+
+  // "What changed since last visit" pill in the sidebar header. Reads
+  // the user's last-seen version from localStorage, asks /diff for the
+  // delta. Returns an empty payload (added: []) when the user is caught
+  // up or no diff exists yet, in which case the pill simply doesn't
+  // render. After 5s on the page we mark the current version as seen
+  // so the pill resets on the next visit.
+  const currentVersion = manifestQuery.data?.version;
+  const sinceVersion = useMemo(() => {
+    const stored = getLastSeenVersion();
+    if (stored !== null) return stored;
+    // No prior visit recorded → don't pretend they've seen everything;
+    // ask the server with `since=0` so the first-ever pill correctly
+    // shows the newest run's adds.
+    return 0;
+  }, []);
+  const diffQuery = useQuery({
+    queryKey: ['diff', sinceVersion],
+    queryFn: () => fetchDiff(sinceVersion),
+    staleTime: 10 * 60_000,
+    enabled: !!currentVersion,
+  });
+  useEffect(() => {
+    if (!currentVersion) return;
+    const t = setTimeout(() => markSeen(currentVersion), 5_000);
+    return () => clearTimeout(t);
+  }, [currentVersion]);
 
   // Subsurface geology lookup for the currently-selected point. Keyed by
   // ~3-decimal lat/lng so adjacent clicks share the cached response.
@@ -1423,17 +1452,28 @@ export function MapPage() {
         )}
       >
         <div className="border-b border-border px-4 py-3">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <div className="font-mono text-[10px] uppercase tracking-wider text-text-muted">Layers</div>
-            {manifestQuery.data?.publishedAt && (
-              <span
-                data-testid="layers-freshness"
-                title={`Tileset v${manifestQuery.data.version} published ${manifestQuery.data.publishedAt}`}
-                className="font-mono text-[9px] text-text-muted"
-              >
-                refreshed {humanizeAgo(manifestQuery.data.publishedAt)}
-              </span>
-            )}
+            <div className="flex items-center gap-1.5">
+              {diffQuery.data && diffQuery.data.added.length > 0 && (
+                <span
+                  data-testid="diff-pill"
+                  title={describeDiff(diffQuery.data)}
+                  className="rounded bg-accent/15 px-1.5 py-0.5 font-mono text-[9px] text-accent"
+                >
+                  {diffQuery.data.added.length} new
+                </span>
+              )}
+              {manifestQuery.data?.publishedAt && (
+                <span
+                  data-testid="layers-freshness"
+                  title={`Tileset v${manifestQuery.data.version} published ${manifestQuery.data.publishedAt}`}
+                  className="font-mono text-[9px] text-text-muted"
+                >
+                  refreshed {humanizeAgo(manifestQuery.data.publishedAt)}
+                </span>
+              )}
+            </div>
           </div>
           <div className="mt-1 font-mono text-sm text-text">Map controls</div>
           <PresetRow
@@ -3622,6 +3662,27 @@ function UnhealthyDataBanner({
       </span>
     </a>
   );
+}
+
+/** One-line tooltip describing the diff pill. Top 3 states by added
+ *  count, plus the drop total when it's nonzero. Falls back to the raw
+ *  added count when no per-state breakdown is present (older diff
+ *  payloads from before byState was added). */
+function describeDiff(diff: { added: { state?: string }[]; dropped: { state?: string }[]; byState?: { added: Record<string, number>; dropped: Record<string, number> }; toVersion: number }): string {
+  const bits: string[] = [`${diff.added.length.toLocaleString()} new claims since v${diff.toVersion}`];
+  const byState = diff.byState?.added;
+  if (byState && Object.keys(byState).length > 0) {
+    const top = Object.entries(byState)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([s, n]) => `${s} ${n}`)
+      .join(', ');
+    bits.push(top);
+  }
+  if (diff.dropped.length > 0) {
+    bits.push(`${diff.dropped.length.toLocaleString()} dropped`);
+  }
+  return bits.join(' · ');
 }
 
 function humanizeAgo(iso: string): string {

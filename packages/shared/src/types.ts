@@ -149,3 +149,39 @@ export interface OpportunityScore {
   rationale: string;
   computedAt: string;
 }
+
+/** Diff payload served by `/diff?since=<version>`. Produced by the ETL
+ *  after each successful BLM mining-claims build by comparing the
+ *  current run's serial-number set against the previous run's snapshot.
+ *  The web app surfaces a sidebar pill ("N new claims") so a returning
+ *  user immediately sees what changed since their last visit; the
+ *  email side of Phase 6 alerts consumes the same payload later. */
+export interface DiffPayload {
+  /** Manifest version the diff was computed against (the prior run). */
+  fromVersion: number;
+  /** Manifest version the diff was computed *for* (the latest run). */
+  toVersion: number;
+  /** Claims that appeared this run and weren't in the prior snapshot. */
+  added: DiffClaim[];
+  /** Claims that disappeared this run vs the prior snapshot. */
+  dropped: DiffClaim[];
+  /** Per-state added/dropped counts so the sidebar pill's tooltip can
+   *  surface a quick breakdown without paging through the full lists. */
+  byState?: {
+    added: Record<string, number>;
+    dropped: Record<string, number>;
+  };
+}
+
+export interface DiffClaim {
+  /** BLM serial (e.g. "NMC123456") — the canonical claim identifier. */
+  serial: string;
+  /** Centroid longitude — lets the web app filter the diff by AOI bbox
+   *  client-side without needing a separate spatial query. */
+  lng: number;
+  /** Centroid latitude. */
+  lat: number;
+  /** USPS state code (e.g. "NV") — drives the per-state breakdown
+   *  rollup and lets the email producer scope alerts by state. */
+  state: string;
+}

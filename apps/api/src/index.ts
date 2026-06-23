@@ -55,6 +55,12 @@ app.use('/manifest', cors({
   exposeHeaders: ['Content-Range', 'Content-Length', 'Accept-Ranges', 'ETag'],
   maxAge: 86400,
 }));
+app.use('/diff', cors({
+  origin: '*',
+  allowHeaders: ['Range', 'Content-Type', 'Accept'],
+  exposeHeaders: ['Content-Range', 'Content-Length', 'Accept-Ranges', 'ETag'],
+  maxAge: 86400,
+}));
 app.use('/tiles/*', cors({
   origin: '*',
   allowHeaders: ['Range', 'Content-Type', 'Accept'],
@@ -165,6 +171,52 @@ app.get('/manifest', async (c) => {
       // Browsers always re-validate the manifest; we never want a stale
       // manifest pinning the map to old data after an ETL refresh.
       'cache-control': 'no-cache, must-revalidate',
+    },
+  });
+});
+
+/**
+ * Diff payload — what changed between the prior ETL run and the current
+ * one. Produced by etl/diff.py after the ETL pipeline's upload step;
+ * the web app's sidebar pill polls this on load with the user's
+ * last-seen version. Empty-shape response when no diff exists yet
+ * (first run after this feature lands) or when the caller is already
+ * caught up. Always 200 so the client doesn't need an error branch
+ * to distinguish "no news" from "no diff produced yet."
+ */
+app.get('/diff', async (c) => {
+  const sinceRaw = c.req.query('since') ?? '0';
+  const since = Number.isFinite(Number(sinceRaw)) ? Number(sinceRaw) : 0;
+  const obj = await c.env.TILES.get('diffs/latest.json');
+  if (!obj) {
+    return c.json({
+      fromVersion: since,
+      toVersion: since,
+      added: [],
+      dropped: [],
+    });
+  }
+  let diff: { toVersion?: number; fromVersion?: number; added?: unknown; dropped?: unknown };
+  try {
+    diff = await obj.json();
+  } catch {
+    return c.json({ error: 'diff_invalid_json' }, 502);
+  }
+  const toVersion = Number(diff.toVersion ?? 0);
+  if (since >= toVersion) {
+    return c.json({
+      fromVersion: since,
+      toVersion,
+      added: [],
+      dropped: [],
+    });
+  }
+  return new Response(JSON.stringify(diff), {
+    headers: {
+      'content-type': 'application/json',
+      // Cache for 5 min — the diff only refreshes on a new ETL run
+      // (weekly), so the edge can hold it confidently between visits.
+      'cache-control': 'public, max-age=300',
     },
   });
 });

@@ -169,6 +169,20 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: python etl/upload.py
 
+      # Produce the "what changed since the last run" payload the
+      # Worker's /diff route serves and the web app's sidebar pill
+      # reads. Snapshots BLM mining-claim serials to R2, diffs against
+      # the prior snapshot, writes diffs/latest.json. Failures here
+      # never gate the rest of the pipeline — etl/diff.py logs a
+      # ::warning:: and exits 0 on every error path.
+      - name: Produce claim diff
+        if: ${{ inputs.only == '' }}
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: python -m etl.diff
+
       - name: Open issue on failure
         if: failure()
         uses: peter-evans/create-issue-from-file@v5
