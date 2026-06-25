@@ -19,7 +19,7 @@ import {
 import { cn } from '@/lib/cn';
 import { CrossSection, type CrossSectionAgency, type CrossSectionClaim, type CrossSectionDrillHole, type CrossSectionFault, type CrossSectionGeochem, type CrossSectionMrds, type CrossSectionWell } from '@/components/CrossSection';
 import { fetchManifest } from '@/lib/manifest';
-import { fetchDiff } from '@/lib/diff';
+import { fetchDiff, fetchPermitDiff } from '@/lib/diff';
 import { getLastSeenVersion, markSeen } from '@/lib/diff-store';
 import { fetchMe, signOut } from '@/lib/auth';
 import { checkPmtilesCached, precachePmtiles } from '@/lib/sw';
@@ -216,23 +216,30 @@ export function MapPage() {
   // render. After 5s on the page we mark the current version as seen
   // so the pill resets on the next visit.
   const currentVersion = manifestQuery.data?.version;
-  const sinceVersion = useMemo(() => {
-    const stored = getLastSeenVersion();
-    if (stored !== null) return stored;
-    // No prior visit recorded → don't pretend they've seen everything;
-    // ask the server with `since=0` so the first-ever pill correctly
-    // shows the newest run's adds.
-    return 0;
-  }, []);
+  // Per-source last-seen lookups — each pill tracks its own dismissal
+  // state so the user can clear claims independently of permits.
+  const sinceClaims = useMemo(() => getLastSeenVersion('claims') ?? 0, []);
+  const sincePermits = useMemo(() => getLastSeenVersion('permits') ?? 0, []);
   const diffQuery = useQuery({
-    queryKey: ['diff', sinceVersion],
-    queryFn: () => fetchDiff(sinceVersion),
+    queryKey: ['diff', 'claims', sinceClaims],
+    queryFn: () => fetchDiff(sinceClaims),
+    staleTime: 10 * 60_000,
+    enabled: !!currentVersion,
+  });
+  const permitDiffQuery = useQuery({
+    queryKey: ['diff', 'permits', sincePermits],
+    queryFn: () => fetchPermitDiff(sincePermits),
     staleTime: 10 * 60_000,
     enabled: !!currentVersion,
   });
   useEffect(() => {
     if (!currentVersion) return;
-    const t = setTimeout(() => markSeen(currentVersion), 5_000);
+    // Mark both sources as seen — same dwell threshold (5s) keeps the
+    // dismiss timing predictable per the original claims pill behavior.
+    const t = setTimeout(() => {
+      markSeen('claims', currentVersion);
+      markSeen('permits', currentVersion);
+    }, 5_000);
     return () => clearTimeout(t);
   }, [currentVersion]);
 
@@ -1458,10 +1465,19 @@ export function MapPage() {
               {diffQuery.data && diffQuery.data.added.length > 0 && (
                 <span
                   data-testid="diff-pill"
-                  title={describeDiff(diffQuery.data)}
+                  title={describeDiff(diffQuery.data, 'claims')}
                   className="rounded bg-accent/15 px-1.5 py-0.5 font-mono text-[9px] text-accent"
                 >
                   {diffQuery.data.added.length} new
+                </span>
+              )}
+              {permitDiffQuery.data && permitDiffQuery.data.added.length > 0 && (
+                <span
+                  data-testid="permit-diff-pill"
+                  title={describeDiff(permitDiffQuery.data, 'permits')}
+                  className="rounded bg-accent/15 px-1.5 py-0.5 font-mono text-[9px] text-accent"
+                >
+                  {permitDiffQuery.data.added.length} permits
                 </span>
               )}
               {manifestQuery.data?.publishedAt && (
@@ -3668,8 +3684,18 @@ function UnhealthyDataBanner({
  *  count, plus the drop total when it's nonzero. Falls back to the raw
  *  added count when no per-state breakdown is present (older diff
  *  payloads from before byState was added). */
-function describeDiff(diff: { added: { state?: string }[]; dropped: { state?: string }[]; byState?: { added: Record<string, number>; dropped: Record<string, number> }; toVersion: number }): string {
-  const bits: string[] = [`${diff.added.length.toLocaleString()} new claims since v${diff.toVersion}`];
+function describeDiff(
+  diff: {
+    added: { state?: string }[];
+    dropped: { state?: string }[];
+    byState?: { added: Record<string, number>; dropped: Record<string, number> };
+    toVersion: number;
+  },
+  nounPlural: string,
+): string {
+  const bits: string[] = [
+    `${diff.added.length.toLocaleString()} new ${nounPlural} since v${diff.toVersion}`,
+  ];
   const byState = diff.byState?.added;
   if (byState && Object.keys(byState).length > 0) {
     const top = Object.entries(byState)

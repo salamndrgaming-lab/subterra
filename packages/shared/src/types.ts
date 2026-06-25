@@ -185,3 +185,43 @@ export interface DiffClaim {
    *  rollup and lets the email producer scope alerts by state. */
   state: string;
 }
+
+/** Diff payload served by `/diff/permits?since=<version>`. Same shape
+ *  family as DiffPayload (claims) but tracks O&G drilling permits —
+ *  leading-indicator data that surfaces operator activity weeks before
+ *  the well shows up in the wells layer. Produced by etl/diff.py
+ *  from etl/sources/drilling_permits.py output; consumed by the
+ *  sidebar's permits pill. */
+export interface DiffPermitPayload {
+  fromVersion: number;
+  toVersion: number;
+  added: DiffPermit[];
+  dropped: DiffPermit[];
+  byState?: {
+    added: Record<string, number>;
+    dropped: Record<string, number>;
+  };
+}
+
+export interface DiffPermit {
+  /** State / agency permit identifier (e.g. ND DMR "32063" or CO ECMC
+   *  "400-12345"). Distinct from the API number — a permit issues
+   *  before the API number is assigned. */
+  permitNo: string;
+  /** Permit centroid longitude (== well surface-hole longitude). */
+  lng: number;
+  /** Permit centroid latitude. */
+  lat: number;
+  /** USPS state code (e.g. "ND"). */
+  state: string;
+  /** Operator filing the permit — the "who is moving" signal. */
+  operator?: string;
+  /** Proposed well name. */
+  wellName?: string;
+  /** Target formation / pool — the geologist's quick filter. */
+  formation?: string;
+  /** When the permit was filed / approved by the regulator. ISO-ish
+   *  string passed through verbatim from the source feed; format
+   *  varies by state (ND emits YYYY-MM-DD, CO emits MM/DD/YYYY). */
+  filedAt?: string;
+}

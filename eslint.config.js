@@ -31,6 +31,7 @@ export default [
         window: 'readonly',
         document: 'readonly',
         navigator: 'readonly',
+        localStorage: 'readonly',
         fetch: 'readonly',
         console: 'readonly',
         btoa: 'readonly',

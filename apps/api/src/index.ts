@@ -6,7 +6,7 @@
  * arrive incrementally — see /root/.claude/plans for the phase plan.
  */
 
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
 
@@ -56,6 +56,12 @@ app.use('/manifest', cors({
   maxAge: 86400,
 }));
 app.use('/diff', cors({
+  origin: '*',
+  allowHeaders: ['Range', 'Content-Type', 'Accept'],
+  exposeHeaders: ['Content-Range', 'Content-Length', 'Accept-Ranges', 'ETag'],
+  maxAge: 86400,
+}));
+app.use('/diff/*', cors({
   origin: '*',
   allowHeaders: ['Range', 'Content-Type', 'Accept'],
   exposeHeaders: ['Content-Range', 'Content-Length', 'Accept-Ranges', 'ETag'],
@@ -185,9 +191,24 @@ app.get('/manifest', async (c) => {
  * to distinguish "no news" from "no diff produced yet."
  */
 app.get('/diff', async (c) => {
+  return serveDiff(c, 'diffs/latest.json');
+});
+
+/**
+ * Permits diff — same shape as `/diff` (claims) but tracks O&G
+ * drilling-permit additions/drops. Leading-indicator data: operators
+ * file weeks-to-months before spud, so this surfaces movement before
+ * it shows in the wells layer. Served from diffs/permits.json,
+ * produced by etl/diff.py's permits SOURCES entry.
+ */
+app.get('/diff/permits', async (c) => {
+  return serveDiff(c, 'diffs/permits.json');
+});
+
+async function serveDiff(c: Context<AppEnv>, r2Key: string): Promise<Response> {
   const sinceRaw = c.req.query('since') ?? '0';
   const since = Number.isFinite(Number(sinceRaw)) ? Number(sinceRaw) : 0;
-  const obj = await c.env.TILES.get('diffs/latest.json');
+  const obj = await c.env.TILES.get(r2Key);
   if (!obj) {
     return c.json({
       fromVersion: since,
@@ -219,7 +240,7 @@ app.get('/diff', async (c) => {
       'cache-control': 'public, max-age=300',
     },
   });
-});
+}
 
 /**
  * Range-aware streaming proxy for tile + feature files in R2. The PMTiles
