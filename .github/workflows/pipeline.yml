@@ -147,6 +147,14 @@ jobs:
           SUBTERRA_PARCELS_NV_CLARK_URL: ${{ vars.SUBTERRA_PARCELS_NV_CLARK_URL }}
           SUBTERRA_PARCELS_NV_ELKO_URL: ${{ vars.SUBTERRA_PARCELS_NV_ELKO_URL }}
           SUBTERRA_PARCELS_NV_LYON_URL: ${{ vars.SUBTERRA_PARCELS_NV_LYON_URL }}
+          # Per-state O&G wells endpoint overrides. State commissions
+          # (and county/state GIS mirrors) republish slugs periodically;
+          # set a repo variable here to redirect a state without a
+          # code change. Default URLs live in etl/sources/wells.py.
+          SUBTERRA_WELLS_TX_URL: ${{ vars.SUBTERRA_WELLS_TX_URL }}
+          SUBTERRA_WELLS_CO_URL: ${{ vars.SUBTERRA_WELLS_CO_URL }}
+          SUBTERRA_WELLS_ND_URL: ${{ vars.SUBTERRA_WELLS_ND_URL }}
+          SUBTERRA_WELLS_WY_URL: ${{ vars.SUBTERRA_WELLS_WY_URL }}
         run: |
           if [ -n "$ONLY" ]; then
             echo "--- verification mode: --only $ONLY (no tiles, no upload) ---"
