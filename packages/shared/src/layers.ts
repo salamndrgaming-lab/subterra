@@ -219,6 +219,33 @@ export const LAYERS: readonly LayerDef[] = [
     color: '#fbbf24', // amber — pairs with the orange wells
   },
   {
+    // Drilling permits — leading-indicator data: an operator files
+    // the permit weeks-to-months before the well is actually spudded.
+    // The killer feature O&G analysts pay Enverus thousands per seat
+    // for — surfaces movement before the well appears in the wells
+    // layer. First-pass coverage is ND (Bakken / Three Forks) +
+    // CO (DJ Basin / Niobrara), the two highest permit-count western
+    // shales; TX RRC + OK OCC + NM EMNRD follow in subsequent PRs.
+    //
+    // Group is 'present' (alongside wells / leases) rather than its
+    // own group — the user-question "what's already here?" extends
+    // naturally to "what's about to be here?" without splitting
+    // attention. A diamond / outlined marker style in Map.tsx (when
+    // we add it) will visually distinguish permits from wells.
+    id: 'drilling-permits',
+    label: 'Drilling Permits (active)',
+    group: 'present',
+    defaultVisible: false,
+    tilesetLayer: 'drilling_permits',
+    geometry: 'point',
+    minZoom: 7,
+    // bright magenta — leading-indicator "something is about to
+    // happen here" signal; distinct from the orange wells dot field
+    // and the amber laterals so a cluster of new permits in a
+    // sparse-well area immediately pops on the map.
+    color: '#f472b6',
+  },
+  {
     // USGS NURE drill holes — historical (1973-1984) uranium-targeted
     // drilling with co-collected pathfinder assays. Best-bulk-published
     // national drillhole archive. Renders as collar dots on the map at
@@ -563,11 +590,12 @@ export const LAYER_PRESETS: readonly LayerPreset[] = [
   {
     id: 'oil-gas',
     label: 'Oil & Gas',
-    description: 'Wells, leases, pipelines, basement faults',
+    description: 'Wells + permits, leases, pipelines, basement faults',
     visible: [
       'federal-lands',
       'wells',
       'well-laterals',
+      'drilling-permits',
       'leases',
       'pipelines-natgas',
       'pipelines-crude',

@@ -48,6 +48,7 @@ SOURCES = [
     "pipelines_crude",  # Phase 2 — EIA crude-oil trunk pipelines
     "wells",            # Phase 2 — multi-state ECMC/DMR/WOGCC wells (~1M points)
     "well_laterals",    # multi-state wellbore directional surveys (lines)
+    "drilling_permits", # multi-state O&G drilling permits — leading indicator
     "drill_holes",      # USGS NURE drillhole bulk — historical drill collars + U assays
     "geochemistry",  # Phase 9 — USGS NGDB stream-sediment/soil samples (~1.5M points)
     "geophysics",    # Phase 9 — USGS Earth MRI airborne survey footprints
@@ -103,6 +104,10 @@ EXPECTED_MIN_FEATURES: dict[str, int] = {
     # endpoints likely still need URL verification. Conservative floor
     # until confidence builds.
     "well_laterals":      10_000,
+    # drilling_permits is brand new (ND + CO only on first run); ND
+    # alone runs ~2-4k active permits at any time, CO another ~1-3k.
+    # Floor at 500 absorbs a single-state outage without flapping.
+    "drilling_permits":      500,
     "pipelines_natgas":    5_000,
     "pipelines_crude":     2_000,
     # NURE published ~50k drill holes nationally; floor at 20k absorbs
@@ -175,6 +180,11 @@ ACCEPT_BROKEN: set[str] = {
     # SUBTERRA_SAGE_GROUSE_URL / SUBTERRA_ROADLESS_URL on failure.
     "sage_grouse",
     "roadless_areas",
+    # drilling_permits: ND DMR + CO ECMC layer indices are best-guess
+    # (neither agency publishes a canonical permits-layer index). First
+    # run verifies; iterate via SUBTERRA_PERMITS_ND_URL or
+    # SUBTERRA_PERMITS_CO_URL if 404 / wrong layer is returned.
+    "drilling_permits",
 }
 
 

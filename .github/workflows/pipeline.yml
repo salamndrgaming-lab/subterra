@@ -155,6 +155,11 @@ jobs:
           SUBTERRA_WELLS_CO_URL: ${{ vars.SUBTERRA_WELLS_CO_URL }}
           SUBTERRA_WELLS_ND_URL: ${{ vars.SUBTERRA_WELLS_ND_URL }}
           SUBTERRA_WELLS_WY_URL: ${{ vars.SUBTERRA_WELLS_WY_URL }}
+          # Per-state O&G drilling-permits endpoint overrides. Each
+          # state agency publishes permits on a different layer index;
+          # iterate via these vars if the default index is wrong.
+          SUBTERRA_PERMITS_ND_URL: ${{ vars.SUBTERRA_PERMITS_ND_URL }}
+          SUBTERRA_PERMITS_CO_URL: ${{ vars.SUBTERRA_PERMITS_CO_URL }}
         run: |
           if [ -n "$ONLY" ]; then
             echo "--- verification mode: --only $ONLY (no tiles, no upload) ---"
