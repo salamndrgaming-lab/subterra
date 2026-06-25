@@ -160,6 +160,12 @@ jobs:
           # iterate via these vars if the default index is wrong.
           SUBTERRA_PERMITS_ND_URL: ${{ vars.SUBTERRA_PERMITS_ND_URL }}
           SUBTERRA_PERMITS_CO_URL: ${{ vars.SUBTERRA_PERMITS_CO_URL }}
+          # HIFLD midstream pack — services.arcgis.com AGOL slugs
+          # rotate periodically; redirect any of the three datasets
+          # without a code change.
+          SUBTERRA_COMPRESSOR_STATIONS_URL: ${{ vars.SUBTERRA_COMPRESSOR_STATIONS_URL }}
+          SUBTERRA_PROCESSING_PLANTS_URL: ${{ vars.SUBTERRA_PROCESSING_PLANTS_URL }}
+          SUBTERRA_REFINERIES_URL: ${{ vars.SUBTERRA_REFINERIES_URL }}
         run: |
           if [ -n "$ONLY" ]; then
             echo "--- verification mode: --only $ONLY (no tiles, no upload) ---"

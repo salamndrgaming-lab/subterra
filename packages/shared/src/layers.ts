@@ -295,6 +295,51 @@ export const LAYERS: readonly LayerDef[] = [
     color: '#dc2626', // red
   },
 
+  // Midstream infrastructure pack (HIFLD). Together with the trunk
+  // pipelines above, these answer the "can my hydrocarbons reach
+  // market?" question for an O&G analyst evaluating a play:
+  // compressor stations keep gas pipelines pressurized, processing
+  // plants strip NGLs out before interstate transport, refineries
+  // are the demand-side end of the crude takeaway chain. Industry-
+  // grade takeaway economics requires all three on the same map as
+  // the pipelines.
+  {
+    id: 'compressor-stations',
+    label: 'NatGas Compressor Stations (HIFLD)',
+    group: 'economic',
+    defaultVisible: false,
+    tilesetLayer: 'compressor_stations',
+    geometry: 'point',
+    minZoom: 5,
+    // sky-blue, slightly darker than the natgas pipelines — visually
+    // associates the dots with the gas-side infrastructure.
+    color: '#3b82f6',
+  },
+  {
+    id: 'processing-plants',
+    label: 'NatGas Processing Plants (HIFLD)',
+    group: 'economic',
+    defaultVisible: false,
+    tilesetLayer: 'processing_plants',
+    geometry: 'point',
+    minZoom: 5,
+    // teal — distinct from compressor sky-blue + refinery dark-red,
+    // evokes the wet-gas / NGL liquid-extraction step.
+    color: '#14b8a6',
+  },
+  {
+    id: 'refineries',
+    label: 'Petroleum Refineries (HIFLD)',
+    group: 'economic',
+    defaultVisible: false,
+    tilesetLayer: 'refineries',
+    geometry: 'point',
+    minZoom: 4,
+    // dark red — pairs with the crude pipelines color so the dots
+    // visually attach to the crude takeaway chain.
+    color: '#991b1b',
+  },
+
   // subsurface signal — raw science datasets the pros vector targets from.
   // Geochemistry is painted graduated-by-element in Map.tsx; geophysics
   // is a coverage footprint overlay.
@@ -590,7 +635,7 @@ export const LAYER_PRESETS: readonly LayerPreset[] = [
   {
     id: 'oil-gas',
     label: 'Oil & Gas',
-    description: 'Wells + permits, leases, pipelines, basement faults',
+    description: 'Wells + permits, leases, pipelines, midstream, faults',
     visible: [
       'federal-lands',
       'wells',
@@ -599,6 +644,9 @@ export const LAYER_PRESETS: readonly LayerPreset[] = [
       'leases',
       'pipelines-natgas',
       'pipelines-crude',
+      'compressor-stations',
+      'processing-plants',
+      'refineries',
       'quaternary-faults',
     ],
   },

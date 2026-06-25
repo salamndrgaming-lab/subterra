@@ -46,6 +46,9 @@ SOURCES = [
     "federal_lands", # Phase 2 — BLM National SMA (BLM/USFS/NPS/BIA polygons)
     "pipelines_natgas", # Phase 2 — EIA natural-gas trunk pipelines
     "pipelines_crude",  # Phase 2 — EIA crude-oil trunk pipelines
+    "compressor_stations", # HIFLD natural-gas compressor stations
+    "processing_plants",   # HIFLD natural-gas processing plants
+    "refineries",          # HIFLD petroleum refineries
     "wells",            # Phase 2 — multi-state ECMC/DMR/WOGCC wells (~1M points)
     "well_laterals",    # multi-state wellbore directional surveys (lines)
     "drilling_permits", # multi-state O&G drilling permits — leading indicator
@@ -110,6 +113,13 @@ EXPECTED_MIN_FEATURES: dict[str, int] = {
     "drilling_permits":      500,
     "pipelines_natgas":    5_000,
     "pipelines_crude":     2_000,
+    # HIFLD midstream pack — small but economically dense.
+    # CONUS-wide counts per the HIFLD service: ~1,700 compressor
+    # stations, ~520 processing plants, ~140 refineries. Floors set
+    # conservatively to absorb a partial-fetch without flapping.
+    "compressor_stations":   500,
+    "processing_plants":     200,
+    "refineries":             50,
     # NURE published ~50k drill holes nationally; floor at 20k absorbs
     # bulk-CSV schema drift between vintages.
     "drill_holes":        20_000,
@@ -185,6 +195,14 @@ ACCEPT_BROKEN: set[str] = {
     # run verifies; iterate via SUBTERRA_PERMITS_ND_URL or
     # SUBTERRA_PERMITS_CO_URL if 404 / wrong layer is returned.
     "drilling_permits",
+    # HIFLD midstream pack — services.arcgis.com AGOL slugs
+    # (4yiQuRZ5x0jHCWPv org prefix) periodically rotate. First-run
+    # grace; iterate via SUBTERRA_COMPRESSOR_STATIONS_URL /
+    # SUBTERRA_PROCESSING_PLANTS_URL / SUBTERRA_REFINERIES_URL on
+    # failure.
+    "compressor_stations",
+    "processing_plants",
+    "refineries",
 }
 
 
