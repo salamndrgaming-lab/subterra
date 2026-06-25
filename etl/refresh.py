@@ -59,6 +59,8 @@ SOURCES = [
     "withdrawals",     # BLM National Withdrawn Lands (mineral entry blockers)
     "critical_habitat",# USFWS ESA designated critical habitat
     "indian_lands",    # Census TIGER AIANNH — tribal lands (hard exclusion)
+    "sage_grouse",     # BLM Greater Sage-Grouse PGMA (PHMA/GHMA/IHMA)
+    "roadless_areas",  # USFS Inventoried Roadless Areas (36 CFR 294)
     "water_rights",    # Per-state water rights (NV + UT + AZ — first cluster)
     "quaternary_faults", # USGS Quaternary Faults and Folds (seismic + cross-sect)
     "parcels",         # Per-county assessor parcels (NV: Washoe/Clark/Elko/Lyon)
@@ -115,6 +117,13 @@ EXPECTED_MIN_FEATURES: dict[str, int] = {
     "withdrawals":         1_000,
     "critical_habitat":   10_000,
     "indian_lands":          500,
+    # Sage-grouse PGMA covers a few hundred PHMA/GHMA polygons across
+    # 11 western states; floor at 200 absorbs partial-state coverage
+    # if the BLM AGOL service drops a state mid-paginate.
+    "sage_grouse":           200,
+    # USFS IRA has ~3,000 polygons nationally (every National Forest
+    # has some); floor at 500 absorbs schema-revision restarts.
+    "roadless_areas":        500,
     "water_rights":       10_000,
     "quaternary_faults":   5_000,
     "parcels":            50_000,
@@ -161,6 +170,11 @@ ACCEPT_BROKEN: set[str] = {
     # drill_holes: USGS NURE bulk uses same canonical pattern — first
     # run grace; iterate via NURE_URL if the path drifts.
     "drill_holes",
+    # sage_grouse + roadless_areas: BLM AGOL + USFS EDW service slugs
+    # have shifted historically. First-run grace; iterate via
+    # SUBTERRA_SAGE_GROUSE_URL / SUBTERRA_ROADLESS_URL on failure.
+    "sage_grouse",
+    "roadless_areas",
 }
 
 

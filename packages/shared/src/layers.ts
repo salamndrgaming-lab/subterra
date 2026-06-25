@@ -454,6 +454,44 @@ export const LAYERS: readonly LayerDef[] = [
     minZoom: 4,
     color: '#a855f7', // purple — distinct from BLM/USFS/NPS agency colors
   },
+  {
+    // BLM Greater Sage-Grouse Priority + General Habitat Management
+    // Areas. Distinct from generic critical habitat: the 2015/2019
+    // BLM management plans impose no-surface-occupancy + density caps
+    // that effectively block mining-claim development inside PHMA.
+    // Most-cited unaccounted-for stake-blocker in the catalog (section
+    // A); covers huge swaths of NV / WY / ID / OR / UT — exactly the
+    // basin-range mineral country the rest of the app focuses on.
+    id: 'sage-grouse',
+    label: 'Sage-Grouse Habitat (BLM PGMA)',
+    group: 'stake',
+    defaultVisible: false,
+    tilesetLayer: 'sage_grouse',
+    geometry: 'polygon',
+    minZoom: 5,
+    // mustard-olive — distinct from the red/orange/purple of the
+    // other stake-blocker layers, evokes the sagebrush-steppe palette
+    // for instant recognition on the map.
+    color: '#a3a635',
+  },
+  {
+    // USFS Inventoried Roadless Areas (36 CFR 294). The 2001 Roadless
+    // Rule prohibits road construction in IRAs — mining claims can
+    // legally be located there, but any operation needing mechanized
+    // access is effectively blocked. Strong soft-block, not a hard
+    // exclusion.
+    id: 'roadless-areas',
+    label: 'USFS Roadless Areas (IRA)',
+    group: 'stake',
+    defaultVisible: false,
+    tilesetLayer: 'roadless_areas',
+    geometry: 'polygon',
+    minZoom: 5,
+    // pine-green — pairs with the USFS agency color used by the
+    // federal-lands layer for visual association with "this is
+    // National Forest, with the access caveat."
+    color: '#15803d',
+  },
 
   // analysis — precomputed prospecting overlays. Score-driven, click for
   // cost/revenue heuristics. Painted in Map.tsx with a graduated fill
@@ -511,6 +549,8 @@ export const LAYER_PRESETS: readonly LayerPreset[] = [
       'withdrawals',
       'critical-habitat',
       'indian-lands',
+      'sage-grouse',
+      'roadless-areas',
       'mining-claims',
       'mrds',
       'usmin',
