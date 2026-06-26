@@ -200,6 +200,17 @@ def run(work_dir: Path) -> SourceResult:
                     total_count += state_count[0]
                 except Exception as err:  # noqa: BLE001
                     log.warning("  %s FAILED — %s: %s", state["name"], type(err).__name__, err)
+                    # Also surface as a GHA annotation so per-state
+                    # failures aren't silently swallowed by the
+                    # source-level try/except. Without this, the
+                    # source-summary table just shows wells `ok` with
+                    # whatever total the other states contributed —
+                    # masking that one state's endpoint is broken.
+                    msg = f"{type(err).__name__}: {err}".replace("\n", " ")[:200]
+                    print(
+                        f"::warning::wells {state['code']} ({state['name']}) failed: {msg} "
+                        f"[url={query_url}]"
+                    )
                     continue
 
             out.write("]}")

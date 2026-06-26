@@ -254,6 +254,26 @@ def _print_source_summary() -> None:
     for s in SOURCE_STATUSES:
         by_status[s.status] = by_status.get(s.status, 0) + 1
 
+    # Surface every failed/empty non-critical source as a `::warning::`
+    # annotation so the GitHub Actions run page's annotations panel
+    # shows the per-source breakdown at a glance. The summary table
+    # below is more detailed but lives in the step summary, which
+    # gets lost when the log is a quarter-million tippecanoe progress
+    # lines deep. The critical-source / threshold logic below still
+    # emits its own `::error::` lines and gates the upload — these
+    # warnings are additive, for visibility, not for gating.
+    for s in SOURCE_STATUSES:
+        if s.status == "ok":
+            continue
+        err = (s.error or "").splitlines()[0][:160] if s.error else ""
+        # GH annotations strip newlines + collapse whitespace; keep
+        # the message single-line and percent-encoded-safe.
+        print(
+            f"::warning::source {s.name} status={s.status} "
+            f"features={s.feature_count:,} elapsed={s.elapsed_s:.1f}s "
+            f"error={err}"
+        )
+
     lines = [
         "",
         "================ ETL source summary ================",

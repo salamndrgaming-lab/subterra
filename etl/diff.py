@@ -189,19 +189,38 @@ def build_snapshot(src: DiffSource) -> dict[str, dict[str, Any]]:
     features = data.get("features") or []
     entities: dict[str, dict[str, Any]] = {}
     skipped = 0
+    # Per-reason skip counts to diagnose silent-empty bugs: when the
+    # source emits N features but the diff snapshot extracts 0 entities,
+    # the split tells us whether the id field is missing (upstream
+    # field rename) vs the centroid math failed (unusual geometry) vs
+    # the id is present-but-empty.
+    skip_no_id = 0
+    skip_empty_id = 0
+    skip_no_centroid = 0
+    first_skipped_sample: dict | None = None
     for feat in features:
         props = feat.get("properties") or {}
         raw_id = props.get(src.id_field)
         if raw_id is None:
             skipped += 1
+            skip_no_id += 1
+            if first_skipped_sample is None:
+                first_skipped_sample = {
+                    "reason": "no_id",
+                    "looked_for": src.id_field,
+                    "props_keys": list(props.keys())[:20],
+                    "geom_type": (feat.get("geometry") or {}).get("type"),
+                }
             continue
         entity_id = str(raw_id).strip()
         if not entity_id:
             skipped += 1
+            skip_empty_id += 1
             continue
         centroid = _geometry_centroid(feat.get("geometry"))
         if centroid is None:
             skipped += 1
+            skip_no_centroid += 1
             continue
         state = props.get("state") or ""
         if isinstance(state, str):
@@ -223,8 +242,23 @@ def build_snapshot(src: DiffSource) -> dict[str, dict[str, Any]]:
         entities[entity_id] = entity
     print(
         f"diff[{src.name}]: built snapshot — {len(entities):,} {src.entity_label}s "
-        f"({skipped:,} features skipped for missing id / centroid)"
+        f"({skipped:,} features skipped — "
+        f"no_id={skip_no_id:,} empty_id={skip_empty_id:,} no_centroid={skip_no_centroid:,})"
     )
+    # If we have features but extracted zero entities, dump the first
+    # failing sample as a `::warning::` so the next run's annotations
+    # panel shows what property keys the source actually emitted vs
+    # what id_field the diff producer expected. Catches upstream field
+    # renames (e.g. BLM changing `serial` → `case_record_id`) without
+    # waiting for a user to notice the silent-empty pill.
+    if features and not entities and first_skipped_sample is not None:
+        print(
+            f"::warning::diff[{src.name}] 0 entities from "
+            f"{len(features):,} features. Looked for id field "
+            f"'{first_skipped_sample['looked_for']}' but first feature "
+            f"properties have keys: {first_skipped_sample['props_keys']} "
+            f"(geom={first_skipped_sample['geom_type']})"
+        )
     return entities
 
 
