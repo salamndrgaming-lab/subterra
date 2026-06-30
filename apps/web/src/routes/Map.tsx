@@ -2431,19 +2431,40 @@ function computeAoiSummary(map: maplibregl.Map | null, vertices: LngLat[]): AoiS
  *  with a live/stale indicator. Prices come from the manifest (fetched at
  *  ETL time), so they refresh on each ETL run, not continuously. */
 function PriceTicker({ prices }: { prices: CommodityPrices }) {
-  // Display order — the commodities prospectors care about most first.
-  const order = ['AU', 'AG', 'CU', 'LI', 'NI', 'ZN', 'PB', 'U', 'MO', 'PT', 'PD'];
-  const items = order
-    .filter((sym) => prices.prices[sym])
-    .map((sym) => ({ sym, ...prices.prices[sym]! }));
-  if (items.length === 0) return null;
+  // Energy benchmarks first — the O&G deck (WTI crude, Henry Hub gas) is
+  // what an oil & gas operator scans for, so it leads. Metals follow.
+  const energyOrder = ['WTI', 'HH'];
+  // Display order — the metals prospectors care about most.
+  const metalOrder = ['AU', 'AG', 'CU', 'LI', 'NI', 'ZN', 'PB', 'U', 'MO', 'PT', 'PD'];
+  const pick = (syms: string[]) =>
+    syms.filter((sym) => prices.prices[sym]).map((sym) => ({ sym, ...prices.prices[sym]! }));
+  const energy = pick(energyOrder);
+  const metals = pick(metalOrder);
+  if (energy.length === 0 && metals.length === 0) return null;
+
+  // Human-facing label for the energy symbols (the raw codes aren't
+  // obvious to a first-time user the way AU/CU are).
+  const energyLabel: Record<string, string> = { WTI: 'WTI', HH: 'Henry Hub' };
 
   const fmt = (usd: number, unit: string): string => {
     if (unit === 'oz') return `$${usd.toLocaleString(undefined, { maximumFractionDigits: 0 })}/oz`;
+    if (unit === 'bbl') return `$${usd.toFixed(2)}/bbl`;
+    if (unit === 'mmbtu') return `$${usd.toFixed(2)}/MMBtu`;
     if (usd >= 1000) return `$${(usd / 1000).toFixed(1)}k/t`;
     return `$${usd.toFixed(0)}/t`;
   };
   const date = prices.fetchedAt.slice(0, 10);
+
+  const chip = (it: { sym: string; usd: number; unit: string }, label?: string) => (
+    <span
+      key={it.sym}
+      className="shrink-0 rounded border border-border bg-bg-panel px-1.5 py-0.5 font-mono text-[10px]"
+      title={`${label ?? it.sym} — ${prices.live ? 'live' : 'estimated'} ${date}`}
+    >
+      <span className="text-text-muted">{label ?? it.sym}</span>{' '}
+      <span className="text-text">{fmt(it.usd, it.unit)}</span>
+    </span>
+  );
 
   return (
     <div className="flex items-center gap-1 overflow-x-auto border-t border-border bg-bg/40 px-4 py-1.5">
@@ -2458,16 +2479,13 @@ function PriceTicker({ prices }: { prices: CommodityPrices }) {
       >
         {prices.live ? '● spot' : '○ est'}
       </span>
-      {items.map((it) => (
-        <span
-          key={it.sym}
-          className="shrink-0 rounded border border-border bg-bg-panel px-1.5 py-0.5 font-mono text-[10px]"
-          title={`${it.sym} — ${prices.live ? 'live' : 'estimated'} ${date}`}
-        >
-          <span className="text-text-muted">{it.sym}</span>{' '}
-          <span className="text-text">{fmt(it.usd, it.unit)}</span>
+      {energy.map((it) => chip(it, energyLabel[it.sym]))}
+      {energy.length > 0 && metals.length > 0 && (
+        <span className="shrink-0 px-0.5 text-border" aria-hidden>
+          |
         </span>
-      ))}
+      )}
+      {metals.map((it) => chip(it))}
     </div>
   );
 }
