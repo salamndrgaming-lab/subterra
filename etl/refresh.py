@@ -190,19 +190,37 @@ ACCEPT_BROKEN: set[str] = {
     # SUBTERRA_SAGE_GROUSE_URL / SUBTERRA_ROADLESS_URL on failure.
     "sage_grouse",
     "roadless_areas",
-    # drilling_permits: ND DMR + CO ECMC layer indices are best-guess
-    # (neither agency publishes a canonical permits-layer index). First
-    # run verifies; iterate via SUBTERRA_PERMITS_ND_URL or
-    # SUBTERRA_PERMITS_CO_URL if 404 / wrong layer is returned.
+    # drilling_permits: diagnosed 2026-06-30 (run #52). ND DMR's
+    # OilGasPublicMapDataVectorTiles/Permits FeatureServer returns
+    # {code:499 "Token Required"} — that vector-tile service is
+    # auth-gated; needs the public NorthSTAR/DMR permits endpoint
+    # instead. CO ECMC OGCC_Oil_and_Gas_Locations layer 1 →
+    # {code:400 "Invalid Layer or Table ID: 1"} — permits aren't at
+    # index 1; the correct layer (or a separate permits service) is
+    # still TBD. Override via SUBTERRA_PERMITS_ND_URL / _CO_URL.
     "drilling_permits",
-    # HIFLD midstream pack — services.arcgis.com AGOL slugs
-    # (4yiQuRZ5x0jHCWPv org prefix) periodically rotate. First-run
-    # grace; iterate via SUBTERRA_COMPRESSOR_STATIONS_URL /
-    # SUBTERRA_PROCESSING_PLANTS_URL / SUBTERRA_REFINERIES_URL on
-    # failure.
+    # HIFLD midstream pack — the prior run never reached upstream: the
+    # source URL arrived empty (pipeline.yml `${{ vars.X }}` for an
+    # undefined repo var → "" → MissingSchema), fixed 2026-06-30 to
+    # coalesce empties to the default. The default services.arcgis.com
+    # /4yiQuRZ5x0jHCWPv HIFLD org URLs are still unverified — accept
+    # broken until a run confirms them; override via the SUBTERRA_*_URL
+    # repo vars if they 404.
     "compressor_stations",
     "processing_plants",
     "refineries",
+    # pipelines_natgas + pipelines_crude: REGRESSION diagnosed
+    # 2026-06-30. Both prior candidate URLs are dead — geo.dot.gov
+    # 404s on the Hosted/..._EIA slug, and maps.nccs.nasa.gov is
+    # unreachable from the GitHub runner. Dropped the NASA mirror and
+    # added the HIFLD geoplatform AGOL as the primary candidate (still
+    # unverified). Accept-broken so these two stop tripping the >25%
+    # threshold and BLOCKING the whole tileset upload — previously the
+    # only thing keeping fresh data (incl. TX wells) from shipping.
+    # Remove from this set once a candidate is confirmed live, or set
+    # SUBTERRA_PIPELINES_NATGAS_URL / _CRUDE_URL to a verified endpoint.
+    "pipelines_natgas",
+    "pipelines_crude",
 }
 
 

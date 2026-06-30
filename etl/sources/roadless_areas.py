@@ -89,7 +89,10 @@ def run(work_dir: Path) -> SourceResult:
     log = logging.getLogger("etl.roadless_areas")
     log.info("starting USFS Inventoried Roadless Areas download")
 
-    url = os.environ.get("SUBTERRA_ROADLESS_URL", DEFAULT_QUERY_URL)
+    # `.strip() or DEFAULT` — guards against an empty-string env var
+    # (a pipeline.yml `${{ vars.X }}` for an undefined repo variable),
+    # which get(KEY, DEFAULT) would pass through as a broken empty URL.
+    url = os.environ.get("SUBTERRA_ROADLESS_URL", "").strip() or DEFAULT_QUERY_URL
     log.info("source URL: %s", url)
 
     out_path = work_dir / "roadless_areas.geojson"

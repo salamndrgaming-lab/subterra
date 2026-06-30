@@ -87,7 +87,10 @@ def run(work_dir: Path) -> SourceResult:
     log = logging.getLogger("etl.sage_grouse")
     log.info("starting BLM Greater Sage-Grouse PGMA download")
 
-    url = os.environ.get("SUBTERRA_SAGE_GROUSE_URL", DEFAULT_QUERY_URL)
+    # `.strip() or DEFAULT` — guards against an empty-string env var
+    # (a pipeline.yml `${{ vars.X }}` for an undefined repo variable),
+    # which get(KEY, DEFAULT) would pass through as a broken empty URL.
+    url = os.environ.get("SUBTERRA_SAGE_GROUSE_URL", "").strip() or DEFAULT_QUERY_URL
     log.info("source URL: %s", url)
 
     out_path = work_dir / "sage_grouse.geojson"

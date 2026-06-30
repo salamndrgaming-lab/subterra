@@ -99,7 +99,10 @@ def run(work_dir: Path) -> SourceResult:
     log = logging.getLogger("etl.processing_plants")
     log.info("starting HIFLD processing plants download")
 
-    url = os.environ.get("SUBTERRA_PROCESSING_PLANTS_URL", DEFAULT_QUERY_URL)
+    # `.strip() or DEFAULT` — an undefined pipeline.yml repo variable
+    # arrives as "" (set, empty), which get(KEY, DEFAULT) would NOT
+    # replace with the default; coalesce empties so the real URL is used.
+    url = os.environ.get("SUBTERRA_PROCESSING_PLANTS_URL", "").strip() or DEFAULT_QUERY_URL
     log.info("source URL: %s", url)
 
     out_path = work_dir / "processing_plants.geojson"

@@ -33,15 +33,24 @@ from sources._arcgis import iter_features_concurrent
 # The DOT-hosted EIA service was observed returning HTTP 500 in
 # 2026-06 production runs. NASA NCCS hosts a HIFLD mirror of the same
 # pipeline-network data that's more reliable as a backup.
+# 2026-06-30 triage: both prior candidates are dead. geo.dot.gov now
+# 404s on the Hosted/..._EIA service slug, and the NASA NCCS HIFLD
+# mirror (maps.nccs.nasa.gov) is unreachable from the GitHub Actions
+# runner ("Network is unreachable") — it's not a publicly routable host
+# from CI, so it was only ever burning retry budget. Dropped it.
+# Kept geo.dot.gov (slug may be restored) and added the HIFLD
+# geoplatform AGOL as the primary candidate. First one that returns
+# features wins; if all fail the source is in refresh.py's ACCEPT_BROKEN
+# so it won't block the upload. Set SUBTERRA_PIPELINES_NATGAS_URL to a
+# verified endpoint to override without a code change.
 CANDIDATE_URLS = [
-    # geo.dot.gov — official DOT host of EIA pipeline data. Historically
-    # the canonical one; intermittently 500s.
+    # HIFLD geoplatform AGOL — same org that hosts the midstream pack.
+    "https://services.arcgis.com/4yiQuRZ5x0jHCWPv/arcgis/rest/services/"
+    "Natural_Gas_Pipelines/FeatureServer/0/query",
+    # geo.dot.gov — historical DOT host of EIA pipeline data; 404 as of
+    # 2026-06-30 but kept in case the slug is restored.
     "https://geo.dot.gov/server/rest/services/Hosted/"
     "Natural_Gas_Pipelines_US_EIA/FeatureServer/0/query",
-    # NASA NCCS HIFLD mirror — energy-infrastructure service that
-    # includes natural gas pipelines as one of its layers.
-    "https://maps.nccs.nasa.gov/mapping/rest/services/"
-    "hifld_open/energy/FeatureServer/0/query",
 ]
 DEFAULT_QUERY_URL = CANDIDATE_URLS[0]
 

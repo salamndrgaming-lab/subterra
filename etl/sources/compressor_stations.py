@@ -91,7 +91,12 @@ def run(work_dir: Path) -> SourceResult:
     log = logging.getLogger("etl.compressor_stations")
     log.info("starting HIFLD compressor stations download")
 
-    url = os.environ.get("SUBTERRA_COMPRESSOR_STATIONS_URL", DEFAULT_QUERY_URL)
+    # NB: `.strip() or DEFAULT`, not get(KEY, DEFAULT) — pipeline.yml
+    # passes this env var as `${{ vars.X }}`, which is the empty string
+    # (not unset) when the repo variable doesn't exist. get(KEY, DEFAULT)
+    # would then hand back "" and the fetch would fail with
+    # "Invalid URL '': No scheme supplied". Coalesce empties to the default.
+    url = os.environ.get("SUBTERRA_COMPRESSOR_STATIONS_URL", "").strip() or DEFAULT_QUERY_URL
     log.info("source URL: %s", url)
 
     out_path = work_dir / "compressor_stations.geojson"

@@ -24,16 +24,17 @@ from pathlib import Path
 from sources._arcgis import iter_features_concurrent
 
 # Try these URLs in order — first one that returns features wins.
-# Same shape + rationale as pipelines_natgas.py.
+# Same shape + 2026-06-30 triage rationale as pipelines_natgas.py:
+# the NASA NCCS mirror is unreachable from CI (dropped) and geo.dot.gov
+# 404s (kept in case restored). HIFLD geoplatform AGOL added as primary.
+# Source is in ACCEPT_BROKEN so a continued miss won't block uploads;
+# override via SUBTERRA_PIPELINES_CRUDE_URL once a verified URL is found.
 CANDIDATE_URLS = [
+    # HIFLD geoplatform AGOL — same org as the midstream pack.
+    "https://services.arcgis.com/4yiQuRZ5x0jHCWPv/arcgis/rest/services/"
+    "Crude_Oil_Pipelines/FeatureServer/0/query",
     "https://geo.dot.gov/server/rest/services/Hosted/"
     "Crude_Oil_Pipelines_US_EIA/FeatureServer/0/query",
-    # NASA NCCS HIFLD mirror — energy-infrastructure service. The
-    # exact layer index for crude vs natgas may differ from natgas
-    # (0); HIFLD mirror typically uses layer 1 or 2 for crude. If 0
-    # returns gas data, override via SUBTERRA_PIPELINES_CRUDE_URL.
-    "https://maps.nccs.nasa.gov/mapping/rest/services/"
-    "hifld_open/energy/FeatureServer/1/query",
 ]
 DEFAULT_QUERY_URL = CANDIDATE_URLS[0]
 
