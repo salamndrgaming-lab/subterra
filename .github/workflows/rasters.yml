@@ -8,8 +8,9 @@ name: rasters
 # passed as a workflow input.
 #
 # Pipeline per dataset:
-#   download GeoTIFF → reproject to EPSG:3857 → apply color ramp →
-#   gdal2tiles to PNG pyramid → upload to R2 at rasters/<dataset>/{z}/{x}/{y}.png
+#   download GeoTIFF (or .zip → extract the .tif) → reproject to
+#   EPSG:3857 → apply color ramp → gdal2tiles to PNG pyramid → upload
+#   to R2 at rasters/<dataset>/{z}/{x}/{y}.png
 #
 # After a successful run, the corresponding LayerDef in
 # packages/shared/src/layers.ts can be toggled in the sidebar and the
@@ -32,11 +33,34 @@ on:
           - radiometric
       source_url:
         description: >-
-          Verified upstream GeoTIFF URL. REQUIRED — the dataset script
-          refuses to run without one. Find via USGS mrdata.usgs.gov,
+          Verified upstream URL. REQUIRED. Accepts a direct GeoTIFF
+          (.tif) OR a .zip bundle (ScienceBase ships GeoTIFF grids
+          zipped) — the pipeline sniffs the bytes and extracts the .tif
+          from a zip automatically. Find via USGS mrdata.usgs.gov,
           USGS ScienceBase, or the dataset's documentation page.
         required: true
         type: string
+      tif_member:
+        description: >-
+          For a .zip source_url that bundles multiple GeoTIFFs: a
+          case-insensitive substring of the .tif filename to extract
+          (e.g. "eU" to pick equivalent-uranium out of the radiometric
+          K/eU/eTh release). Leave blank to take the largest .tif in the
+          zip. Ignored for a direct .tif URL.
+        required: false
+        type: string
+        default: ''
+      color_ramp:
+        description: >-
+          Override the color ramp by name — a file in
+          etl/raster/colorramps/ without the .clr suffix (e.g.
+          "radiometric_eu", "radiometric_eth", "radiometric_k"). Leave
+          blank to use the dataset default (gravity / aeromag /
+          radiometric). Must match the physical quantity of the grid
+          you pass, or the map renders one flat color.
+        required: false
+        type: string
+        default: ''
       max_zoom:
         description: 'Maximum tile pyramid zoom (default 9)'
         required: false
@@ -80,6 +104,11 @@ jobs:
           AEROMAG_MAX_ZOOM: ${{ inputs.dataset == 'aeromag' && inputs.max_zoom || '' }}
           RADIOMETRIC_GEOTIFF_URL: ${{ inputs.dataset == 'radiometric' && inputs.source_url || '' }}
           RADIOMETRIC_MAX_ZOOM: ${{ inputs.dataset == 'radiometric' && inputs.max_zoom || '' }}
+          # Zip-member selector (for multi-grid .zip bundles) + color-ramp
+          # override (to match the grid's physical quantity). Both apply
+          # to whichever dataset is selected; empty = pipeline default.
+          RASTER_TIF_MEMBER: ${{ inputs.tif_member }}
+          RASTER_COLOR_RAMP: ${{ inputs.color_ramp }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -92,6 +121,8 @@ jobs:
           echo "## Raster pre-tile: ${{ inputs.dataset }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- Source URL: ${{ inputs.source_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Zip member filter: ${{ inputs.tif_member || '(largest .tif)' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Color ramp: ${{ inputs.color_ramp || inputs.dataset }}" >> $GITHUB_STEP_SUMMARY
           echo "- Max zoom: ${{ inputs.max_zoom }}" >> $GITHUB_STEP_SUMMARY
           echo "- R2 key prefix: rasters/${{ inputs.dataset }}/" >> $GITHUB_STEP_SUMMARY
           echo "- Worker URL pattern: /rasters/${{ inputs.dataset }}/{z}/{x}/{y}.png" >> $GITHUB_STEP_SUMMARY

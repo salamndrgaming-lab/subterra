@@ -43,7 +43,10 @@ def main() -> int:
         return 2
 
     work_dir = Path(__file__).resolve().parent / "_work" / DATASET
-    clr = Path(__file__).resolve().parent / "colorramps" / f"{DATASET}.clr"
+    # Ramp selectable by name via RASTER_COLOR_RAMP (file in colorramps/
+    # without the .clr suffix); empty falls back to the dataset default.
+    ramp_name = os.environ.get("RASTER_COLOR_RAMP", "").strip() or DATASET
+    clr = Path(__file__).resolve().parent / "colorramps" / f"{ramp_name}.clr"
     if not clr.exists():
         print(f"::error::color ramp missing: {clr}", file=sys.stderr)
         return 2

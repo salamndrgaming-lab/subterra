@@ -1,0 +1,19 @@
+# Radiometric potassium (K) color ramp — surface concentration in % K.
+# gdaldem color-relief format: <value> <r> <g> <b> [<a>]
+# Sequential yellow→red (same family as the total-count ramp so the
+# legend reads consistently); transparent for nodata. Stops tuned for
+# the NURE Bayesian K grid's typical CONUS range (~0-4 % K — granitic /
+# arkosic terranes are the high end, mafic + carbonate the low).
+#
+# Pair with the eU / eTh ramps via RASTER_COLOR_RAMP when tiling the
+# matching element grid out of the radiometric release.
+
+nv 0 0 0 0
+ 0.0 255 252 200 0
+ 0.3 255 252 200 170
+ 0.8 254 230 140 200
+ 1.3 254 200 90 215
+ 1.8 253 160 50 220
+ 2.5 240 110 30 225
+ 3.0 215 60 20 230
+ 4.0 150 10 30 240

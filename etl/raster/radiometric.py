@@ -52,7 +52,14 @@ def main() -> int:
         return 2
 
     work_dir = Path(__file__).resolve().parent / "_work" / DATASET
-    clr = Path(__file__).resolve().parent / "colorramps" / f"{DATASET}.clr"
+    # Color ramp is selectable by name via RASTER_COLOR_RAMP so the same
+    # dataset script can tile a different physical quantity without a code
+    # change — the NURE radiometric release ships per-element grids (K %,
+    # eU ppm, eTh ppm) whose value ranges differ wildly, so each needs its
+    # own ramp. e.g. RASTER_COLOR_RAMP=radiometric_eu → colorramps/
+    # radiometric_eu.clr. Empty falls back to the dataset-default ramp.
+    ramp_name = os.environ.get("RASTER_COLOR_RAMP", "").strip() or DATASET
+    clr = Path(__file__).resolve().parent / "colorramps" / f"{ramp_name}.clr"
     if not clr.exists():
         print(f"::error::color ramp missing: {clr}", file=sys.stderr)
         return 2

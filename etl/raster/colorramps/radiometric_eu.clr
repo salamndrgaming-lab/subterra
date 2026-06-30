@@ -1,0 +1,17 @@
+# Radiometric equivalent-uranium (eU) color ramp — ppm eU.
+# gdaldem color-relief format: <value> <r> <g> <b> [<a>]
+# Sequential yellow→red; transparent for nodata. Stops tuned for the
+# NURE Bayesian eU grid's typical CONUS range (~0-10 ppm, hot tail to
+# ~15 in U-rich felsic-volcanic / roll-front provinces — Marysvale,
+# Grants Mineral Belt, Wyoming Basin). The single most useful element
+# grid for uranium prospecting; pairs with the U dots in MRDS/USMIN/CMMI.
+
+nv 0 0 0 0
+  0.0 255 252 200 0
+  0.5 255 252 200 170
+  1.5 254 230 140 200
+  2.5 254 200 90 215
+  3.5 253 160 50 220
+  5.0 240 110 30 225
+  7.0 215 60 20 230
+ 10.0 150 10 30 240

@@ -1,0 +1,16 @@
+# Radiometric equivalent-thorium (eTh) color ramp — ppm eTh.
+# gdaldem color-relief format: <value> <r> <g> <b> [<a>]
+# Sequential yellow→red; transparent for nodata. Stops tuned for the
+# NURE Bayesian eTh grid's typical CONUS range (~0-25 ppm, hot tail to
+# ~40 over felsic / REE-bearing / heavy-mineral-placer terranes — Th
+# tracks monazite + the alkaline / carbonatite REE story).
+
+nv 0 0 0 0
+  0 255 252 200 0
+  2 255 252 200 170
+  5 254 230 140 200
+  9 254 200 90 215
+ 13 253 160 50 220
+ 18 240 110 30 225
+ 25 215 60 20 230
+ 40 150 10 30 240

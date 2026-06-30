@@ -36,6 +36,7 @@ import shutil
 import subprocess
 import sys
 import time
+import zipfile
 from pathlib import Path
 
 import boto3
@@ -97,6 +98,62 @@ def _download(url: str, dest: Path) -> None:
     print(f"  → {dest.stat().st_size / 1e6:.1f} MB", flush=True)
 
 
+def _looks_like_zip(path: Path) -> bool:
+    """True if the file starts with the ZIP local-file-header magic.
+    ScienceBase serves its GeoTIFF grids as .zip bundles and the upstream
+    URL's extension isn't reliable (redirects, query strings), so we sniff
+    the first bytes rather than trust the name."""
+    try:
+        with path.open("rb") as f:
+            return f.read(4) == b"PK\x03\x04"
+    except OSError:
+        return False
+
+
+def _extract_tif_from_zip(zip_path: Path, dest: Path) -> None:
+    """Extract exactly one GeoTIFF member from a downloaded zip into `dest`.
+
+    Member selection:
+      - If RASTER_TIF_MEMBER is set, choose the .tif whose path contains
+        that case-insensitive substring — lets you target one grid in a
+        multi-grid bundle (e.g. pick the eU grid out of the radiometric
+        K/eU/eTh release with RASTER_TIF_MEMBER=eU).
+      - Otherwise choose the largest .tif by uncompressed size, which for
+        these USGS bundles is the national grid rather than an ancillary
+        hillshade / thumbnail / metadata raster.
+
+    Raises RuntimeError if the zip has no .tif, or a hint matches none —
+    the dataset script lets that propagate so the workflow fails loudly
+    instead of uploading nothing.
+    """
+    with zipfile.ZipFile(zip_path) as zf:
+        tifs = [
+            i for i in zf.infolist()
+            if not i.is_dir() and i.filename.lower().endswith((".tif", ".tiff"))
+        ]
+        if not tifs:
+            sample = [i.filename for i in zf.infolist()][:20]
+            raise RuntimeError(f"zip {zip_path.name} has no .tif member (saw: {sample})")
+        hint = os.environ.get("RASTER_TIF_MEMBER", "").strip().lower()
+        if hint:
+            matches = [i for i in tifs if hint in i.filename.lower()]
+            if not matches:
+                raise RuntimeError(
+                    f"RASTER_TIF_MEMBER='{hint}' matched no .tif in {zip_path.name} "
+                    f"(available: {[i.filename for i in tifs]})"
+                )
+            chosen = max(matches, key=lambda i: i.file_size)
+        else:
+            chosen = max(tifs, key=lambda i: i.file_size)
+        print(
+            f"zip: extracting '{chosen.filename}' "
+            f"({chosen.file_size / 1e6:.1f} MB) of {len(tifs)} .tif member(s)",
+            flush=True,
+        )
+        with zf.open(chosen) as src, dest.open("wb") as out:
+            shutil.copyfileobj(src, out)
+
+
 def _upload_tile_pyramid(client, root: Path, key_prefix: str) -> int:
     """Walk root recursively, upload every .png under
     `<key_prefix>/<relative-path>`. Returns the upload count."""
@@ -141,8 +198,23 @@ def tile_geotiff(
     if tile_root.exists():
         shutil.rmtree(tile_root)
 
-    # 1) download
-    _download(source_url, src_tif)
+    # 1) fetch — download whatever the URL hands us, then if it's a zip
+    #    bundle (ScienceBase ships GeoTIFF grids zipped), extract the
+    #    chosen .tif member. Lets source_url be a direct .tif OR a .zip
+    #    with no change at dispatch time beyond the optional
+    #    RASTER_TIF_MEMBER hint for multi-grid bundles.
+    if src_tif.exists() and src_tif.stat().st_size > 0:
+        print(f"reusing cached source.tif ({src_tif.stat().st_size / 1e6:.1f} MB)")
+    else:
+        raw = work_dir / "download.bin"
+        _download(source_url, raw)
+        if _looks_like_zip(raw):
+            _extract_tif_from_zip(raw, src_tif)
+        else:
+            # Already a GeoTIFF (or at least not a zip) — promote to the
+            # source.tif name gdalwarp expects. os.replace is an atomic
+            # rename, no second copy of a multi-hundred-MB file.
+            os.replace(raw, src_tif)
 
     # 2) reproject to Web Mercator — gdalwarp is a no-op if already 3857,
     #    but it's cheaper to just always run it than to inspect the SRS.
