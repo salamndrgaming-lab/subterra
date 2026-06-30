@@ -104,20 +104,34 @@ def run(work_dir: Path) -> SourceResult:
     out_path = work_dir / "blm_claims.geojson"
     feature_count = 0
     skipped = 0
+    empty_props = 0
     started = time.monotonic()
     first = [True]
+    # Diagnostic: capture the first feature's RAW upstream property keys.
+    # The claims diff recently found every feature writing properties={}
+    # (keys:[]), which means BLM renamed its fields and _coalesce/_PROP_KEYS
+    # match nothing — claims still tile (geometry is fine) but popups + the
+    # diff go blank. We can't see BLM's current field names from a dev
+    # sandbox, so surface them from the run itself: emit a ::warning:: with
+    # the raw keys so _PROP_KEYS can be updated deterministically.
+    raw_keys_sample: list[str] | None = None
 
     try:
         with out_path.open("w", encoding="utf-8") as out:
             out.write('{"type":"FeatureCollection","features":[')
 
             def on_feature(feat: dict) -> None:
-                nonlocal feature_count, skipped
+                nonlocal feature_count, skipped, empty_props, raw_keys_sample
                 geom = feat.get("geometry")
                 if not geom:
                     skipped += 1
                     return
-                props = _normalize(feat.get("properties") or {})
+                raw = feat.get("properties") or {}
+                if raw_keys_sample is None and raw:
+                    raw_keys_sample = list(raw.keys())[:30]
+                props = _normalize(raw)
+                if not props:
+                    empty_props += 1
                 if not first[0]:
                     out.write(",")
                 first[0] = False
@@ -145,9 +159,18 @@ def run(work_dir: Path) -> SourceResult:
 
     elapsed = time.monotonic() - started
     log.info(
-        "wrote %d claims (skipped %d no-geometry) in %.1fs → %s",
-        feature_count, skipped, elapsed, out_path.name,
+        "wrote %d claims (skipped %d no-geometry, %d empty-props) in %.1fs → %s",
+        feature_count, skipped, empty_props, elapsed, out_path.name,
     )
+    # If a meaningful share of claims normalized to empty properties, the
+    # canonical field mapping is stale. Surface the raw keys so the fix is
+    # a one-line _PROP_KEYS update rather than another blind guess.
+    if feature_count and empty_props > feature_count * 0.5:
+        print(
+            f"::warning::blm_claims wrote {empty_props:,}/{feature_count:,} claims with "
+            f"EMPTY properties — _PROP_KEYS is stale vs upstream. First feature's raw "
+            f"property keys: {raw_keys_sample}"
+        )
 
     return SourceResult(
         layer_id="mining_claims",  # matches tilesetLayer in shared/layers.ts

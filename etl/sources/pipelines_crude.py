@@ -30,8 +30,9 @@ from sources._arcgis import iter_features_concurrent
 # Source is in ACCEPT_BROKEN so a continued miss won't block uploads;
 # override via SUBTERRA_PIPELINES_CRUDE_URL once a verified URL is found.
 CANDIDATE_URLS = [
-    # HIFLD geoplatform AGOL — same org as the midstream pack.
-    "https://services.arcgis.com/4yiQuRZ5x0jHCWPv/arcgis/rest/services/"
+    # HIFLD geoplatform AGOL — same org as the midstream pack
+    # (services5/HDRa0B57OVrv2E1q, search-confirmed 2026-06-30).
+    "https://services5.arcgis.com/HDRa0B57OVrv2E1q/arcgis/rest/services/"
     "Crude_Oil_Pipelines/FeatureServer/0/query",
     "https://geo.dot.gov/server/rest/services/Hosted/"
     "Crude_Oil_Pipelines_US_EIA/FeatureServer/0/query",

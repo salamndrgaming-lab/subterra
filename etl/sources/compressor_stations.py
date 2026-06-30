@@ -33,8 +33,13 @@ from pathlib import Path
 
 from sources._arcgis import iter_features_concurrent
 
+# HIFLD geoplatform AGOL org, verified 2026-06-30 via search — the
+# Natural_Gas_Compressor_Stations FeatureServer lives under
+# services5.arcgis.com/HDRa0B57OVrv2E1q (an earlier guessed org was
+# wrong, which combined with the empty-env-var bug is why this never
+# fetched). Override with SUBTERRA_COMPRESSOR_STATIONS_URL if it moves.
 DEFAULT_QUERY_URL = (
-    "https://services.arcgis.com/4yiQuRZ5x0jHCWPv/arcgis/rest/services/"
+    "https://services5.arcgis.com/HDRa0B57OVrv2E1q/arcgis/rest/services/"
     "Natural_Gas_Compressor_Stations/FeatureServer/0/query"
 )
 

@@ -32,8 +32,11 @@ from pathlib import Path
 
 from sources._arcgis import iter_features_concurrent
 
+# Same HIFLD AGOL org as compressor_stations (services5/HDRa0B57OVrv2E1q,
+# search-confirmed 2026-06-30). Service name follows the HIFLD
+# convention; override via SUBTERRA_REFINERIES_URL if it differs.
 DEFAULT_QUERY_URL = (
-    "https://services.arcgis.com/4yiQuRZ5x0jHCWPv/arcgis/rest/services/"
+    "https://services5.arcgis.com/HDRa0B57OVrv2E1q/arcgis/rest/services/"
     "Petroleum_Refineries/FeatureServer/0/query"
 )
 

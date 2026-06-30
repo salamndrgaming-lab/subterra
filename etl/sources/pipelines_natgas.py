@@ -44,8 +44,10 @@ from sources._arcgis import iter_features_concurrent
 # so it won't block the upload. Set SUBTERRA_PIPELINES_NATGAS_URL to a
 # verified endpoint to override without a code change.
 CANDIDATE_URLS = [
-    # HIFLD geoplatform AGOL — same org that hosts the midstream pack.
-    "https://services.arcgis.com/4yiQuRZ5x0jHCWPv/arcgis/rest/services/"
+    # HIFLD geoplatform AGOL — same org that hosts the midstream pack
+    # (services5/HDRa0B57OVrv2E1q, search-confirmed 2026-06-30). Service
+    # name is the HIFLD convention; unverified for the line layers.
+    "https://services5.arcgis.com/HDRa0B57OVrv2E1q/arcgis/rest/services/"
     "Natural_Gas_Pipelines/FeatureServer/0/query",
     # geo.dot.gov — historical DOT host of EIA pipeline data; 404 as of
     # 2026-06-30 but kept in case the slug is restored.
