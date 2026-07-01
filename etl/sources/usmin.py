@@ -33,10 +33,17 @@ from pathlib import Path
 import requests
 from tqdm import tqdm
 
-# USGS MRDS uses the path pattern /<dataset>/<dataset>-csv.zip; USMIN
-# follows the same convention. If the canonical URL drifts, override
-# via USMIN_URL.
-PRIMARY_URL = "https://mrdata.usgs.gov/usmin/usmin-csv.zip"
+# USGS mrdata uses the path pattern /<slug>/<slug>-csv.zip (the working
+# MRDS source uses mrds/mrds-csv.zip). USMIN's Mineral Deposit Database
+# is published under the `deposit` slug (mrdata.usgs.gov/deposit/) —
+# search-confirmed 2026-06-30 — NOT `usmin`, which is why the previous
+# usmin/usmin-csv.zip URL 404'd (ETL ×). Try the deposit slug first,
+# then the legacy usmin slug as a fallback. Override via USMIN_URL.
+CANDIDATE_URLS = [
+    "https://mrdata.usgs.gov/deposit/deposit-csv.zip",
+    "https://mrdata.usgs.gov/usmin/usmin-csv.zip",
+]
+PRIMARY_URL = CANDIDATE_URLS[0]
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0 "
     "(Subterra-ETL +https://github.com/salamndrgaming-lab/subterra)"
@@ -102,14 +109,28 @@ def run(work_dir: Path) -> SourceResult:
     log = logging.getLogger("etl.usmin")
     log.info("starting USGS USMIN bulk download")
 
-    url = os.environ.get("USMIN_URL") or PRIMARY_URL
+    # Env override wins; otherwise try each candidate slug until one
+    # downloads a zip that actually contains a CSV. A 404 on the first
+    # slug falls through to the next instead of failing the source.
+    env_url = os.environ.get("USMIN_URL")
+    urls = [env_url] if env_url else list(CANDIDATE_URLS)
     zip_path = work_dir / "usmin.zip"
-    if not zip_path.exists():
-        _download(url, zip_path, log)
-    else:
-        log.info("reusing cached %s (%.1f MB)", zip_path.name, zip_path.stat().st_size / 1e6)
-
-    csv_name = _find_csv_in_zip(zip_path)
+    csv_name = None
+    last_err: Exception | None = None
+    for candidate in urls:
+        try:
+            if zip_path.exists():
+                zip_path.unlink()
+            _download(candidate, zip_path, log)
+            csv_name = _find_csv_in_zip(zip_path)
+            log.info("using USMIN source %s", candidate)
+            break
+        except Exception as err:  # noqa: BLE001
+            last_err = err
+            log.warning("USMIN candidate failed (%s): %s", candidate, err)
+            continue
+    if csv_name is None:
+        raise RuntimeError(f"all USMIN candidate URLs failed — last: {last_err}")
     log.info("reading %s from archive", csv_name)
 
     out_path = work_dir / "usmin.geojson"
