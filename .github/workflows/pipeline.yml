@@ -166,6 +166,22 @@ jobs:
           SUBTERRA_COMPRESSOR_STATIONS_URL: ${{ vars.SUBTERRA_COMPRESSOR_STATIONS_URL }}
           SUBTERRA_PROCESSING_PLANTS_URL: ${{ vars.SUBTERRA_PROCESSING_PLANTS_URL }}
           SUBTERRA_REFINERIES_URL: ${{ vars.SUBTERRA_REFINERIES_URL }}
+          # Stake-blocker + subsurface source overrides. These were
+          # previously only settable in code; wiring them here lets a
+          # maintainer redirect any of them by setting a repo variable
+          # (Settings → Secrets and variables → Actions → Variables).
+          # See docs/data-sources-setup.md for exactly what URL each
+          # one expects and where to find it.
+          SUBTERRA_SAGE_GROUSE_URL: ${{ vars.SUBTERRA_SAGE_GROUSE_URL }}
+          SUBTERRA_ROADLESS_URL: ${{ vars.SUBTERRA_ROADLESS_URL }}
+          SUBTERRA_SGMC_ITEM_ID: ${{ vars.SUBTERRA_SGMC_ITEM_ID }}
+          SUBTERRA_SGMC_DIRECT_URL: ${{ vars.SUBTERRA_SGMC_DIRECT_URL }}
+          # USGS mrdata bulk-CSV sources (legacy var names the modules
+          # already read). Override the whole zip URL if a slug drifts.
+          USMIN_URL: ${{ vars.USMIN_URL }}
+          CMMI_URL: ${{ vars.CMMI_URL }}
+          NURE_URL: ${{ vars.NURE_URL }}
+          NGDB_URL: ${{ vars.NGDB_URL }}
         run: |
           if [ -n "$ONLY" ]; then
             echo "--- verification mode: --only $ONLY (no tiles, no upload) ---"

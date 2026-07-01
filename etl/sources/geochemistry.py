@@ -160,7 +160,10 @@ def run(work_dir: Path) -> SourceResult:
     log.info("starting NGDB sediment bulk download")
     started = time.monotonic()
 
-    url = os.environ.get("NGDB_URL", PRIMARY_URL)
+    # `.strip() or PRIMARY` — an undefined pipeline.yml repo variable
+    # arrives as "" (set, empty), which get(KEY, DEFAULT) would pass
+    # through as a broken empty URL; coalesce empties to the default.
+    url = os.environ.get("NGDB_URL", "").strip() or PRIMARY_URL
     zip_path = work_dir / "ngdbsed.zip"
     if not zip_path.exists() or zip_path.stat().st_size < 1_000_000:
         _download(url, zip_path, log)
