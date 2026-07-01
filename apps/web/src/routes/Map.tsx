@@ -21,6 +21,12 @@ import { CrossSection, type CrossSectionAgency, type CrossSectionClaim, type Cro
 import { fetchManifest } from '@/lib/manifest';
 import { fetchDiff, fetchPermitDiff } from '@/lib/diff';
 import { getLastSeenVersion, markSeen } from '@/lib/diff-store';
+import {
+  topOperatorsInView,
+  isFeaturesDbAvailable,
+  type OperatorRollup,
+  type Bbox,
+} from '@/lib/features-db';
 import { fetchMe, signOut } from '@/lib/auth';
 import { checkPmtilesCached, precachePmtiles } from '@/lib/sw';
 import { useLayerVisibility } from '@/stores/layers';
@@ -1549,6 +1555,21 @@ export function MapPage() {
               </div>
             )}
 
+          {/* Operator intelligence — features.db-only. Aggregates the
+              point sources (wells / permits / midstream) by operator
+              within the current viewport, which the vector tiles can't
+              do. Only meaningful once features.db is published. */}
+          <OperatorPanel
+            dbUrl={manifestQuery.data?.featuresDbUrl}
+            available={isFeaturesDbAvailable(manifestQuery.data)}
+            getBounds={() => {
+              const map = mapRef.current;
+              if (!map) return null;
+              const b = map.getBounds();
+              return { west: b.getWest(), south: b.getSouth(), east: b.getEast(), north: b.getNorth() };
+            }}
+          />
+
           {/* Top resource hotspots, precomputed by the ETL and shipped
               in the manifest. Click flies the map + opens the drawer
               with cost/revenue heuristics for that cell. */}
@@ -1778,6 +1799,93 @@ export function MapPage() {
 }
 
 // ─── small components ──────────────────────────────────────────────────
+
+/** Point sources in features.db that carry a meaningful operator — the
+ *  set the operator rollup aggregates over. All are O&G / infrastructure
+ *  facilities where "who runs it" is the interesting question. */
+const OPERATOR_LAYERS = [
+  'wells',
+  'drilling_permits',
+  'compressor_stations',
+  'processing_plants',
+  'refineries',
+] as const;
+
+/** "Top Operators in View" — the flagship features.db consumer. Reads the
+ *  current map viewport, queries the range-request SQLite for point
+ *  features grouped by operator, and lists who's most active. This is
+ *  something the vector tiles fundamentally can't answer (they can't
+ *  aggregate across the viewport), so it's the clearest demonstration of
+ *  why features.db exists. */
+function OperatorPanel({
+  dbUrl,
+  available,
+  getBounds,
+}: {
+  dbUrl: string | undefined;
+  available: boolean;
+  getBounds: () => Bbox | null;
+}) {
+  const [status, setStatus] = useState<'idle' | 'loading' | 'done'>('idle');
+  const [rows, setRows] = useState<OperatorRollup[]>([]);
+
+  // Hidden entirely until the ETL publishes features.db — no point
+  // teasing a control that can't work yet.
+  if (!available || !dbUrl) return null;
+
+  const run = async () => {
+    const bbox = getBounds();
+    if (!bbox) return;
+    setStatus('loading');
+    const result = await topOperatorsInView(dbUrl, bbox, OPERATOR_LAYERS, 20);
+    setRows(result);
+    setStatus('done');
+  };
+
+  return (
+    <Section title="Operators in View">
+      <p className="mb-2 font-mono text-[10px] leading-snug text-text-muted">
+        Wells, permits &amp; midstream in the current map view, grouped by
+        operator — who&rsquo;s most active here.
+      </p>
+      <button
+        type="button"
+        onClick={run}
+        disabled={status === 'loading'}
+        data-testid="operator-panel-run"
+        className="mb-2 w-full rounded border border-border bg-bg-panel px-2 py-1.5 font-mono text-[11px] text-text hover:border-accent disabled:opacity-60"
+      >
+        {status === 'loading' ? 'Querying…' : 'Top operators in view'}
+      </button>
+      {status === 'done' && rows.length === 0 && (
+        <p className="px-1 py-1 font-mono text-[10px] text-text-muted">
+          No operators in this view — pan/zoom to an active basin and retry.
+        </p>
+      )}
+      {rows.length > 0 && (
+        <ol className="space-y-1" data-testid="operator-panel-results">
+          {rows.map((r, i) => (
+            <li
+              key={r.operator}
+              className="flex items-center gap-2 rounded border border-border bg-bg-panel/40 px-2 py-1.5 font-mono text-[10px]"
+            >
+              <span className="w-4 shrink-0 text-text-muted">{i + 1}</span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-text" title={r.operator}>
+                  {r.operator}
+                </span>
+                <span className="block text-text-muted">{r.layers}</span>
+              </span>
+              <span className="shrink-0 rounded bg-accent/15 px-1.5 py-0.5 text-accent">
+                {r.count.toLocaleString()}
+              </span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </Section>
+  );
+}
 
 /** Curated preset row above the layer search — one-click layer loadouts.
  *  Highlights the active preset if current visibility exactly matches it,

@@ -19,6 +19,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.1.1",
+    "sql.js-httpvfs": "^0.8.12",
     "tailwind-merge": "^2.5.5",
     "zustand": "^5.0.2"
   },
