@@ -26,18 +26,24 @@ import wasmUrl from 'sql.js-httpvfs/dist/sql-wasm.wasm?url';
 import {
   viewportOperatorSql,
   viewportFeaturesSql,
+  nearestFeatureSql,
+  productionForWellSql,
   type Bbox,
   type OperatorRollup,
   type FeatureRow,
+  type ProductionRow,
 } from './features-db-sql';
 
 export {
   isFeaturesDbAvailable,
   viewportOperatorSql,
   viewportFeaturesSql,
+  nearestFeatureSql,
+  productionForWellSql,
   type Bbox,
   type OperatorRollup,
   type FeatureRow,
+  type ProductionRow,
 } from './features-db-sql';
 
 // ─── lazy worker singleton ────────────────────────────────────────────
@@ -115,4 +121,35 @@ export function featuresInView(
   const sql = viewportFeaturesSql(limit);
   const params = [bbox.west, bbox.east, bbox.south, bbox.north, layer];
   return runQuery<FeatureRow>(dbUrl, sql, params);
+}
+
+/** The nearest `layer` feature to (lng,lat), searched within a small
+ *  degrees-radius box. Returns the full property bag the tiles dropped,
+ *  or null if nothing's close. */
+export async function nearestFeature(
+  dbUrl: string,
+  lng: number,
+  lat: number,
+  layer: string,
+  radiusDeg = 0.02,
+): Promise<FeatureRow | null> {
+  const params = [
+    lng - radiusDeg,
+    lng + radiusDeg,
+    lat - radiusDeg,
+    lat + radiusDeg,
+    layer,
+    lng,
+    lng,
+    lat,
+    lat,
+  ];
+  const rows = await runQuery<FeatureRow>(dbUrl, nearestFeatureSql(), params);
+  return rows[0] ?? null;
+}
+
+/** A well's monthly production series (oldest first), for the sparkline. */
+export function productionForWell(dbUrl: string, wellApi: string): Promise<ProductionRow[]> {
+  if (!wellApi) return Promise.resolve([]);
+  return runQuery<ProductionRow>(dbUrl, productionForWellSql(), [wellApi]);
 }

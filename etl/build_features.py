@@ -37,6 +37,7 @@ ships.
 
 from __future__ import annotations
 
+import csv
 import json
 import sqlite3
 import sys
@@ -48,6 +49,7 @@ ROOT = Path(__file__).resolve().parent
 WORK = ROOT / "work"
 OUT = ROOT / "out"
 DB_PATH = OUT / "subterra-features.db"
+PRODUCTION_CSV = WORK / "production.csv"
 
 # Point-geometry sources worth indexing for detail + attribute queries.
 # Matches the geojson filenames (== layer_id). Polygon/line sources are
@@ -119,8 +121,74 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         );
         CREATE VIRTUAL TABLE features_rtree USING rtree(id, minx, maxx, miny, maxy);
         CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+        DROP TABLE IF EXISTS production;
+        CREATE TABLE production (
+            well_api  TEXT NOT NULL,
+            period    TEXT NOT NULL,   -- YYYY-MM
+            oil_bbl   REAL,
+            gas_mcf   REAL,
+            water_bbl REAL,
+            days      INTEGER
+        );
         """
     )
+
+
+def _num(v: Any) -> float | None:
+    """Coerce a CSV cell to float, or None for blanks/garbage."""
+    if v in (None, "", " "):
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def load_production(csv_path: Path, conn: sqlite3.Connection) -> int:
+    """Load per-well monthly production from a CSV into the production
+    table. Expected columns (header row, case-insensitive): well_api,
+    period, oil_bbl, gas_mcf, water_bbl, days. Missing file → 0 rows
+    (the table stays empty and the well drawer simply shows no
+    sparkline). Returns row count. Creates the by-API index after load
+    so the well-detail lookup is fast."""
+    if not csv_path.exists():
+        return 0
+    n = 0
+    cur = conn.cursor()
+    batch: list[tuple] = []
+    with csv_path.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        # normalize header casing
+        field_map = {name.lower().strip(): name for name in (reader.fieldnames or [])}
+
+        def col(row: dict, key: str) -> Any:
+            src = field_map.get(key)
+            return row.get(src) if src else None
+
+        for row in reader:
+            api = col(row, "well_api")
+            period = col(row, "period")
+            if not api or not period:
+                continue
+            batch.append(
+                (
+                    str(api).strip(),
+                    str(period).strip(),
+                    _num(col(row, "oil_bbl")),
+                    _num(col(row, "gas_mcf")),
+                    _num(col(row, "water_bbl")),
+                    int(_num(col(row, "days")) or 0) or None,
+                )
+            )
+            n += 1
+            if len(batch) >= 10_000:
+                cur.executemany("INSERT INTO production VALUES (?,?,?,?,?,?)", batch)
+                batch.clear()
+    if batch:
+        cur.executemany("INSERT INTO production VALUES (?,?,?,?,?,?)", batch)
+    cur.execute("CREATE INDEX idx_production_api ON production(well_api)")
+    conn.commit()
+    return n
 
 
 def _load_geojson_points(path: Path) -> Iterable[tuple[str | None, str | None, float, float, str]]:
@@ -147,9 +215,12 @@ def _load_geojson_points(path: Path) -> Iterable[tuple[str | None, str | None, f
 def build_db(
     sources: list[tuple[str, Path]],
     conn: sqlite3.Connection,
+    production_csv: Path | None = None,
 ) -> dict[str, int]:
-    """Populate `conn` from (layer, geojson_path) pairs. Returns a
-    {layer: row_count} dict. Missing files are skipped (logged as 0)."""
+    """Populate `conn` from (layer, geojson_path) pairs, plus optional
+    per-well production from `production_csv`. Returns a {layer: row_count}
+    dict (with a synthetic 'production' key for the time-series rows).
+    Missing files are skipped (logged as 0)."""
     _init_schema(conn)
     counts: dict[str, int] = {}
     next_id = 1
@@ -183,7 +254,15 @@ def build_db(
         "CREATE INDEX idx_features_layer ON features(layer);"
         "CREATE INDEX idx_features_operator ON features(operator);"
     )
-    total = sum(counts.values())
+
+    # Per-well production time-series (optional). Keyed by well API so the
+    # well-detail drawer can render a sparkline + cumulative. Independent
+    # of the point index above.
+    prod_rows = load_production(production_csv, conn) if production_csv else 0
+    if prod_rows:
+        counts["production"] = prod_rows
+
+    total = sum(v for k, v in counts.items() if k != "production")
     meta = {
         "schema_version": "1",
         "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -207,12 +286,18 @@ def build_features(results: Iterable[Any], out_path: Path = DB_PATH) -> int:
         out_path.unlink()
     conn = sqlite3.connect(str(out_path))
     try:
-        counts = build_db(sources, conn)
+        counts = build_db(sources, conn, production_csv=PRODUCTION_CSV)
     finally:
         conn.close()
-    total = sum(counts.values())
+    total = sum(v for k, v in counts.items() if k != "production")
     nonzero = {k: v for k, v in counts.items() if v}
-    print(f"features.db: {total:,} rows across {len(nonzero)} point layers → {nonzero}")
+    prod = counts.get("production", 0)
+    print(
+        f"features.db: {total:,} rows across "
+        f"{len([k for k in nonzero if k != 'production'])} point layers"
+        + (f" + {prod:,} production records" if prod else "")
+        + f" → {nonzero}"
+    )
     return total
 
 
@@ -225,10 +310,10 @@ def _main() -> int:
         DB_PATH.unlink()
     conn = sqlite3.connect(str(DB_PATH))
     try:
-        counts = build_db(sources, conn)
+        counts = build_db(sources, conn, production_csv=PRODUCTION_CSV)
     finally:
         conn.close()
-    print(f"features.db built at {DB_PATH} — {sum(counts.values()):,} rows: {counts}")
+    print(f"features.db built at {DB_PATH} — {counts}")
     return 0
 
 

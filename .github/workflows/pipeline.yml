@@ -182,6 +182,11 @@ jobs:
           CMMI_URL: ${{ vars.CMMI_URL }}
           NURE_URL: ${{ vars.NURE_URL }}
           NGDB_URL: ${{ vars.NGDB_URL }}
+          # Per-well production time-series (features.db `production`
+          # table → well-detail sparkline). Inert until set to a verified
+          # ArcGIS table /query endpoint. See docs/data-sources-setup.md.
+          SUBTERRA_PRODUCTION_CO_URL: ${{ vars.SUBTERRA_PRODUCTION_CO_URL }}
+          SUBTERRA_PRODUCTION_ND_URL: ${{ vars.SUBTERRA_PRODUCTION_ND_URL }}
         run: |
           if [ -n "$ONLY" ]; then
             echo "--- verification mode: --only $ONLY (no tiles, no upload) ---"

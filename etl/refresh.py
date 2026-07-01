@@ -614,6 +614,16 @@ def main() -> int:
 
     if not args.skip_tippecanoe:
         pmtiles = run_tippecanoe(results)
+        # Per-well production time-series → work/production.csv (inert
+        # unless SUBTERRA_PRODUCTION_*_URL is configured). Must run before
+        # build_features so the CSV is present when the db is built.
+        try:
+            from sources.production import build_production_csv
+            prod = build_production_csv(WORK)
+            if prod:
+                log.info("production: %d records → production.csv", prod)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("production fetch failed (non-fatal): %s", exc)
         # Build the queryable companion SQLite from the point sources
         # BEFORE write_manifest, so its checksum lands in the manifest.
         # Non-fatal: a features.db failure must not sink the tileset.

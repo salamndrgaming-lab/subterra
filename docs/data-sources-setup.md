@@ -93,6 +93,7 @@ failures never crash the run.
 | `SUBTERRA_PERMITS_ND_URL` | Point | ND DMR **public** (non-token) permits layer. The vector-tile service is token-gated (`499 Token Required`) — find the public NorthSTAR/DMR permits FeatureServer. |
 | `SUBTERRA_PERMITS_CO_URL` | Point | CO ECMC. Our default used layer **1** of `OGCC_Oil_and_Gas_Locations` → `400 Invalid Layer ID`. Open that FeatureServer, find the permits/locations layer's real index, paste `.../FeatureServer/<realIndex>/query`. |
 | `SUBTERRA_WELLS_TX_URL` | Point | TX RRC. Current HCTX mirror loads only ~12.8k (a subset). For statewide TX, find the full RRC wells FeatureServer (RRC GIS Viewer services or a complete mirror). |
+| `SUBTERRA_PRODUCTION_CO_URL` | Table (no geometry) | **Per-well monthly production** → features.db `production` table → the well-detail sparkline. Point at a state ArcGIS **table** `/query` endpoint that returns rows of (API, month, oil, gas, water, days) — e.g. CO ECMC production. Inert until set (no default). Field names are auto-mapped best-effort; the first record's keys are logged so mapping can be tuned. `SUBTERRA_PRODUCTION_ND_URL` also wired. |
 
 ### Already fixed (override only if they regress)
 

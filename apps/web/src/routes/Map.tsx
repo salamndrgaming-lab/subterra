@@ -24,8 +24,11 @@ import { getLastSeenVersion, markSeen } from '@/lib/diff-store';
 import {
   topOperatorsInView,
   isFeaturesDbAvailable,
+  nearestFeature,
+  productionForWell,
   type OperatorRollup,
   type Bbox,
+  type ProductionRow,
 } from '@/lib/features-db';
 import { fetchMe, signOut } from '@/lib/auth';
 import { checkPmtilesCached, precachePmtiles } from '@/lib/sw';
@@ -1727,6 +1730,11 @@ export function MapPage() {
             geologyLoading={geologyQuery.isFetching}
             geologyError={geologyQuery.error ? String(geologyQuery.error) : null}
             elevation={elevationQuery.data ?? null}
+            featuresDbUrl={
+              isFeaturesDbAvailable(manifestQuery.data)
+                ? manifestQuery.data?.featuresDbUrl
+                : undefined
+            }
             onClose={() => setSelected(null)}
           />
         )}
@@ -1884,6 +1892,162 @@ function OperatorPanel({
         </ol>
       )}
     </Section>
+  );
+}
+
+// features.db indexes these tileset (underscore) layer names as points.
+// Mirrors POINT_LAYERS in etl/build_features.py.
+const FEATURES_DB_TILESET = new Set([
+  'wells',
+  'mrds',
+  'usmin',
+  'cmmi',
+  'drill_holes',
+  'drilling_permits',
+  'geochemistry',
+  'water_rights',
+  'compressor_stations',
+  'processing_plants',
+  'refineries',
+]);
+// Map the web layer id (kebab) → the features.db layer name (== the
+// registry's tilesetLayer). Registry-driven so it can't drift.
+const FEATURES_DB_LAYER_MAP: Record<string, string> = Object.fromEntries(
+  LAYERS.filter((l) => FEATURES_DB_TILESET.has(l.tilesetLayer)).map((l) => [l.id, l.tilesetLayer]),
+);
+const FEATURES_DB_LAYERS = new Set(Object.keys(FEATURES_DB_LAYER_MAP));
+
+/** Extended feature detail pulled from features.db on click. The vector
+ *  tiles drop properties to stay small; features.db carries the full bag.
+ *  Shows only fields the tile click DIDN'T already give us, and — for a
+ *  well — a production sparkline from the production table. Fails silent:
+ *  if the nearest lookup finds nothing, renders nothing. */
+function FeaturesDbDetail({
+  dbUrl,
+  layerId,
+  lng,
+  lat,
+  tileKeys,
+}: {
+  dbUrl: string;
+  layerId: string;
+  lng: number;
+  lat: number;
+  tileKeys: string[];
+}) {
+  const dbLayer = FEATURES_DB_LAYER_MAP[layerId];
+  const [extra, setExtra] = useState<Array<[string, unknown]>>([]);
+  const [wellApi, setWellApi] = useState<string | null>(null);
+  const [production, setProduction] = useState<ProductionRow[] | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setExtra([]);
+    setWellApi(null);
+    setProduction(null);
+    if (!dbLayer) return;
+    (async () => {
+      const row = await nearestFeature(dbUrl, lng, lat, dbLayer);
+      if (!alive || !row) return;
+      let bag: Record<string, unknown> = {};
+      try {
+        bag = JSON.parse(row.props) as Record<string, unknown>;
+      } catch {
+        return;
+      }
+      const known = new Set(tileKeys);
+      const extras = Object.entries(bag).filter(
+        ([k, v]) => !known.has(k) && v !== null && v !== '' && v !== undefined,
+      );
+      setExtra(extras);
+      const api = (bag.api ?? bag.api_no ?? bag.api_num) as string | undefined;
+      if (dbLayer === 'wells' && api) {
+        setWellApi(String(api));
+        const series = await productionForWell(dbUrl, String(api));
+        if (alive) setProduction(series);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [dbUrl, dbLayer, lng, lat, tileKeys]);
+
+  if (extra.length === 0 && !production?.length) return null;
+
+  return (
+    <div className="mt-4 border-t border-border pt-3" data-testid="featuresdb-detail">
+      <div className="mb-1.5 font-mono text-[10px] uppercase tracking-wider text-text-muted">
+        Extended detail · features.db
+      </div>
+      {extra.length > 0 && (
+        <dl className="grid grid-cols-[120px_minmax(0,1fr)] gap-y-1 font-mono text-[11px]">
+          {extra.map(([key, value]) => (
+            <Row key={key} label={PROPERTY_LABELS[key] ?? key} value={value} />
+          ))}
+        </dl>
+      )}
+      {production && production.length > 0 && (
+        <ProductionSparkline series={production} api={wellApi} />
+      )}
+    </div>
+  );
+}
+
+/** Compact production visualization for a well: oil + gas sparklines,
+ *  cumulative totals, and the latest reported month. Pure inline SVG —
+ *  no chart lib. `series` is monthly, oldest first. */
+function ProductionSparkline({ series, api }: { series: ProductionRow[]; api: string | null }) {
+  const oil = series.map((r) => r.oil_bbl ?? 0);
+  const gas = series.map((r) => r.gas_mcf ?? 0);
+  const cumOil = oil.reduce((a, b) => a + b, 0);
+  const cumGas = gas.reduce((a, b) => a + b, 0);
+  const last = series[series.length - 1];
+
+  const spark = (vals: number[], color: string) => {
+    if (vals.length < 2) return null;
+    const max = Math.max(...vals, 1);
+    const w = 140;
+    const h = 28;
+    const pts = vals
+      .map((v, i) => {
+        const x = (i / (vals.length - 1)) * w;
+        const y = h - (v / max) * h;
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      })
+      .join(' ');
+    return (
+      <svg width={w} height={h} className="block" aria-hidden>
+        <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" />
+      </svg>
+    );
+  };
+
+  const fmt = (n: number) => Math.round(n).toLocaleString();
+
+  return (
+    <div className="mt-3" data-testid="production-sparkline">
+      <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-text-muted">
+        Production {api ? `· ${api}` : ''} · {series.length} mo
+      </div>
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between gap-2">
+          <span className="font-mono text-[10px] text-text-muted">Oil</span>
+          {spark(oil, '#22c55e')}
+          <span className="shrink-0 font-mono text-[10px] text-text">{fmt(cumOil)} bbl</span>
+        </div>
+        <div className="flex items-center justify-between gap-2">
+          <span className="font-mono text-[10px] text-text-muted">Gas</span>
+          {spark(gas, '#f59e0b')}
+          <span className="shrink-0 font-mono text-[10px] text-text">{fmt(cumGas)} mcf</span>
+        </div>
+      </div>
+      {last && (
+        <div className="mt-1 font-mono text-[9px] text-text-muted">
+          latest {last.period}: {fmt(last.oil_bbl ?? 0)} bbl · {fmt(last.gas_mcf ?? 0)} mcf
+          {last.days ? ` · ${last.days}d` : ''}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -3341,6 +3505,7 @@ function DetailDrawer({
   geologyLoading,
   geologyError,
   elevation,
+  featuresDbUrl,
   onClose,
 }: {
   feature: SelectedFeature;
@@ -3348,6 +3513,9 @@ function DetailDrawer({
   geologyLoading: boolean;
   geologyError: string | null;
   elevation: ElevationResult | null;
+  /** features.db URL when the db is published; enables the extended
+   *  property bag + (for wells) the production sparkline. */
+  featuresDbUrl: string | undefined;
   onClose: () => void;
 }) {
   const entries = Object.entries(feature.properties).filter(
@@ -3448,6 +3616,15 @@ function DetailDrawer({
                   <Row key={key} label={PROPERTY_LABELS[key] ?? key} value={value} />
                 ))}
               </dl>
+            )}
+            {featuresDbUrl && FEATURES_DB_LAYERS.has(feature.layerId) && (
+              <FeaturesDbDetail
+                dbUrl={featuresDbUrl}
+                layerId={feature.layerId}
+                lng={feature.lng}
+                lat={feature.lat}
+                tileKeys={Object.keys(feature.properties)}
+              />
             )}
           </>
         )}

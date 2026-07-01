@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   viewportOperatorSql,
   viewportFeaturesSql,
+  nearestFeatureSql,
+  productionForWellSql,
   isFeaturesDbAvailable,
 } from '../../apps/web/src/lib/features-db-sql';
 
@@ -40,6 +42,24 @@ describe('features-db SQL builders', () => {
     expect(sql).toContain('f.layer = ?');
     expect(sql).toContain('LIMIT 200');
     expect(sql).toContain('SELECT f.id, f.layer, f.name, f.operator, f.lng, f.lat, f.props');
+  });
+
+  it('nearest feature: bbox filter + layer + squared-distance order, single row', () => {
+    const sql = nearestFeatureSql();
+    // 4 bbox + 1 layer + 4 distance placeholders = 9
+    expect((sql.match(/\?/g) ?? []).length).toBe(9);
+    expect(sql).toContain('f.layer = ?');
+    expect(sql).toContain('ORDER BY (f.lng - ?)*(f.lng - ?) + (f.lat - ?)*(f.lat - ?) ASC');
+    expect(sql).toContain('LIMIT 1');
+  });
+
+  it('production query: by well_api, chronological', () => {
+    const sql = productionForWellSql();
+    expect((sql.match(/\?/g) ?? []).length).toBe(1);
+    expect(sql).toContain('FROM production WHERE well_api = ?');
+    expect(sql).toContain('ORDER BY period ASC');
+    expect(sql).toContain('oil_bbl');
+    expect(sql).toContain('gas_mcf');
   });
 
   it('isFeaturesDbAvailable keys off a non-empty checksum', () => {

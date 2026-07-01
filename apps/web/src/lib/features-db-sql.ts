@@ -34,6 +34,14 @@ export interface FeatureRow {
   props: string;
 }
 
+export interface ProductionRow {
+  period: string;
+  oil_bbl: number | null;
+  gas_mcf: number | null;
+  water_bbl: number | null;
+  days: number | null;
+}
+
 /** True when the ETL has actually built + published the db (non-empty
  *  checksum). Lets the UI avoid a slow, doomed worker init before the
  *  first features.db lands in R2. */
@@ -75,5 +83,31 @@ export function viewportFeaturesSql(limit: number): string {
     'WHERE r.minx >= ? AND r.maxx <= ? AND r.miny >= ? AND r.maxy <= ? ' +
     'AND f.layer = ? ' +
     `LIMIT ${safeLimit(limit)}`
+  );
+}
+
+/** SQL for the single nearest feature of `layer` to a click point, within
+ *  a small bbox around it. Params: west, east, south, north (the bbox),
+ *  then lng, lng, lat, lat (for the squared-distance order-by). Used to
+ *  pull the FULL property bag from features.db for a clicked feature —
+ *  the tiles drop properties to stay small, so the drawer can show more
+ *  than the click gave us. */
+export function nearestFeatureSql(): string {
+  return (
+    'SELECT f.id, f.layer, f.name, f.operator, f.lng, f.lat, f.props ' +
+    'FROM features f JOIN features_rtree r ON f.id = r.id ' +
+    'WHERE r.minx >= ? AND r.maxx <= ? AND r.miny >= ? AND r.maxy <= ? ' +
+    'AND f.layer = ? ' +
+    'ORDER BY (f.lng - ?)*(f.lng - ?) + (f.lat - ?)*(f.lat - ?) ASC ' +
+    'LIMIT 1'
+  );
+}
+
+/** SQL for a well's monthly production series, oldest first. Param:
+ *  well_api. Powers the well-detail sparkline + cumulative. */
+export function productionForWellSql(): string {
+  return (
+    'SELECT period, oil_bbl, gas_mcf, water_bbl, days ' +
+    'FROM production WHERE well_api = ? ORDER BY period ASC'
   );
 }
