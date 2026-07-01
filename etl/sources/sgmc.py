@@ -49,6 +49,15 @@ from typing import Any
 import requests
 
 DEFAULT_ITEM_ID = "5888bf4fe4b05ccb964bab9d"  # SGMC v2 on ScienceBase
+# Search-confirmed 2026-07-01 direct download — the ScienceBase item
+# ships USGS_SGMC_Shapefiles.zip (readable via /vsizip/ .shp; the reader
+# doesn't handle the .gdb geodatabase zip). Using the direct file URL
+# bypasses the item-JSON enumeration that was returning empty. Override
+# with SUBTERRA_SGMC_DIRECT_URL.
+DEFAULT_DIRECT_URL = (
+    "https://www.sciencebase.gov/catalog/file/get/"
+    "5888bf4fe4b05ccb964bab9d?name=USGS_SGMC_Shapefiles.zip"
+)
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0 "
     "(Subterra-ETL +https://github.com/salamndrgaming-lab/subterra)"
@@ -275,7 +284,9 @@ def run(work_dir: Path) -> SourceResult:
 
     # Env overrides:
     item_id = os.environ.get("SUBTERRA_SGMC_ITEM_ID") or DEFAULT_ITEM_ID
-    direct_url = os.environ.get("SUBTERRA_SGMC_DIRECT_URL") or ""
+    # Prefer the committed direct download (bypasses the flaky item-JSON
+    # enumeration); env override wins over both.
+    direct_url = os.environ.get("SUBTERRA_SGMC_DIRECT_URL") or DEFAULT_DIRECT_URL
 
     try:
         url = direct_url or _find_download_url(log, item_id)

@@ -36,9 +36,14 @@ from pathlib import Path
 
 from sources._arcgis import iter_features_concurrent
 
+# Search-confirmed 2026-07-01: the USFS EDW service for the 2001 Roadless
+# Rule IRAs is EDW_InventoriedRoadlessAreas2001_01 (the earlier
+# EDW_RoadlessArea_01 guess was wrong — that service doesn't exist, which
+# is why this was ETL ×). Layer 0 = the national IRA polygons. Override
+# via SUBTERRA_ROADLESS_URL.
 DEFAULT_QUERY_URL = (
     "https://apps.fs.usda.gov/arcx/rest/services/EDW/"
-    "EDW_RoadlessArea_01/MapServer/0/query"
+    "EDW_InventoriedRoadlessAreas2001_01/MapServer/0/query"
 )
 
 
