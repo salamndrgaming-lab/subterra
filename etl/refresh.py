@@ -67,7 +67,8 @@ SOURCES = [
     "roadless_areas",  # USFS Inventoried Roadless Areas (36 CFR 294)
     "water_rights",    # Per-state water rights (NV + UT + AZ — first cluster)
     "quaternary_faults", # USGS Quaternary Faults and Folds (seismic + cross-sect)
-    "parcels",         # Per-county assessor parcels (NV: Washoe/Clark/Elko/Lyon)
+    "parcels",         # Statewide parcels — multi-state (NV + MT + ID; owner + value)
+    "state_trust",     # State trust lands — public land leased/sold (AZ + MT)
     # hotspots reads other sources' GeoJSON from work_dir to score
     # cell-binned prospecting opportunity — MUST stay last so the
     # inputs are guaranteed to exist when it runs.
@@ -141,7 +142,12 @@ EXPECTED_MIN_FEATURES: dict[str, int] = {
     "roadless_areas":        500,
     "water_rights":       10_000,
     "quaternary_faults":   5_000,
-    "parcels":            50_000,
+    # Multi-state statewide parcels (NV ~1.3M + MT ~1M + ID ~1M). Floor
+    # at 500k catches a total collapse without flapping if one state
+    # endpoint drops for a run.
+    "parcels":           500_000,
+    # State trust lands — AZ (~tens of thousands of tracts) + MT.
+    "state_trust":         5_000,
     "hotspots":              500,
 }
 
@@ -221,6 +227,11 @@ ACCEPT_BROKEN: set[str] = {
     # SUBTERRA_PIPELINES_NATGAS_URL / _CRUDE_URL to a verified endpoint.
     "pipelines_natgas",
     "pipelines_crude",
+    # parcels multi-state (MT/ID new endpoints) + state_trust (AZ/MT) —
+    # search-confirmed URLs but unverified from the dev sandbox. First-run
+    # grace; iterate via the SUBTERRA_PARCELS_*_URL /
+    # SUBTERRA_STATE_TRUST_*_URL repo variables if a state 404s.
+    "state_trust",
 }
 
 

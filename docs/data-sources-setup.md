@@ -95,6 +95,20 @@ failures never crash the run.
 | `SUBTERRA_WELLS_TX_URL` | Point | TX RRC. Current HCTX mirror loads only ~12.8k (a subset). For statewide TX, find the full RRC wells FeatureServer (RRC GIS Viewer services or a complete mirror). |
 | `SUBTERRA_PRODUCTION_CO_URL` | Table (no geometry) | **Per-well monthly production** → features.db `production` table → the well-detail sparkline. Point at a state ArcGIS **table** `/query` endpoint that returns rows of (API, month, oil, gas, water, days) — e.g. CO ECMC production. Inert until set (no default). Field names are auto-mapped best-effort; the first record's keys are logged so mapping can be tuned. `SUBTERRA_PRODUCTION_ND_URL` also wired. |
 
+### Property / land data (multi-state)
+
+| Variable | What to paste | Where |
+|---|---|---|
+| `SUBTERRA_PARCELS_<ST>_URL` | statewide parcel **polygon** `/query` | Add a state's statewide parcel FeatureServer. Committed: NV/MT/ID. The normalizer auto-captures owner, assessed value, sale price/date, land use, zoning, address wherever the source carries them (MT's DOR-fed layer has assessed value). Most other western states publish per-county, not statewide — those need per-county wiring or a national provider (Regrid). |
+| `SUBTERRA_STATE_TRUST_<ST>_URL` | trust-land **polygon** `/query` | State land-office trust parcels (public land leased/sold). Committed: AZ (ASLD) + MT (DNRC). Add NM/UT/WY/etc. as found. |
+
+> **On "for sale" + market price:** live MLS listing data (on-market status,
+> list price) is licensed — no free bulk feed. Options: **Regrid** (national
+> parcels + owner + value) or an MLS partner. Public land *for sale*
+> (BLM/GSA) is published only as web listings (realestatesales.gov,
+> disposal.gsa.gov), not a GIS layer — the State Trust Lands layer above is
+> the ingestible "acquirable public land" proxy.
+
 ### Already fixed (override only if they regress)
 
 `SUBTERRA_COMPRESSOR_STATIONS_URL`, `SUBTERRA_PROCESSING_PLANTS_URL`,

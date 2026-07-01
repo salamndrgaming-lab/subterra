@@ -143,10 +143,17 @@ jobs:
           SUBTERRA_WATER_RIGHTS_NV_URL: ${{ vars.SUBTERRA_WATER_RIGHTS_NV_URL }}
           SUBTERRA_WATER_RIGHTS_UT_URL: ${{ vars.SUBTERRA_WATER_RIGHTS_UT_URL }}
           SUBTERRA_WATER_RIGHTS_AZ_URL: ${{ vars.SUBTERRA_WATER_RIGHTS_AZ_URL }}
-          SUBTERRA_PARCELS_NV_WASHOE_URL: ${{ vars.SUBTERRA_PARCELS_NV_WASHOE_URL }}
-          SUBTERRA_PARCELS_NV_CLARK_URL: ${{ vars.SUBTERRA_PARCELS_NV_CLARK_URL }}
-          SUBTERRA_PARCELS_NV_ELKO_URL: ${{ vars.SUBTERRA_PARCELS_NV_ELKO_URL }}
-          SUBTERRA_PARCELS_NV_LYON_URL: ${{ vars.SUBTERRA_PARCELS_NV_LYON_URL }}
+          # Per-state statewide-parcels overrides. Add a state by setting
+          # its repo variable to a verified statewide parcel /query URL
+          # (see docs/data-sources-setup.md). NV/MT/ID have committed
+          # defaults; the rest activate when their variable is set.
+          SUBTERRA_PARCELS_NV_URL: ${{ vars.SUBTERRA_PARCELS_NV_URL }}
+          SUBTERRA_PARCELS_MT_URL: ${{ vars.SUBTERRA_PARCELS_MT_URL }}
+          SUBTERRA_PARCELS_ID_URL: ${{ vars.SUBTERRA_PARCELS_ID_URL }}
+          # State trust lands (public land leased/sold). Add a state by
+          # setting its variable to a verified statewide /query URL.
+          SUBTERRA_STATE_TRUST_AZ_URL: ${{ vars.SUBTERRA_STATE_TRUST_AZ_URL }}
+          SUBTERRA_STATE_TRUST_MT_URL: ${{ vars.SUBTERRA_STATE_TRUST_MT_URL }}
           # Per-state O&G wells endpoint overrides. State commissions
           # (and county/state GIS mirrors) republish slugs periodically;
           # set a repo variable here to redirect a state without a

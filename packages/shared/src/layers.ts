@@ -527,6 +527,23 @@ export const LAYERS: readonly LayerDef[] = [
     color: '#a855f7', // purple — distinct from BLM/USFS/NPS agency colors
   },
   {
+    // State trust lands — public land held by state land offices, routinely
+    // leased (grazing / minerals / commercial) and periodically auctioned
+    // for sale. The ingestible half of the "public land you could acquire"
+    // picture (BLM/GSA sales are web listings only, no GIS feed). Multi-
+    // state: AZ (ASLD) + MT (DNRC), env-extensible to NM/UT/WY/etc.
+    id: 'state-trust',
+    label: 'State Trust Lands (lease/sale)',
+    group: 'stake',
+    defaultVisible: false,
+    tilesetLayer: 'state_trust',
+    geometry: 'polygon',
+    minZoom: 6,
+    // teal-green — a distinct "acquirable public land" signal, set apart
+    // from the federal-agency greens and the private-parcel pale yellow.
+    color: '#0d9488',
+  },
+  {
     // BLM Greater Sage-Grouse Priority + General Habitat Management
     // Areas. Distinct from generic critical habitat: the 2015/2019
     // BLM management plans impose no-surface-occupancy + density caps
