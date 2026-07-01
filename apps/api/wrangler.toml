@@ -13,6 +13,12 @@ compatibility_flags = ["nodejs_compat"]
 [observability]
 enabled = true
 
+# Weekly alert digest — Sunday 04:00 UTC, two hours after the ETL cron
+# (0 2 * * 0 in pipeline.yml) so the diff payload is fresh in R2 when the
+# scheduled() handler runs.
+[triggers]
+crons = ["0 4 * * 0"]
+
 [[d1_databases]]
 binding = "DB"
 database_name = "subterra"

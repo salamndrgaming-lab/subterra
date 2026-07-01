@@ -25,6 +25,8 @@ import {
   type AuthedUser,
 } from './auth';
 import { sendMagicLinkEmail } from './email';
+import { parseAlertFilters } from './alerts-match';
+import { runAlertCron } from './alerts-cron';
 
 export interface Env {
   DB: D1Database;
@@ -659,11 +661,127 @@ app.post('/aois/:id/nol-packet', NOT_YET('5'));
 // against, so the web Eligibility card can render a placeholder state.
 app.get('/eligibility', NOT_YET('9'));
 
-// Phase 6 — alerts
-app.get('/alerts', NOT_YET('6'));
-app.post('/alerts', NOT_YET('6'));
-app.patch('/alerts/:id', NOT_YET('6'));
-app.delete('/alerts/:id', NOT_YET('6'));
+// Phase 6 — AOI change alerts. CRUD over the alerts table; the digest
+// emails are sent by the scheduled() cron handler below.
+const ALERT_EVENT_KINDS = new Set([
+  'new_claim_filed',
+  'claim_dropped',
+  'permit_filed',
+  'well_spudded',
+  'production_change',
+  'price_threshold',
+]);
+
+app.get('/alerts', requireUser, async (c) => {
+  const user = c.get('user');
+  const { results } = await c.env.DB.prepare(
+    `SELECT id, name, event_kind, aoi_id, filters_json, is_enabled,
+            last_notified_version, created_at
+       FROM alerts WHERE user_id = ? ORDER BY created_at DESC`,
+  )
+    .bind(user.id)
+    .all<{
+      id: string;
+      name: string;
+      event_kind: string;
+      aoi_id: string | null;
+      filters_json: string;
+      is_enabled: number;
+      last_notified_version: number;
+      created_at: string;
+    }>();
+  return c.json({
+    alerts: results.map((r) => ({
+      id: r.id,
+      name: r.name,
+      eventKind: r.event_kind,
+      aoiId: r.aoi_id,
+      filters: parseAlertFilters(r.filters_json),
+      isEnabled: r.is_enabled === 1,
+      lastNotifiedVersion: r.last_notified_version,
+      createdAt: r.created_at,
+    })),
+  });
+});
+
+app.post('/alerts', requireUser, async (c) => {
+  const user = c.get('user');
+  let body: { name?: unknown; eventKind?: unknown; aoiId?: unknown; filters?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'bad_request', message: 'JSON body required' }, 400);
+  }
+  const eventKind = typeof body.eventKind === 'string' ? body.eventKind : '';
+  if (!ALERT_EVENT_KINDS.has(eventKind)) {
+    return c.json({ error: 'invalid_event_kind' }, 400);
+  }
+  const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : 'Untitled alert';
+  const aoiId = typeof body.aoiId === 'string' ? body.aoiId : null;
+  // An alert must be scoped to one of the user's own AOIs.
+  if (aoiId) {
+    const owns = await c.env.DB.prepare('SELECT 1 FROM aois WHERE id = ? AND user_id = ?')
+      .bind(aoiId, user.id)
+      .first();
+    if (!owns) return c.json({ error: 'aoi_not_found' }, 400);
+  } else {
+    return c.json({ error: 'aoi_required', message: 'alerts must target an AOI' }, 400);
+  }
+  const filters =
+    body.filters && typeof body.filters === 'object' ? JSON.stringify(body.filters) : '{}';
+  const id = crypto.randomUUID();
+  await c.env.DB.prepare(
+    `INSERT INTO alerts (id, user_id, name, event_kind, aoi_id, filters_json)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(id, user.id, name, eventKind, aoiId, filters)
+    .run();
+  return c.json({ id }, 201);
+});
+
+app.patch('/alerts/:id', requireUser, async (c) => {
+  const user = c.get('user');
+  const id = c.req.param('id');
+  let body: { name?: unknown; isEnabled?: unknown; filters?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'bad_request' }, 400);
+  }
+  const updates: string[] = [];
+  const values: unknown[] = [];
+  if (typeof body.name === 'string' && body.name.trim()) {
+    updates.push('name = ?');
+    values.push(body.name.trim());
+  }
+  if (typeof body.isEnabled === 'boolean') {
+    updates.push('is_enabled = ?');
+    values.push(body.isEnabled ? 1 : 0);
+  }
+  if (body.filters && typeof body.filters === 'object') {
+    updates.push('filters_json = ?');
+    values.push(JSON.stringify(body.filters));
+  }
+  if (updates.length === 0) return c.json({ error: 'no_updates' }, 400);
+  values.push(id, user.id);
+  const result = await c.env.DB.prepare(
+    `UPDATE alerts SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`,
+  )
+    .bind(...values)
+    .run();
+  if (result.meta.changes === 0) return c.json({ error: 'not_found' }, 404);
+  return c.json({ ok: true });
+});
+
+app.delete('/alerts/:id', requireUser, async (c) => {
+  const user = c.get('user');
+  const id = c.req.param('id');
+  const result = await c.env.DB.prepare('DELETE FROM alerts WHERE id = ? AND user_id = ?')
+    .bind(id, user.id)
+    .run();
+  if (result.meta.changes === 0) return c.json({ error: 'not_found' }, 404);
+  return c.json({ ok: true });
+});
 
 // Phase 7 — Stripe billing
 app.post('/billing/checkout', NOT_YET('7'));
@@ -678,4 +796,11 @@ app.onError((err, c) => {
   return c.json({ error: 'internal_error', message: err.message }, 500);
 });
 
-export default app;
+// Worker entrypoint: HTTP via Hono + a scheduled() cron for the weekly
+// alert digest (see wrangler.toml [triggers].crons — Sunday after the ETL).
+export default {
+  fetch: app.fetch,
+  async scheduled(_event: unknown, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(runAlertCron(env));
+  },
+};

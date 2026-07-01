@@ -49,6 +49,74 @@ export async function sendMagicLinkEmail(
   }
 }
 
+/** Digest of new features matched to an alert's AOI. `items` are the
+ *  matched diff features (claims carry `serial`, permits `permitNo` +
+ *  `operator`). Dev (no RESEND) logs instead of sending. */
+export async function sendAlertDigestEmail(
+  env: Env,
+  email: string,
+  alertName: string,
+  eventKind: string,
+  items: ReadonlyArray<{
+    serial?: string;
+    permitNo?: string;
+    operator?: string;
+    state?: string;
+    lat: number;
+    lng: number;
+  }>,
+): Promise<void> {
+  const noun = eventKind === 'permit_filed' ? 'drilling permit' : 'mining claim';
+  const subject = `Subterra alert · ${items.length} new ${noun}${items.length === 1 ? '' : 's'} in "${alertName}"`;
+  const rows = items
+    .slice(0, 50)
+    .map((it) => {
+      const id = it.serial ?? it.permitNo ?? '(unknown)';
+      const extra = [it.operator, it.state].filter(Boolean).join(' · ');
+      return `${id}${extra ? ` — ${extra}` : ''} @ ${it.lat.toFixed(4)}, ${it.lng.toFixed(4)}`;
+    })
+    .join('\n');
+  const more = items.length > 50 ? `\n…and ${items.length - 50} more.` : '';
+  const text = `${items.length} new ${noun}(s) in your watched area "${alertName}":\n\n${rows}${more}\n\nOpen Subterra to see them on the map.`;
+  const html = alertDigestHtml(alertName, noun, items.length, rows.replace(/\n/g, '<br>'), more);
+
+  if (!env.RESEND_API_KEY || !env.RESEND_FROM) {
+    console.info(`[email:DEV] would send alert digest to ${email}: ${subject}\n${text}`);
+    return;
+  }
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      'authorization': `Bearer ${env.RESEND_API_KEY}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ from: env.RESEND_FROM, to: email, subject, html, text }),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`resend alert send failed: ${res.status} ${body.slice(0, 300)}`);
+  }
+}
+
+function alertDigestHtml(
+  alertName: string,
+  noun: string,
+  count: number,
+  rowsHtml: string,
+  more: string,
+): string {
+  return `<!doctype html>
+<html>
+  <body style="font-family:-apple-system,Segoe UI,sans-serif;background:#0a0c10;color:#e2e8f0;padding:24px;">
+    <div style="max-width:560px;margin:0 auto;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:24px;">
+      <h1 style="margin:0 0 8px 0;font-size:18px;color:#f59e0b;">${count} new ${escapeHtml(noun)}${count === 1 ? '' : 's'}</h1>
+      <p style="margin:0 0 16px 0;font-size:14px;color:#8b97a6;">in your watched area &ldquo;${escapeHtml(alertName)}&rdquo;</p>
+      <pre style="margin:0;font-family:ui-monospace,Menlo,monospace;font-size:12px;line-height:1.6;color:#e2e8f0;white-space:pre-wrap;">${rowsHtml}${escapeHtml(more)}</pre>
+    </div>
+  </body>
+</html>`;
+}
+
 function magicLinkHtml(verifyUrl: string): string {
   // Plain, minimal HTML — no images, no tracking pixels, no third-party
   // fonts. Major email clients render this as-is.
