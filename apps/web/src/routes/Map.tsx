@@ -3819,6 +3819,16 @@ function ParcelCard({ feature }: { feature: SelectedFeature }) {
       {owner && <div className="mt-0.5 truncate text-text" title={owner}>{owner}</div>}
       {address && <div className="text-text-muted">{address}</div>}
       {landUse && <div className="text-text-muted">Use · {landUse}</div>}
+      {/* Land status — a surveyed parcel is private surface estate. If the
+          click also fell on a federal polygon (rare for private ground),
+          note the public overlap. Directly answers "private or public". */}
+      <div className="mt-1 flex items-center gap-1.5">
+        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-300" aria-hidden />
+        <span className="text-text-muted">
+          Private land
+          {feature.surfaceAgency ? ` · public overlap: ${feature.surfaceAgency}` : ''}
+        </span>
+      </div>
       <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1">
         {acres != null && (
           <>

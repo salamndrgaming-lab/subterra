@@ -79,12 +79,48 @@ def _normalize(raw: dict[str, Any]) -> dict[str, Any]:
     apn = _first(raw, ["APN", "PARCEL_ID", "PARCELNO", "PARCEL", "APN_FORMAT"])
     if apn is not None:
         out["apn"] = str(apn).strip()
-    owner = _first(raw, ["OWNER", "OWNER_NAME", "OWNER1", "OwnerName"])
+    owner = _first(raw, ["OWNER", "OWNER_NAME", "OWNER1", "OwnerName", "OWNERNME1", "TAXPAYER"])
     if owner is not None:
         out["owner"] = str(owner).strip()
-    acres = _parse_money(_first(raw, ["ACRES", "AREA_AC", "TOTAL_ACRE", "Shape_Area"]))
+    acres = _parse_money(_first(raw, ["ACRES", "AREA_AC", "TOTAL_ACRE", "GISACRES", "LEGALACRE"]))
     if acres is not None:
         out["acres"] = acres
+    # Assessor attributes — the "owner + price + use" the property card
+    # renders. The NDOT statewide layer usually lacks these (it's a
+    # geometry + APN + owner cadastral layer); they populate whenever a
+    # value-bearing source is configured (per-county assessor via the
+    # SUBTERRA_PARCELS_*_URL overrides, or a national parcel provider).
+    # Best-effort coalesce over the common assessor field names so any
+    # source that carries them flows straight through to the drawer.
+    assessed = _parse_money(_first(raw, [
+        "assessed_value", "ASSESSED", "ASSESSEDVA", "ASSDTTLVAL",
+        "TOTALVALUE", "TOTAL_VAL", "MKT_VAL", "MARKETVAL", "JUST_VALUE",
+    ]))
+    if assessed is not None:
+        out["assessed_value"] = assessed
+    sale_price = _parse_money(_first(raw, [
+        "sale_price", "SALEPRICE", "SALE_PRICE", "SALEAMT", "LASTSALE",
+    ]))
+    if sale_price is not None:
+        out["sale_price"] = sale_price
+    sale_date = _first(raw, ["sale_date", "SALEDATE", "SALE_DATE", "LASTSALEDT", "DEEDDATE"])
+    if sale_date is not None:
+        out["sale_date"] = str(sale_date).strip()
+    land_use = _first(raw, [
+        "land_use", "LANDUSE", "USE_CODE", "USECODE", "USEDESC",
+        "PROPCLASS", "PROP_CLASS", "ZONING", "CLASS",
+    ])
+    if land_use is not None:
+        out["land_use"] = str(land_use).strip()
+    zoning = _first(raw, ["zoning", "ZONING", "ZONE", "ZONE_CODE", "ZONECLASS"])
+    if zoning is not None:
+        out["zoning"] = str(zoning).strip()
+    address = _first(raw, [
+        "address", "SITE_ADDR", "SITUS", "SITUSADDR", "PROP_ADDR",
+        "PHYSADDR", "ADDRESS", "SITEADDRES",
+    ])
+    if address is not None:
+        out["address"] = str(address).strip()
     return out
 
 
