@@ -614,6 +614,15 @@ def main() -> int:
 
     if not args.skip_tippecanoe:
         pmtiles = run_tippecanoe(results)
+        # Build the queryable companion SQLite from the point sources
+        # BEFORE write_manifest, so its checksum lands in the manifest.
+        # Non-fatal: a features.db failure must not sink the tileset.
+        try:
+            from build_features import build_features
+            rows = build_features(results, OUT / "subterra-features.db")
+            log.info("features.db built — %d rows", rows)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("features.db build failed (non-fatal): %s", exc)
         manifest = write_manifest(results, pmtiles)
         log.info("wrote %s and %s", pmtiles.name, manifest.name)
     else:

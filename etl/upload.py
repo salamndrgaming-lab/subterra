@@ -76,6 +76,16 @@ def main() -> int:
     upload(client, pmtiles, "tiles/subterra.pmtiles", "application/octet-stream")
     upload(client, manifest, "manifest.json", "application/json")
 
+    # features.db is optional — it's built by etl/build_features.py when
+    # tippecanoe runs, but a verification run (--skip-tippecanoe) or a
+    # build failure leaves it absent. Upload it only when present so the
+    # Worker's /features route serves fresh data; skip silently otherwise.
+    features_db = OUT / "subterra-features.db"
+    if features_db.exists():
+        upload(client, features_db, "features/subterra-features.db", "application/vnd.sqlite3")
+    else:
+        print("note: no subterra-features.db to upload (skip-tippecanoe or build skipped)")
+
     print("--- verifying remote bucket (HEAD + first 400 bytes of manifest) ---")
     obj = client.head_object(Bucket=BUCKET, Key="tiles/subterra.pmtiles")
     print(f"  pmtiles: {obj['ContentLength'] / 1e6:.1f} MB, etag={obj['ETag']}")
