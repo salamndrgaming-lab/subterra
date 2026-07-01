@@ -1569,6 +1569,22 @@ export function MapPage() {
             </div>
           </div>
 
+          {/* Operator intelligence — features.db-only. Aggregates the
+              point sources (wells / permits / midstream) by operator in
+              the current viewport, which the tiles can't do. Placed above
+              the layer groups so it's visible without scrolling past 30
+              layers on a phone. */}
+          <OperatorPanel
+            dbUrl={manifestQuery.data?.featuresDbUrl}
+            available={isFeaturesDbAvailable(manifestQuery.data)}
+            getBounds={() => {
+              const map = mapRef.current;
+              if (!map) return null;
+              const b = map.getBounds();
+              return { west: b.getWest(), south: b.getSouth(), east: b.getEast(), north: b.getNorth() };
+            }}
+          />
+
           {Object.entries(LAYER_GROUPS).map(([group, label]) => {
             const layersInGroup = LAYERS.filter((l) => {
               if (l.group !== group) return false;
@@ -1608,21 +1624,6 @@ export function MapPage() {
                 No layers match &ldquo;{layerSearch}&rdquo;
               </div>
             )}
-
-          {/* Operator intelligence — features.db-only. Aggregates the
-              point sources (wells / permits / midstream) by operator
-              within the current viewport, which the vector tiles can't
-              do. Only meaningful once features.db is published. */}
-          <OperatorPanel
-            dbUrl={manifestQuery.data?.featuresDbUrl}
-            available={isFeaturesDbAvailable(manifestQuery.data)}
-            getBounds={() => {
-              const map = mapRef.current;
-              if (!map) return null;
-              const b = map.getBounds();
-              return { west: b.getWest(), south: b.getSouth(), east: b.getEast(), north: b.getNorth() };
-            }}
-          />
 
           {/* Top resource hotspots, precomputed by the ETL and shipped
               in the manifest. Click flies the map + opens the drawer
@@ -1888,11 +1889,8 @@ function OperatorPanel({
   const [status, setStatus] = useState<'idle' | 'loading' | 'done'>('idle');
   const [rows, setRows] = useState<OperatorRollup[]>([]);
 
-  // Hidden entirely until the ETL publishes features.db — no point
-  // teasing a control that can't work yet.
-  if (!available || !dbUrl) return null;
-
   const run = async () => {
+    if (!dbUrl) return;
     const bbox = getBounds();
     if (!bbox) return;
     setStatus('loading');
@@ -1900,6 +1898,21 @@ function OperatorPanel({
     setRows(result);
     setStatus('done');
   };
+
+  // Always render the section (rather than hiding when unavailable) so the
+  // feature is discoverable and its gating is legible — "nothing showing"
+  // used to be ambiguous between "not published" and "broken".
+  if (!available || !dbUrl) {
+    return (
+      <Section title="Operators in View">
+        <p className="px-1 font-mono text-[10px] leading-snug text-text-muted">
+          Operator intelligence (wells / permits / midstream grouped by
+          operator) unlocks after the next weekly data refresh publishes the
+          feature database.
+        </p>
+      </Section>
+    );
+  }
 
   return (
     <Section title="Operators in View">
@@ -1918,7 +1931,9 @@ function OperatorPanel({
       </button>
       {status === 'done' && rows.length === 0 && (
         <p className="px-1 py-1 font-mono text-[10px] text-text-muted">
-          No operators in this view — pan/zoom to an active basin and retry.
+          No operators returned for this view. Pan to an active basin
+          (Permian, DJ, Bakken) and retry. If it&rsquo;s empty everywhere,
+          the feature database is still warming up from the latest refresh.
         </p>
       )}
       {rows.length > 0 && (
