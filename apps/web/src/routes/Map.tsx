@@ -2886,6 +2886,15 @@ const WIZARD_COMMODITIES: ReadonlyArray<{ code: string; label: string }> = [
   { code: 'PB', label: 'Lead (Pb)' },
   { code: 'U', label: 'Uranium (U)' },
   { code: 'W', label: 'Tungsten (W)' },
+  // Energy commodities. The wizard ranks mineral-claim hotspots, so O&G
+  // (leased, not staked) has no hotspot signal and will show the "no
+  // matching sites" state — they're offered for completeness + as a
+  // pointer to the O&G-native surfaces (wells/leases layers, operator
+  // panel, production/decline in the well drawer).
+  { code: 'OIL', label: 'Crude Oil (WTI)' },
+  { code: 'GAS', label: 'Natural Gas (HH)' },
+  { code: 'COAL', label: 'Coal' },
+  { code: 'HE', label: 'Helium (He)' },
 ];
 
 const BUDGET_PRESETS: ReadonlyArray<{ value: number; label: string }> = [
