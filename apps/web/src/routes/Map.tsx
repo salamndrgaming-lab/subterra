@@ -30,6 +30,7 @@ import {
   type Bbox,
   type ProductionRow,
 } from '@/lib/features-db';
+import { fitDecline, eur, annualDeclinePct, declineRegime } from '@/lib/decline';
 import { fetchMe, signOut } from '@/lib/auth';
 import { checkPmtilesCached, precachePmtiles } from '@/lib/sw';
 import { useLayerVisibility } from '@/stores/layers';
@@ -1518,6 +1519,56 @@ export function MapPage() {
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
+          {/* Mobile/tablet tools — the header hides these below lg (Find
+              Optimal Acre, commodity filter, prices) and below md (status
+              pills, offline save) for space. Surface them in the sidebar
+              so every feature is reachable on a phone. Breakpoints mirror
+              the header's so nothing double-renders. */}
+          <div className="mb-4 lg:hidden">
+            <div className="mb-1.5 px-1 font-mono text-[10px] uppercase tracking-wider text-text-muted">
+              Map tools
+            </div>
+            <div className="space-y-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setWizardOpen(true);
+                  setSidebarOpen(false);
+                }}
+                disabled={!manifestQuery.data?.topHotspots?.length}
+                className="w-full rounded-md border border-fuchsia-400/60 bg-fuchsia-500/10 px-3 py-2 font-mono text-[11px] text-fuchsia-100 hover:bg-fuchsia-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                ★ Find Optimal Acre
+              </button>
+              <CommodityFilter selected={commodityFilter} onChange={setCommodityFilter} />
+              {manifestQuery.data?.commodityPrices && (
+                <PriceTicker prices={manifestQuery.data.commodityPrices} />
+              )}
+              {/* Status + offline duplicate the header's md:flex group, so
+                  hide them here at md+ to avoid double-render on tablet. */}
+              <div className="flex flex-wrap items-center gap-2 font-mono text-[10px] md:hidden">
+                <StatusPill label={styleLoaded ? 'basemap loaded' : 'loading basemap…'} ok={styleLoaded} />
+                <StatusPill
+                  label={
+                    manifestQuery.isLoading
+                      ? 'fetching manifest…'
+                      : manifestQuery.data
+                        ? `tiles v${manifestQuery.data.version}`
+                        : 'no tiles yet'
+                  }
+                  ok={!!manifestQuery.data}
+                />
+                {manifestQuery.data && (
+                  <OfflineControl
+                    state={offlineState}
+                    error={offlineError}
+                    onSave={handleSaveForOffline}
+                  />
+                )}
+              </div>
+            </div>
+          </div>
+
           {Object.entries(LAYER_GROUPS).map(([group, label]) => {
             const layersInGroup = LAYERS.filter((l) => {
               if (l.group !== group) return false;
@@ -1994,7 +2045,8 @@ function FeaturesDbDetail({
 }
 
 /** Compact production visualization for a well: oil + gas sparklines,
- *  cumulative totals, and the latest reported month. Pure inline SVG —
+ *  cumulative totals, latest month, and an Arps decline fit (qi, decline
+ *  rate, b, 30-yr EUR) when the history supports one. Pure inline SVG —
  *  no chart lib. `series` is monthly, oldest first. */
 function ProductionSparkline({ series, api }: { series: ProductionRow[]; api: string | null }) {
   const oil = series.map((r) => r.oil_bbl ?? 0);
@@ -2002,6 +2054,16 @@ function ProductionSparkline({ series, api }: { series: ProductionRow[]; api: st
   const cumOil = oil.reduce((a, b) => a + b, 0);
   const cumGas = gas.reduce((a, b) => a + b, 0);
   const last = series[series.length - 1];
+
+  // Arps decline fit on whichever stream (oil then gas) dominates, so a
+  // gas well still gets a curve. months = index in the series.
+  const primary = cumOil >= cumGas ? oil : gas;
+  const primaryLabel = cumOil >= cumGas ? 'oil' : 'gas';
+  const primaryUnit = cumOil >= cumGas ? 'bbl' : 'mcf';
+  const declineFit = useMemo(
+    () => fitDecline(primary.map((q, t) => ({ t, q }))),
+    [primary],
+  );
 
   const spark = (vals: number[], color: string) => {
     if (vals.length < 2) return null;
@@ -2045,6 +2107,37 @@ function ProductionSparkline({ series, api }: { series: ProductionRow[]; api: st
         <div className="mt-1 font-mono text-[9px] text-text-muted">
           latest {last.period}: {fmt(last.oil_bbl ?? 0)} bbl · {fmt(last.gas_mcf ?? 0)} mcf
           {last.days ? ` · ${last.days}d` : ''}
+        </div>
+      )}
+      {declineFit && (
+        <div className="mt-2 rounded border border-border bg-bg-panel/40 p-2" data-testid="decline-fit">
+          <div className="mb-1 font-mono text-[9px] uppercase tracking-wider text-text-muted">
+            Arps decline ({primaryLabel} · {declineRegime(declineFit)}) · R²{' '}
+            {declineFit.r2.toFixed(2)}
+          </div>
+          <div className="grid grid-cols-3 gap-2 font-mono text-[10px]">
+            <div>
+              <div className="text-text-muted">qi</div>
+              <div className="text-text">{fmt(declineFit.qi)}/mo</div>
+            </div>
+            <div>
+              <div className="text-text-muted">decline</div>
+              <div className="text-text">{annualDeclinePct(declineFit).toFixed(0)}%/yr</div>
+            </div>
+            <div>
+              <div className="text-text-muted">b</div>
+              <div className="text-text">{declineFit.b.toFixed(2)}</div>
+            </div>
+          </div>
+          <div className="mt-1 font-mono text-[10px]">
+            <span className="text-text-muted">EUR (30 yr): </span>
+            <span className="text-accent">
+              {fmt(eur(declineFit))} {primaryUnit}
+            </span>
+          </div>
+          <div className="mt-1 font-mono text-[8px] leading-tight text-text-muted">
+            Heuristic fit to reported history — not a reserves estimate.
+          </div>
         </div>
       )}
     </div>
