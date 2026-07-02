@@ -14,6 +14,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { fetchMe } from '@/lib/auth';
 import { fetchAlerts, setAlertEnabled, deleteAlert } from '@/lib/alerts';
+import { openBillingPortal } from '@/lib/billing';
 import {
   addTrackedClaims,
   daysUntil,
@@ -64,6 +65,8 @@ function SignedInClaims() {
           Track claim serials and never miss a Sept 1 annual-fee deadline.
         </p>
 
+        <PlanBadge />
+
         <Countdown days={days} deadline={deadline} claimCount={claims.length} />
         <AddClaimsForm onAdded={() => void queryClient.invalidateQueries({ queryKey: ['my-claims'] })} />
         <ClaimsList
@@ -73,6 +76,50 @@ function SignedInClaims() {
         />
 
         <AlertsManager />
+      </div>
+    </div>
+  );
+}
+
+/** Current plan + manage/upgrade. Free users see an upgrade link; paid
+ *  users get a "Manage billing" button (Stripe portal). */
+function PlanBadge() {
+  const me = useQuery({ queryKey: ['auth', 'me'], queryFn: fetchMe, retry: 0 });
+  const tier = me.data?.tier ?? 'free';
+  const label = tier.charAt(0).toUpperCase() + tier.slice(1);
+  const manage = async () => {
+    try {
+      await openBillingPortal();
+    } catch {
+      /* portal unavailable (billing not configured) — no-op */
+    }
+  };
+  return (
+    <div className="mt-4 flex items-center gap-3 rounded-lg border border-border bg-bg-surface px-4 py-3 font-mono text-[12px]">
+      <span className="text-text-muted">Plan</span>
+      <span className={tier === 'free' ? 'text-text' : 'text-accent'}>{label}</span>
+      <div className="ml-auto flex gap-2">
+        {tier === 'free' ? (
+          <Link
+            to="/pricing"
+            className="rounded border border-accent bg-accent/10 px-3 py-1 text-accent hover:bg-accent/20"
+          >
+            Upgrade
+          </Link>
+        ) : (
+          <>
+            <Link to="/pricing" className="rounded border border-border px-3 py-1 text-text-muted hover:text-text">
+              Change plan
+            </Link>
+            <button
+              type="button"
+              onClick={manage}
+              className="rounded border border-border px-3 py-1 text-text-muted hover:text-text"
+            >
+              Manage billing
+            </button>
+          </>
+        )}
       </div>
     </div>
   );

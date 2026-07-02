@@ -12,6 +12,7 @@ import { LandingPage } from './routes/Landing';
 import { NotFoundPage } from './routes/NotFound';
 import { ClaimsPage } from './routes/Claims';
 import { SignInPage } from './routes/SignIn';
+import { PricingPage } from './routes/Pricing';
 
 // One-time MapLibre <-> PMTiles protocol registration. Must happen
 // before any <Map> component instantiates.
@@ -43,6 +44,7 @@ createRoot(root).render(
           <Route path="/map" element={<MapPage />} />
           <Route path="/signin" element={<SignInPage />} />
           <Route path="/claims" element={<ClaimsPage />} />
+          <Route path="/pricing" element={<PricingPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
       </BrowserRouter>

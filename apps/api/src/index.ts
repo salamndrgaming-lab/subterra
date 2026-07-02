@@ -28,6 +28,13 @@ import { sendMagicLinkEmail } from './email';
 import { parseAlertFilters } from './alerts-match';
 import { runAlertCron } from './alerts-cron';
 import { buildStakingPacketPdf } from './nol-packet';
+import {
+  priceIdForTier,
+  tierForPriceId,
+  createCheckoutSession,
+  createPortalSession,
+  verifyStripeSignature,
+} from './billing';
 
 export interface Env {
   DB: D1Database;
@@ -37,6 +44,11 @@ export interface Env {
   AUTH_RP_ID?: string;
   STRIPE_SECRET_KEY?: string;
   STRIPE_WEBHOOK_SECRET?: string;
+  STRIPE_PRICE_PROSPECTOR?: string;
+  STRIPE_PRICE_OPERATOR?: string;
+  STRIPE_PRICE_ENTERPRISE?: string;
+  /** Public web app origin, for Stripe redirect + return URLs. */
+  WEB_APP_URL?: string;
   RESEND_API_KEY?: string;
   RESEND_FROM?: string;
   SENTRY_DSN_API?: string;
@@ -868,9 +880,145 @@ app.delete('/alerts/:id', requireUser, async (c) => {
   return c.json({ ok: true });
 });
 
-// Phase 7 — Stripe billing
-app.post('/billing/checkout', NOT_YET('7'));
-app.post('/billing/webhook', NOT_YET('7'));
+// Phase 7 — Stripe billing. Inert until the STRIPE_* env vars are set;
+// each route returns 503 billing_unavailable when unconfigured so the
+// web app can show "billing coming soon" instead of erroring.
+function billingConfigured(env: Env): boolean {
+  return !!env.STRIPE_SECRET_KEY;
+}
+
+app.post('/billing/checkout', requireUser, async (c) => {
+  if (!billingConfigured(c.env)) return c.json({ error: 'billing_unavailable' }, 503);
+  const user = c.get('user');
+  let body: { tier?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'bad_request' }, 400);
+  }
+  const tier = body.tier;
+  if (tier !== 'prospector' && tier !== 'operator' && tier !== 'enterprise') {
+    return c.json({ error: 'invalid_tier' }, 400);
+  }
+  const priceId = priceIdForTier(c.env, tier);
+  if (!priceId) return c.json({ error: 'tier_not_purchasable' }, 400);
+
+  // Reuse the user's Stripe customer if we've seen them before.
+  const row = await c.env.DB.prepare('SELECT stripe_customer_id FROM users WHERE id = ?')
+    .bind(user.id)
+    .first<{ stripe_customer_id: string | null }>();
+  const webBase = c.env.WEB_APP_URL || 'https://subterra.pages.dev';
+  try {
+    const url = await createCheckoutSession(c.env, {
+      priceId,
+      userId: user.id,
+      email: user.email,
+      customerId: row?.stripe_customer_id ?? null,
+      successUrl: `${webBase}/claims?upgrade=success`,
+      cancelUrl: `${webBase}/pricing?upgrade=cancel`,
+    });
+    return c.json({ url });
+  } catch (err) {
+    console.error('[billing] checkout failed', err);
+    return c.json({ error: 'checkout_failed' }, 502);
+  }
+});
+
+app.post('/billing/portal', requireUser, async (c) => {
+  if (!billingConfigured(c.env)) return c.json({ error: 'billing_unavailable' }, 503);
+  const user = c.get('user');
+  const row = await c.env.DB.prepare('SELECT stripe_customer_id FROM users WHERE id = ?')
+    .bind(user.id)
+    .first<{ stripe_customer_id: string | null }>();
+  if (!row?.stripe_customer_id) return c.json({ error: 'no_customer' }, 400);
+  const webBase = c.env.WEB_APP_URL || 'https://subterra.pages.dev';
+  try {
+    const url = await createPortalSession(c.env, {
+      customerId: row.stripe_customer_id,
+      returnUrl: `${webBase}/claims`,
+    });
+    return c.json({ url });
+  } catch (err) {
+    console.error('[billing] portal failed', err);
+    return c.json({ error: 'portal_failed' }, 502);
+  }
+});
+
+// Stripe webhook — verifies the signature, then reconciles the user's
+// tier + subscription bookkeeping. Must read the RAW body for the HMAC.
+app.post('/billing/webhook', async (c) => {
+  const secret = c.env.STRIPE_WEBHOOK_SECRET;
+  if (!secret) return c.json({ error: 'billing_unavailable' }, 503);
+  const payload = await c.req.text();
+  const ok = await verifyStripeSignature(
+    payload,
+    c.req.header('stripe-signature'),
+    secret,
+    Math.floor(Date.now() / 1000),
+  );
+  if (!ok) return c.json({ error: 'bad_signature' }, 400);
+
+  let event: { type?: string; data?: { object?: Record<string, unknown> } };
+  try {
+    event = JSON.parse(payload);
+  } catch {
+    return c.json({ error: 'bad_json' }, 400);
+  }
+  const obj = event.data?.object ?? {};
+
+  try {
+    if (event.type === 'checkout.session.completed') {
+      // Link the Stripe customer to our user; tier is set when the
+      // subscription event arrives (or here if the line item is known).
+      const userId = (obj.client_reference_id as string) || '';
+      const customerId = (obj.customer as string) || '';
+      if (userId && customerId) {
+        await c.env.DB.prepare('UPDATE users SET stripe_customer_id = ? WHERE id = ?')
+          .bind(customerId, userId)
+          .run();
+      }
+    } else if (
+      event.type === 'customer.subscription.created' ||
+      event.type === 'customer.subscription.updated'
+    ) {
+      const customerId = (obj.customer as string) || '';
+      const status = (obj.status as string) || 'active';
+      const priceId =
+        ((obj.items as { data?: Array<{ price?: { id?: string } }> } | undefined)?.data?.[0]?.price
+          ?.id as string) || '';
+      const tier = tierForPriceId(c.env, priceId);
+      const periodEnd = obj.current_period_end
+        ? new Date((obj.current_period_end as number) * 1000).toISOString()
+        : null;
+      // A canceled/unpaid sub drops the user back to free.
+      const effectiveTier = status === 'active' || status === 'trialing' ? tier ?? 'free' : 'free';
+      if (customerId) {
+        await c.env.DB.prepare(
+          `UPDATE users
+              SET tier = ?, subscription_status = ?, subscription_period_end = ?,
+                  stripe_subscription_id = ?
+            WHERE stripe_customer_id = ?`,
+        )
+          .bind(effectiveTier, status, periodEnd, (obj.id as string) || null, customerId)
+          .run();
+      }
+    } else if (event.type === 'customer.subscription.deleted') {
+      const customerId = (obj.customer as string) || '';
+      if (customerId) {
+        await c.env.DB.prepare(
+          `UPDATE users SET tier = 'free', subscription_status = 'canceled'
+            WHERE stripe_customer_id = ?`,
+        )
+          .bind(customerId)
+          .run();
+      }
+    }
+  } catch (err) {
+    console.error('[billing] webhook handler error', err);
+    return c.json({ error: 'handler_error' }, 500);
+  }
+  return c.json({ received: true });
+});
 
 app.notFound((c) =>
   c.json({ error: 'not_found', path: new URL(c.req.url).pathname }, 404),
