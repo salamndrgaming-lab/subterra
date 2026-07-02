@@ -27,6 +27,7 @@ import {
 import { sendMagicLinkEmail } from './email';
 import { parseAlertFilters } from './alerts-match';
 import { runAlertCron } from './alerts-cron';
+import { buildStakingPacketPdf } from './nol-packet';
 
 export interface Env {
   DB: D1Database;
@@ -653,7 +654,91 @@ app.delete('/my-claims/:id', requireUser, async (c) => {
 
 // Phase 5 — opportunity scoring + NoL export
 app.get('/score', NOT_YET('5'));
-app.post('/aois/:id/nol-packet', NOT_YET('5'));
+
+// Staking-packet PDF for a saved AOI. Loads the AOI's geometry, folds in
+// the claimant/economics inputs from the POST body, and streams a
+// printable preparation packet. Prospector-tier feature.
+app.post('/aois/:id/nol-packet', requireUser, async (c) => {
+  const user = c.get('user');
+  const id = c.req.param('id');
+  const row = await c.env.DB.prepare(
+    `SELECT name, geometry_json, bbox_west, bbox_south, bbox_east, bbox_north, area_acres
+       FROM aois WHERE id = ? AND user_id = ?`,
+  )
+    .bind(id, user.id)
+    .first<{
+      name: string;
+      geometry_json: string;
+      bbox_west: number;
+      bbox_south: number;
+      bbox_east: number;
+      bbox_north: number;
+      area_acres: number;
+    }>();
+  if (!row) return c.json({ error: 'not_found' }, 404);
+
+  let body: Record<string, unknown> = {};
+  try {
+    body = (await c.req.json()) as Record<string, unknown>;
+  } catch {
+    /* body is optional — a bare POST still yields a fill-in packet */
+  }
+
+  // Corners = the outer ring of the stored polygon; centroid = bbox center.
+  let corners: Array<[number, number]> = [];
+  try {
+    const geom = JSON.parse(row.geometry_json) as { coordinates?: number[][][] };
+    const ring = geom.coordinates?.[0] ?? [];
+    corners = ring
+      .filter((p): p is [number, number] => Array.isArray(p) && p.length >= 2)
+      .map((p) => [p[0], p[1]]);
+    // Drop the closing duplicate vertex if present.
+    if (corners.length > 1) {
+      const a = corners[0]!;
+      const b = corners[corners.length - 1]!;
+      if (a[0] === b[0] && a[1] === b[1]) corners = corners.slice(0, -1);
+    }
+  } catch {
+    corners = [];
+  }
+  const centroid: [number, number] = [
+    (row.bbox_west + row.bbox_east) / 2,
+    (row.bbox_south + row.bbox_north) / 2,
+  ];
+
+  const str = (k: string): string | undefined =>
+    typeof body[k] === 'string' && (body[k] as string).trim() ? (body[k] as string).trim() : undefined;
+  const num = (k: string): number | undefined =>
+    typeof body[k] === 'number' && Number.isFinite(body[k] as number) ? (body[k] as number) : undefined;
+  const claimType = str('claimType');
+
+  const pdf = await buildStakingPacketPdf({
+    aoiName: row.name,
+    acres: row.area_acres,
+    corners,
+    centroid,
+    claimantName: str('claimantName'),
+    claimantAddress: str('claimantAddress'),
+    claimType:
+      claimType === 'lode' || claimType === 'placer' || claimType === 'millsite'
+        ? claimType
+        : undefined,
+    claimName: str('claimName'),
+    lodeClaims: num('lodeClaims'),
+    year1CostLow: num('year1CostLow'),
+    year1CostHigh: num('year1CostHigh'),
+    annualCost: num('annualCost'),
+    commoditySummary: str('commoditySummary'),
+  });
+
+  return new Response(pdf, {
+    headers: {
+      'content-type': 'application/pdf',
+      'content-disposition': `attachment; filename="staking-packet-${id}.pdf"`,
+      'cache-control': 'no-store',
+    },
+  });
+});
 
 // Phase 9 — stake-ability eligibility lookup. Full point-in-polygon
 // implementation arrives with the features.db build (Phase 3+). For now

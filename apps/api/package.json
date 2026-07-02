@@ -13,7 +13,8 @@
   },
   "dependencies": {
     "@subterra/shared": "*",
-    "hono": "^4.6.14"
+    "hono": "^4.6.14",
+    "pdf-lib": "^1.17.1"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20241224.0",

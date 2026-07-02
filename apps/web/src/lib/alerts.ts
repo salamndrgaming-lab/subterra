@@ -73,6 +73,43 @@ export async function watchArea(input: {
   return { aoiId, alertId };
 }
 
+/** Save the AOI, request its staking-packet PDF, and trigger a download. */
+export async function downloadStakingPacket(input: {
+  name: string;
+  vertices: LngLat[];
+  acres: number;
+  lodeClaims?: number;
+  year1CostLow?: number;
+  year1CostHigh?: number;
+  annualCost?: number;
+  commoditySummary?: string;
+}): Promise<void> {
+  const aoiId = await saveAoi({ name: input.name, vertices: input.vertices, acres: input.acres });
+  const res = await fetch(`${API_URL}/aois/${encodeURIComponent(aoiId)}/nol-packet`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      lodeClaims: input.lodeClaims,
+      year1CostLow: input.year1CostLow,
+      year1CostHigh: input.year1CostHigh,
+      annualCost: input.annualCost,
+      commoditySummary: input.commoditySummary,
+    }),
+  });
+  if (res.status === 401) throw new Error('UNAUTHENTICATED');
+  if (!res.ok) throw new Error(`Packet failed: HTTP ${res.status}`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'staking-packet.pdf';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export async function fetchAlerts(): Promise<AlertRecord[]> {
   const res = await fetch(`${API_URL}/alerts`, { credentials: 'include' });
   if (res.status === 401) throw new Error('UNAUTHENTICATED');
