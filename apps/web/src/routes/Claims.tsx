@@ -13,6 +13,7 @@ import { Link, Navigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { fetchMe } from '@/lib/auth';
+import { fetchAlerts, setAlertEnabled, deleteAlert } from '@/lib/alerts';
 import {
   addTrackedClaims,
   daysUntil,
@@ -70,8 +71,79 @@ function SignedInClaims() {
           loading={claimsQuery.isLoading}
           onDeleted={() => void queryClient.invalidateQueries({ queryKey: ['my-claims'] })}
         />
+
+        <AlertsManager />
       </div>
     </div>
+  );
+}
+
+/** Watched-area alerts — list, enable/disable, and delete. Created from
+ *  the map's "Watch this area" action; this is where they're managed. */
+function AlertsManager() {
+  const queryClient = useQueryClient();
+  const alertsQuery = useQuery({ queryKey: ['alerts'], queryFn: fetchAlerts, retry: 0 });
+  const alerts = alertsQuery.data ?? [];
+  const refresh = () => void queryClient.invalidateQueries({ queryKey: ['alerts'] });
+
+  const kindLabel = (k: string) =>
+    k === 'permit_filed' ? 'New drilling permits' : k === 'new_claim_filed' ? 'New mining claims' : k;
+
+  return (
+    <section className="mt-8">
+      <h2 className="font-mono text-lg text-text">Area alerts</h2>
+      <p className="mt-1 font-mono text-[12px] text-text-muted">
+        Weekly email when new activity lands inside an area you&rsquo;re watching. Draw an area on the
+        {' '}
+        <Link to="/map" className="text-accent hover:underline">
+          map
+        </Link>{' '}
+        and choose &ldquo;Watch this area&rdquo;.
+      </p>
+      {alerts.length === 0 ? (
+        <div className="mt-3 rounded-lg border border-border bg-bg-surface p-4 font-mono text-[12px] text-text-muted">
+          No area alerts yet.
+        </div>
+      ) : (
+        <ul className="mt-3 space-y-2">
+          {alerts.map((a) => (
+            <li
+              key={a.id}
+              className="flex items-center gap-3 rounded-lg border border-border bg-bg-surface p-3 font-mono text-[12px]"
+            >
+              <span
+                aria-hidden
+                className={`h-2 w-2 shrink-0 rounded-full ${a.isEnabled ? 'bg-success' : 'bg-border-strong'}`}
+              />
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-text">{a.name}</div>
+                <div className="text-text-muted">{kindLabel(a.eventKind)}</div>
+              </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  await setAlertEnabled(a.id, !a.isEnabled);
+                  refresh();
+                }}
+                className="rounded border border-border px-2 py-1 text-[11px] text-text-muted hover:text-text"
+              >
+                {a.isEnabled ? 'Pause' : 'Resume'}
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  await deleteAlert(a.id);
+                  refresh();
+                }}
+                className="rounded border border-border px-2 py-1 text-[11px] text-red-400 hover:border-red-500/50"
+              >
+                Delete
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 

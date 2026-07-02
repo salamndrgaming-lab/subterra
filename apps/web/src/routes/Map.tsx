@@ -32,6 +32,7 @@ import {
 } from '@/lib/features-db';
 import { fitDecline, eur, annualDeclinePct, declineRegime } from '@/lib/decline';
 import { fetchMe, signOut } from '@/lib/auth';
+import { watchArea, type AlertEventKind } from '@/lib/alerts';
 import { checkPmtilesCached, precachePmtiles } from '@/lib/sw';
 import { useLayerVisibility } from '@/stores/layers';
 import { useViewMode } from '@/stores/view-mode';
@@ -3353,11 +3354,86 @@ function AoiPanel({ summary, onClose }: { summary: AoiSummary; onClose: () => vo
           </div>
         </Section>
 
+        <WatchAreaSection vertices={summary.vertices} acres={summary.acres} />
+
         <div className="mt-2 rounded-md border border-border bg-bg-panel px-3 py-2 text-[10px] leading-relaxed text-text-muted">
           AOI counts only include features rendered at the current zoom level. Zoom in or out and re-draw to refresh. Cost estimates per 43 CFR 3833 + industry standard ranges.
         </div>
       </div>
     </aside>
+  );
+}
+
+/** "Watch this area" — saves the drawn AOI + creates a weekly alert so the
+ *  user gets emailed when new claims or permits land inside it. The
+ *  recurring loop that makes Subterra a repeat visit. Signed-in only. */
+function WatchAreaSection({ vertices, acres }: { vertices: LngLat[]; acres: number }) {
+  const me = useQuery({ queryKey: ['auth', 'me'], queryFn: fetchMe, retry: 0 });
+  const [status, setStatus] = useState<'idle' | 'saving' | 'done' | 'error'>('idle');
+  const [errMsg, setErrMsg] = useState('');
+
+  const watch = async (eventKind: AlertEventKind) => {
+    setStatus('saving');
+    setErrMsg('');
+    try {
+      const name = `Watched area · ${Math.round(acres).toLocaleString()} ac`;
+      await watchArea({ name, vertices, acres, eventKind });
+      setStatus('done');
+    } catch (err) {
+      setStatus('error');
+      setErrMsg(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  return (
+    <Section title="Watch this area">
+      {!me.data ? (
+        <div className="text-[10px] leading-relaxed text-text-muted">
+          <Link to="/signin" className="text-accent hover:underline">
+            Sign in
+          </Link>{' '}
+          to get a weekly email when new claims or permits are filed inside this area.
+        </div>
+      ) : status === 'done' ? (
+        <div className="rounded border border-lime-500/40 bg-lime-500/10 px-2 py-1.5 text-[11px] text-lime-300">
+          ✓ Watching this area. You&rsquo;ll be emailed when it changes — manage alerts on your
+          {' '}
+          <Link to="/claims" className="underline">
+            account
+          </Link>
+          .
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          <p className="text-[10px] leading-snug text-text-muted">
+            Get a weekly email when new activity lands inside this area.
+          </p>
+          <div className="grid grid-cols-2 gap-1.5">
+            <button
+              type="button"
+              onClick={() => watch('new_claim_filed')}
+              disabled={status === 'saving'}
+              data-testid="watch-claims"
+              className="rounded border border-border bg-bg-panel px-2 py-1.5 font-mono text-[11px] text-text hover:border-accent disabled:opacity-60"
+            >
+              {status === 'saving' ? '…' : 'New claims'}
+            </button>
+            <button
+              type="button"
+              onClick={() => watch('permit_filed')}
+              disabled={status === 'saving'}
+              data-testid="watch-permits"
+              className="rounded border border-border bg-bg-panel px-2 py-1.5 font-mono text-[11px] text-text hover:border-accent disabled:opacity-60"
+            >
+              {status === 'saving' ? '…' : 'New permits'}
+            </button>
+          </div>
+          {status === 'error' && (
+            <div className="text-[10px] text-red-400">Couldn&rsquo;t save — {errMsg}</div>
+          )}
+        </div>
+      )}
+    </Section>
   );
 }
 
