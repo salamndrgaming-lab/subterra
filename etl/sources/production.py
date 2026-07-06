@@ -4,37 +4,37 @@ Per-well monthly production — the decline-curve prerequisite.
 Production (oil bbl / gas mcf / water bbl per well per month) is the
 backbone of every O&G valuation. It is NOT a map layer — it's tabular
 time-series keyed by well API — so it doesn't go through tippecanoe or
-the SOURCES list. Instead this module writes `work/production.csv`,
-which etl/build_features.py loads into the features.db `production`
-table; the well-detail drawer then renders a sparkline + cumulative,
-and (future) an Arps decline fit.
+the SOURCES list. This module writes `work/production.csv`, which
+etl/build_features.py loads into the features.db `production` table; the
+well-detail drawer then renders a sparkline + cumulative and fits an
+Arps decline curve.
 
-State regulators publish production as large ArcGIS **tables** (no
-geometry) or bulk CSVs. Unlike the map sources, a production table is
-queried attributes-only (f=json, returnGeometry=false), so this module
-has its own lightweight paginator rather than reusing the geojson
-`_arcgis` helper.
+State regulators publish production as **bulk CSV/zip downloads**, not
+queryable APIs (Colorado ECMC ships annual "Production Data" CSVs from
+1999 on; Oklahoma OCC + Texas RRC have their own bulk files). So this is
+a bulk-file ingester: download each configured URL (plain .csv or a .zip
+wrapping one), stream-parse rows into the canonical
+(api, period, oil, gas, water, days) shape, and write one CSV.
 
-INERT BY DESIGN: there is no committed default URL (same policy as the
-raster GeoTIFFs). Production endpoints are per-state, large, and their
-field names vary; committing a guess would add a broken source. Set
-`SUBTERRA_PRODUCTION_<STATE>_URL` (currently CO) to a verified ArcGIS
-table query endpoint and the next ETL run picks it up. With no URL set,
-this writes nothing and the production table stays empty — the well
-drawer simply omits the sparkline.
-
-Field mapping is best-effort + diagnostic: the first record's attribute
-keys are logged so the CSV column mapping can be tuned to whatever the
-configured endpoint actually returns.
+INERT BY DESIGN: no committed default URL. Set a comma-separated list of
+bulk-production URLs on SUBTERRA_PRODUCTION_URL (e.g. a couple of recent
+Colorado annual-production CSVs) and the next ETL run ingests them. The
+legacy SUBTERRA_PRODUCTION_CO_URL / _ND_URL are also honored. With none
+set, this writes nothing and the well drawer omits the sparkline. See
+docs/data-sources-setup.md for where each state's file lives.
 """
 
 from __future__ import annotations
 
 import csv
+import io
 import logging
 import os
+import re
 import time
+import zipfile
 from pathlib import Path
+from typing import Iterable, Iterator
 
 import requests
 
@@ -42,126 +42,162 @@ USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0 "
     "(Subterra-ETL +https://github.com/salamndrgaming-lab/subterra)"
 )
+REQUEST_TIMEOUT = 900.0
 
-# Per-state production endpoints. No committed defaults — set the repo
-# variable to a verified ArcGIS table /query URL to activate a state.
-STATE_ENV_VARS: dict[str, str] = {
-    "CO": "SUBTERRA_PRODUCTION_CO_URL",
-    "ND": "SUBTERRA_PRODUCTION_ND_URL",
+# Safety cap so a full multi-year state file can't blow up features.db /
+# memory. Rows beyond this are dropped (logged). ~8M well-months covers
+# several recent years of a big state.
+MAX_ROWS = 8_000_000
+
+# Canonical column → candidate source names (case-insensitive).
+_COLS: dict[str, tuple[str, ...]] = {
+    "api": ("api", "api14", "api_14", "api_no", "api_number", "apinumber", "well_api"),
+    "period": ("first_of_month", "report_date", "prod_date", "period", "date", "month", "rpt_date"),
+    "oil": ("oil_prod", "oil", "oil_bbl", "prod_oil", "oilprod", "oil_volume"),
+    "gas": ("gas_prod", "gas", "gas_mcf", "prod_gas", "gasprod", "gas_volume"),
+    "water": ("water_prod", "water", "water_bbl", "prod_water", "waterprod", "water_volume"),
+    "days": ("prod_days", "days", "days_prod", "producing_days", "daysprod"),
 }
 
-# Candidate source-field names → our canonical CSV columns. Best-effort;
-# the first record's keys are logged so this can be tuned per endpoint.
-_FIELD_CANDIDATES: dict[str, tuple[str, ...]] = {
-    "well_api": ("api", "api_num", "api_no", "api_label", "well_api", "api10", "api14", "API"),
-    "period": ("period", "report_period", "prod_date", "date", "month", "rpt_date"),
-    "oil_bbl": ("oil", "oil_bbl", "oil_prod", "oil_volume", "prod_oil"),
-    "gas_mcf": ("gas", "gas_mcf", "gas_prod", "gas_volume", "prod_gas"),
-    "water_bbl": ("water", "water_bbl", "water_prod", "water_volume", "prod_water"),
-    "days": ("days", "days_prod", "prod_days", "producing_days"),
-}
 
-
-def _pick(attrs: dict, keys: tuple[str, ...]) -> object:
+def _pick(row: dict, keys: tuple[str, ...]) -> str | None:
     for k in keys:
         for cased in (k, k.upper(), k.lower()):
-            v = attrs.get(cased)
+            v = row.get(cased)
             if v not in (None, "", " "):
-                return v
+                return str(v)
     return None
 
 
-def _iter_table(url: str, log: logging.Logger, page_size: int = 2000):
-    """Paginate an ArcGIS table query (attributes only). Yields attribute
-    dicts. Stops when a page returns fewer than page_size records."""
-    offset = 0
-    first_logged = False
-    while True:
-        resp = requests.get(
-            url,
-            params={
-                "where": "1=1",
-                "outFields": "*",
-                "returnGeometry": "false",
-                "f": "json",
-                "resultRecordCount": str(page_size),
-                "resultOffset": str(offset),
-                "orderByFields": "OBJECTID ASC",
-            },
-            headers={"User-Agent": USER_AGENT, "accept": "application/json"},
-            timeout=180.0,
+def _norm_period(raw: str | None) -> str | None:
+    """Normalize a date-ish cell to YYYY-MM. Accepts 2024-12-01,
+    12/1/2024, 202412, etc."""
+    if not raw:
+        return None
+    s = raw.strip()
+    m = re.match(r"^(\d{4})[-/](\d{1,2})", s)  # 2024-12-... / 2024/12
+    if m:
+        return f"{m.group(1)}-{int(m.group(2)):02d}"
+    m = re.match(r"^(\d{1,2})[-/]\d{1,2}[-/](\d{4})", s)  # 12/1/2024
+    if m:
+        return f"{m.group(2)}-{int(m.group(1)):02d}"
+    m = re.match(r"^(\d{4})(\d{2})$", s)  # 202412
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
+    return None
+
+
+def _api_from_row(row: dict) -> str | None:
+    """Direct API column, else build one from the Colorado-style
+    county+seq pair (state prefix 05 for CO)."""
+    direct = _pick(row, _COLS["api"])
+    if direct:
+        return direct.strip()
+    county = _pick(row, ("api_county_code", "API_COUNTY_CODE", "county_code"))
+    seq = _pick(row, ("api_seq_num", "API_SEQ_NUM", "seq_num"))
+    if county and seq:
+        try:
+            return f"05{int(county):03d}{int(seq):05d}"
+        except ValueError:
+            return None
+    return None
+
+
+def _parse_row(row: dict) -> tuple[str, str, str, str, str, str] | None:
+    """Row dict → (api, period, oil, gas, water, days) or None if it lacks
+    an API + period. Exposed for testing."""
+    api = _api_from_row(row)
+    period = _norm_period(_pick(row, _COLS["period"]))
+    if not api or not period:
+        return None
+    return (
+        api,
+        period,
+        _pick(row, _COLS["oil"]) or "",
+        _pick(row, _COLS["gas"]) or "",
+        _pick(row, _COLS["water"]) or "",
+        _pick(row, _COLS["days"]) or "",
+    )
+
+
+def _iter_csv_rows(url: str, log: logging.Logger) -> Iterator[dict]:
+    """Download a .csv or .zip(.csv) and yield row dicts. Streams the CSV
+    so a multi-hundred-MB file doesn't have to fit in memory at once."""
+    log.info("downloading production file: %s", url)
+    resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=REQUEST_TIMEOUT)
+    resp.raise_for_status()
+    content = resp.content
+    if content[:4] == b"PK\x03\x04" or url.lower().endswith(".zip"):
+        with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            members = [n for n in zf.namelist() if n.lower().endswith(".csv")]
+            if not members:
+                raise RuntimeError(f"zip {url} has no .csv")
+            with zf.open(members[0]) as fh:
+                text = io.TextIOWrapper(fh, encoding="utf-8", errors="replace")
+                yield from csv.DictReader(text)
+    else:
+        text = io.StringIO(content.decode("utf-8", errors="replace"))
+        yield from csv.DictReader(text)
+
+
+def _urls() -> Iterable[str]:
+    """Comma-separated bulk-production URLs. Honors the generic
+    SUBTERRA_PRODUCTION_URL plus the legacy per-state names."""
+    raw = ",".join(
+        v
+        for v in (
+            os.environ.get("SUBTERRA_PRODUCTION_URL", ""),
+            os.environ.get("SUBTERRA_PRODUCTION_CO_URL", ""),
+            os.environ.get("SUBTERRA_PRODUCTION_ND_URL", ""),
         )
-        resp.raise_for_status()
-        body = resp.json()
-        if isinstance(body, dict) and body.get("error"):
-            raise RuntimeError(f"ArcGIS error (offset={offset}): {body['error']}")
-        feats = body.get("features") or []
-        if not feats:
-            break
-        if not first_logged:
-            sample = list((feats[0].get("attributes") or {}).keys())[:25]
-            log.info("production first-record attribute keys: %s", sample)
-            first_logged = True
-        for feat in feats:
-            yield feat.get("attributes") or {}
-        if len(feats) < page_size:
-            break
-        offset += page_size
+        if v
+    )
+    return [u.strip() for u in raw.split(",") if u.strip()]
 
 
 def build_production_csv(work_dir: Path) -> int:
-    """Fetch configured states' production into work/production.csv.
-    Returns row count. Never raises — logs + returns 0 on any failure so
-    the ETL is unaffected (production is additive to the tileset)."""
+    """Ingest the configured bulk-production files into
+    work/production.csv. Returns row count. Never raises — logs + returns
+    what it wrote (production is additive to the tileset)."""
     log = logging.getLogger("etl.production")
-    active = [(st, os.environ.get(env, "").strip()) for st, env in STATE_ENV_VARS.items()]
-    active = [(st, url) for st, url in active if url]
+    urls = list(_urls())
     out_path = work_dir / "production.csv"
-    if not active:
-        log.info("no SUBTERRA_PRODUCTION_*_URL configured — skipping production")
+    if not urls:
+        log.info("no SUBTERRA_PRODUCTION*_URL configured — skipping production")
         return 0
 
     total = 0
     started = time.monotonic()
-    try:
-        with out_path.open("w", encoding="utf-8", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(["well_api", "period", "oil_bbl", "gas_mcf", "water_bbl", "days"])
-            for state, url in active:
-                q = url.rstrip("/")
-                if not q.endswith("/query"):
-                    q = f"{q}/query"
-                log.info("fetching %s production: %s", state, q)
-                n = 0
-                try:
-                    for attrs in _iter_table(q, log):
-                        api = _pick(attrs, _FIELD_CANDIDATES["well_api"])
-                        period = _pick(attrs, _FIELD_CANDIDATES["period"])
-                        if not api or not period:
-                            continue
-                        writer.writerow(
-                            [
-                                api,
-                                period,
-                                _pick(attrs, _FIELD_CANDIDATES["oil_bbl"]) or "",
-                                _pick(attrs, _FIELD_CANDIDATES["gas_mcf"]) or "",
-                                _pick(attrs, _FIELD_CANDIDATES["water_bbl"]) or "",
-                                _pick(attrs, _FIELD_CANDIDATES["days"]) or "",
-                            ]
-                        )
-                        n += 1
-                    log.info("  %s: %d production records", state, n)
-                    total += n
-                except Exception as err:  # noqa: BLE001
-                    log.warning("  %s production FAILED — %s: %s", state, type(err).__name__, err)
-                    print(f"::warning::production {state} failed: {err} [url={q}]")
-                    continue
-    except Exception as exc:  # noqa: BLE001
-        log.warning("production build failed: %s", exc)
-        if out_path.exists():
-            out_path.unlink()
-        return 0
+    truncated = False
+    with out_path.open("w", encoding="utf-8", newline="") as out:
+        writer = csv.writer(out)
+        writer.writerow(["well_api", "period", "oil_bbl", "gas_mcf", "water_bbl", "days"])
+        for url in urls:
+            if truncated:
+                break
+            n = 0
+            logged_keys = False
+            try:
+                for row in _iter_csv_rows(url, log):
+                    if not logged_keys:
+                        log.info("production columns: %s", list(row.keys())[:20])
+                        logged_keys = True
+                    parsed = _parse_row(row)
+                    if parsed is None:
+                        continue
+                    writer.writerow(parsed)
+                    n += 1
+                    total += 1
+                    if total >= MAX_ROWS:
+                        log.warning("hit MAX_ROWS=%d — truncating production ingest", MAX_ROWS)
+                        truncated = True
+                        break
+                log.info("  %s → %d rows", url, n)
+            except Exception as err:  # noqa: BLE001
+                log.warning("  production URL failed — %s: %s", type(err).__name__, err)
+                print(f"::warning::production failed: {err} [url={url}]")
+                continue
 
     elapsed = time.monotonic() - started
-    log.info("wrote %d production records in %.1fs → %s", total, elapsed, out_path.name)
+    log.info("wrote %d production rows in %.1fs → %s", total, elapsed, out_path.name)
     return total
