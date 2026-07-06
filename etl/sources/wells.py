@@ -87,6 +87,31 @@ STATE_SOURCES: list[dict[str, Any]] = [
         "workers": 3,
         "env_var": "SUBTERRA_WELLS_WY_URL",
     },
+    {
+        # Oklahoma OCC — RBDMS_WELLS hosted FeatureServer on the OCC's own
+        # ArcGIS Server (gis.occ.ok.gov). Search-confirmed 2026-07-01;
+        # layer 0. OK is a top-5 producing state, so this is high-value
+        # coverage. Override via SUBTERRA_WELLS_OK_URL if the layer index
+        # is wrong.
+        "code": "OK",
+        "name": "Oklahoma OCC",
+        "service": "https://gis.occ.ok.gov/server/rest/services/Hosted/RBDMS_WELLS/FeatureServer",
+        "layer": 0,
+        "workers": 3,
+        "env_var": "SUBTERRA_WELLS_OK_URL",
+    },
+    {
+        # New Mexico OCD — NMOCD_Wells_V3 MapServer (mapservice.nmstatelands
+        # .org). Search-confirmed 2026-07-01. Covers the NM Permian, which
+        # with TX makes the basin whole. Layer index is the likely wells
+        # layer; override via SUBTERRA_WELLS_NM_URL if it differs.
+        "code": "NM",
+        "name": "New Mexico OCD",
+        "service": "https://mapservice.nmstatelands.org/arcgis/rest/services/Public/NMOCD_Wells_V3/MapServer",
+        "layer": 0,
+        "workers": 3,
+        "env_var": "SUBTERRA_WELLS_NM_URL",
+    },
 ]
 
 
