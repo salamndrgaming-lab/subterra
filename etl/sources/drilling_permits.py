@@ -46,26 +46,31 @@ from sources._arcgis import iter_features_concurrent
 
 STATE_SOURCES: list[dict[str, Any]] = [
     {
-        # ND DMR's permits sub-service in the OilGasPublicMapData family.
-        # Same parent FeatureServer org as the existing ND wells entry —
-        # high confidence the namespace exists; layer index is the
-        # best-guess part.
+        # ND DMR — the public "Permit Status Before Spud" FeatureServer
+        # (search-confirmed 2026-07-01) in the same OilGasPublicMapData
+        # family as ND wells. This is the real leading-indicator layer —
+        # permits filed but not yet spudded. Replaces the earlier
+        # ".../Permits/FeatureServer" guess (which was token-gated / not
+        # a public service). Layer 0.
         "code": "ND",
         "name": "North Dakota DMR Permits",
-        "service": "https://gis.dmr.nd.gov/dmrpublicservices/rest/services/OilGasPublicMapDataVectorTiles/Permits/FeatureServer",
+        "service": "https://gis.dmr.nd.gov/dmrpublicservices/rest/services/OilGasPublicMapDataVectorTiles/PermitStatusBeforeSpud/FeatureServer",
         "layer": 0,
         "workers": 3,
         "env_var": "SUBTERRA_PERMITS_ND_URL",
     },
     {
-        # CO ECMC OGCC locations service — multiple sublayers
-        # (wells, permits, locations). Layer 1 is the convention for
-        # permits-as-points across DNR's similar services; iterate via
-        # SUBTERRA_PERMITS_CO_URL if the actual index differs.
+        # CO ECMC — the dedicated OGCC_Permits FeatureServer (Form-2 APD
+        # points; ECMC publishes a "Permits" GIS layer of several thousand
+        # approved drilling permits, separate from wells/locations —
+        # search-confirmed 2026-07-01). Follows the DNR_Public naming
+        # convention of its siblings OGCC_Wells / OGCC_Oil_and_Gas_Locations.
+        # The earlier "layer 1 of the locations service" was invalid (that
+        # service has only layer 0). Override via SUBTERRA_PERMITS_CO_URL.
         "code": "CO",
         "name": "Colorado ECMC Permits",
-        "service": "https://data.dnrgis.state.co.us/arcgis/rest/services/DNR_Public/OGCC_Oil_and_Gas_Locations/FeatureServer",
-        "layer": 1,
+        "service": "https://data.dnrgis.state.co.us/arcgis/rest/services/DNR_Public/OGCC_Permits/FeatureServer",
+        "layer": 0,
         "workers": 3,
         "env_var": "SUBTERRA_PERMITS_CO_URL",
     },
