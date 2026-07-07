@@ -312,6 +312,18 @@ jobs:
           fi
           # Extract the deployed workers.dev URL for the web build below.
           WORKER_URL=$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' /tmp/wrangler-deploy.log | head -1)
+          # wrangler's deploy output format drifts across releases (and a
+          # route/custom-domain-only Worker may print no workers.dev URL),
+          # so fall back to the known-stable per-account subdomain that
+          # apps/web/src/lib/api-base.ts also hardcodes.
+          if [ -z "$WORKER_URL" ]; then
+            if [ "$IS_PROD" = "true" ]; then
+              WORKER_URL="https://subterra-api.salamndrgaming.workers.dev"
+            else
+              WORKER_URL="https://subterra-api-preview.salamndrgaming.workers.dev"
+            fi
+            echo "::warning::parsed no workers.dev URL from wrangler output; using fallback $WORKER_URL"
+          fi
           echo "worker_url=$WORKER_URL" >> "$GITHUB_OUTPUT"
           echo "Deployed Worker at: $WORKER_URL"
 
@@ -347,14 +359,21 @@ jobs:
       - run: npm run build:shared
 
       # Rebuild the web bundle with VITE_API_URL baked in so every
-      # visitor's browser hits the Cloudflare Worker for the manifest,
-      # not the localhost fallback. Vite bakes env vars at build time.
+      # visitor's browser hits the Cloudflare Worker for the manifest.
+      # If the worker URL couldn't be parsed from the wrangler deploy
+      # output (its format drifts across wrangler releases), DON'T fail
+      # the deploy — apps/web/src/lib/api-base.ts resolves the prod
+      # Worker URL at runtime as a fallback, so a bundle built without
+      # the baked var still hits prod correctly. Just warn.
       - name: Build web with API URL
         env:
           VITE_API_URL: ${{ needs.deploy-api.outputs.worker_url }}
         run: |
-          test -n "$VITE_API_URL" \
-            || { echo "::error::could not extract worker URL from deploy-api outputs"; exit 1; }
+          if [ -z "$VITE_API_URL" ]; then
+            echo "::warning::worker URL not parsed from deploy-api; building without VITE_API_URL (runtime api-base fallback covers prod)"
+          else
+            echo "Baking VITE_API_URL=$VITE_API_URL"
+          fi
           npm run build:web
 
       - name: Deploy web app to Cloudflare Pages
