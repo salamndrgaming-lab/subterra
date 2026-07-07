@@ -94,6 +94,14 @@ app.use('/features/*', cors({
   exposeHeaders: ['Content-Range', 'Content-Length', 'Accept-Ranges', 'ETag'],
   maxAge: 86400,
 }));
+// Public share reads — GET /shares/:token is read-only + must open from
+// any origin (a shared link). The authed creator (POST /shares) is a
+// different path and stays under the strict origin-restricted CORS below.
+app.use('/shares/:token', cors({
+  origin: '*',
+  allowHeaders: ['Content-Type', 'Accept'],
+  maxAge: 86400,
+}));
 
 // Allow localhost dev + every Pages alias subterra.pages.dev publishes
 // (per-deploy hashes like 95c718a4.subterra.pages.dev, branch aliases
@@ -662,6 +670,54 @@ app.delete('/my-claims/:id', requireUser, async (c) => {
     return c.json({ error: 'not_found' }, 404);
   }
   return c.json({ ok: true });
+});
+
+// Shareable prospect reports. POST creates a snapshot (authed); GET is
+// public read-only so a shared /r/<token> link opens for anyone.
+app.post('/shares', requireUser, async (c) => {
+  const user = c.get('user');
+  let body: { title?: unknown; payload?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'bad_request', message: 'JSON body required' }, 400);
+  }
+  if (!body.payload || typeof body.payload !== 'object') {
+    return c.json({ error: 'invalid_payload' }, 400);
+  }
+  const title =
+    typeof body.title === 'string' && body.title.trim()
+      ? body.title.trim().slice(0, 120)
+      : 'Prospect area';
+  // Cap the stored payload so a client can't stuff arbitrary data.
+  const payloadStr = JSON.stringify(body.payload).slice(0, 20_000);
+  // Short URL-safe token.
+  const bytes = new Uint8Array(12);
+  crypto.getRandomValues(bytes);
+  const token = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+  await c.env.DB.prepare(
+    'INSERT INTO shares (token, user_id, title, payload_json) VALUES (?, ?, ?, ?)',
+  )
+    .bind(token, user.id, title, payloadStr)
+    .run();
+  return c.json({ token }, 201);
+});
+
+app.get('/shares/:token', async (c) => {
+  const token = c.req.param('token');
+  const row = await c.env.DB.prepare(
+    'SELECT title, payload_json, created_at FROM shares WHERE token = ?',
+  )
+    .bind(token)
+    .first<{ title: string; payload_json: string; created_at: string }>();
+  if (!row) return c.json({ error: 'not_found' }, 404);
+  let payload: unknown = null;
+  try {
+    payload = JSON.parse(row.payload_json);
+  } catch {
+    payload = null;
+  }
+  return c.json({ title: row.title, payload, createdAt: row.created_at });
 });
 
 // Phase 5 — opportunity scoring + NoL export

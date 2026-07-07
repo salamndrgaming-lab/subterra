@@ -33,6 +33,7 @@ import {
 import { fitDecline, eur, annualDeclinePct, declineRegime } from '@/lib/decline';
 import { fetchMe, signOut } from '@/lib/auth';
 import { watchArea, downloadStakingPacket, type AlertEventKind } from '@/lib/alerts';
+import { createShare } from '@/lib/shares';
 import { checkPmtilesCached, precachePmtiles } from '@/lib/sw';
 import { useLayerVisibility } from '@/stores/layers';
 import { useViewMode } from '@/stores/view-mode';
@@ -3481,6 +3482,41 @@ function WatchAreaSection({ summary }: { summary: AoiSummary }) {
     }
   };
 
+  const [shareStatus, setShareStatus] = useState<'idle' | 'working' | 'copied' | 'error'>('idle');
+  const share = async () => {
+    setShareStatus('working');
+    try {
+      const centroid: [number, number] = vertices.length
+        ? [
+            vertices.reduce((s, v) => s + v[0], 0) / vertices.length,
+            vertices.reduce((s, v) => s + v[1], 0) / vertices.length,
+          ]
+        : [0, 0];
+      const path = await createShare(areaName, {
+        acres,
+        centroid,
+        mrdsInside: summary.mrdsInside,
+        mrdsByCategory: summary.mrdsByCategory,
+        claimsInside: summary.claimsInside,
+        lodeClaims: summary.lodeClaims,
+        year1CostLow: summary.year1CostLow,
+        year1CostHigh: summary.year1CostHigh,
+        annualCost: summary.annualCost,
+      });
+      const url = `${window.location.origin}${path}`;
+      try {
+        await navigator.clipboard.writeText(url);
+        setShareStatus('copied');
+      } catch {
+        // Clipboard blocked — still a success; open the report instead.
+        window.open(path, '_blank');
+        setShareStatus('idle');
+      }
+    } catch {
+      setShareStatus('error');
+    }
+  };
+
   return (
     <Section title="Watch this area">
       {!me.data ? (
@@ -3538,6 +3574,22 @@ function WatchAreaSection({ summary }: { summary: AoiSummary }) {
           </button>
           {packetStatus === 'error' && (
             <div className="text-[10px] text-red-400">Couldn&rsquo;t generate the packet.</div>
+          )}
+          <button
+            type="button"
+            onClick={share}
+            disabled={shareStatus === 'working'}
+            data-testid="share-report"
+            className="w-full rounded border border-border bg-bg-panel px-2 py-1.5 font-mono text-[11px] text-text hover:border-accent disabled:opacity-60"
+          >
+            {shareStatus === 'working'
+              ? 'Creating link…'
+              : shareStatus === 'copied'
+                ? '✓ Link copied to clipboard'
+                : '🔗 Share prospect report'}
+          </button>
+          {shareStatus === 'error' && (
+            <div className="text-[10px] text-red-400">Couldn&rsquo;t create the share link.</div>
           )}
         </div>
       )}
