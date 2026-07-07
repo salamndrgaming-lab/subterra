@@ -160,6 +160,10 @@ export function MapPage() {
   );
   const [offlineError, setOfflineError] = useState<string | null>(null);
   const [layerSearch, setLayerSearch] = useState('');
+  // Per-group expand/collapse. A group not present here uses its default
+  // (open iff it has a visible layer); an explicit entry is the user's
+  // choice. Search mode force-expands everything (handled at render).
+  const [groupOpen, setGroupOpen] = useState<Record<string, boolean>>({});
   /** "Find Optimal Acre" wizard state. `wizardOpen` controls the modal;
    *  `optimalPick` holds the chosen pick so the map can paint the
    *  recommended 100-acre square + open the explainer drawer. */
@@ -1586,34 +1590,55 @@ export function MapPage() {
             }}
           />
 
-          {Object.entries(LAYER_GROUPS).map(([group, label]) => {
-            const layersInGroup = LAYERS.filter((l) => {
-              if (l.group !== group) return false;
-              if (!layerSearch.trim()) return true;
-              return l.label.toLowerCase().includes(layerSearch.trim().toLowerCase());
-            });
-            if (layersInGroup.length === 0) return null;
+          {(() => {
+            const searching = layerSearch.trim().length > 0;
             // Index per-source status by source name (matches tilesetLayer).
             const sourceStatus = new Map(
               (manifestQuery.data?.sources ?? []).map((s) => [s.name, s]),
             );
-            return (
-              <Section key={group} title={label}>
-                {layersInGroup.map((l) => (
-                  <LayerRow
-                    key={l.id}
-                    id={l.id}
-                    label={l.label}
-                    color={l.color ?? '#94a3b8'}
-                    visible={visibility[l.id] ?? false}
-                    count={manifestQuery.data?.counts[l.tilesetLayer] ?? 0}
-                    status={sourceStatus.get(l.tilesetLayer)}
-                    onToggle={() => toggle(l.id)}
-                  />
-                ))}
-              </Section>
-            );
-          })}
+            return Object.entries(LAYER_GROUPS).map(([group, label]) => {
+              const layersInGroup = LAYERS.filter((l) => {
+                if (l.group !== group) return false;
+                if (!searching) return true;
+                return l.label.toLowerCase().includes(layerSearch.trim().toLowerCase());
+              });
+              if (layersInGroup.length === 0) return null;
+              const visibleCount = layersInGroup.filter((l) => visibility[l.id]).length;
+              const hasUnhealthy = layersInGroup.some((l) => {
+                const s = sourceStatus.get(l.tilesetLayer);
+                return s && s.status !== 'ok';
+              });
+              // Default open only when a layer in the group is on; search
+              // force-expands. Otherwise collapsed to tame the density.
+              const isOpen = searching || (groupOpen[group] ?? visibleCount > 0);
+              return (
+                <LayerGroup
+                  key={group}
+                  label={label}
+                  open={isOpen}
+                  total={layersInGroup.length}
+                  visibleCount={visibleCount}
+                  hasUnhealthy={hasUnhealthy}
+                  onToggle={() =>
+                    setGroupOpen((prev) => ({ ...prev, [group]: !isOpen }))
+                  }
+                >
+                  {layersInGroup.map((l) => (
+                    <LayerRow
+                      key={l.id}
+                      id={l.id}
+                      label={l.label}
+                      color={l.color ?? '#94a3b8'}
+                      visible={visibility[l.id] ?? false}
+                      count={manifestQuery.data?.counts[l.tilesetLayer] ?? 0}
+                      status={sourceStatus.get(l.tilesetLayer)}
+                      onToggle={() => toggle(l.id)}
+                    />
+                  ))}
+                </LayerGroup>
+              );
+            });
+          })()}
           {layerSearch.trim() &&
             LAYERS.every(
               (l) => !l.label.toLowerCase().includes(layerSearch.trim().toLowerCase()),
@@ -2213,6 +2238,56 @@ function Section({ title, children }: { title: string; children: React.ReactNode
         {title}
       </div>
       <div className="space-y-1">{children}</div>
+    </div>
+  );
+}
+
+/** Collapsible layer group. Header shows a chevron, the group name, a
+ *  "visible/total" badge, and a warning dot if any source in the group is
+ *  unhealthy. Collapsed by default (unless it has a visible layer or the
+ *  user is searching) so a 35-layer catalog reads as ~8 tidy groups. */
+function LayerGroup({
+  label,
+  open,
+  total,
+  visibleCount,
+  hasUnhealthy,
+  onToggle,
+  children,
+}: {
+  label: string;
+  open: boolean;
+  total: number;
+  visibleCount: number;
+  hasUnhealthy: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="mb-2">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        data-testid={`layer-group-${label}`}
+        className="flex w-full items-center gap-1.5 rounded px-1 py-1 font-mono text-[10px] uppercase tracking-wider text-text-muted hover:bg-bg-panel/50 hover:text-text"
+      >
+        <span aria-hidden className={`transition-transform ${open ? 'rotate-90' : ''}`}>
+          ▸
+        </span>
+        <span className="flex-1 text-left">{label}</span>
+        {hasUnhealthy && (
+          <span
+            aria-label="some sources unavailable"
+            title="Some sources in this group are unavailable"
+            className="h-1.5 w-1.5 rounded-full bg-amber-400/80"
+          />
+        )}
+        <span className={visibleCount > 0 ? 'text-accent' : 'text-text-muted/70'}>
+          {visibleCount > 0 ? `${visibleCount}/${total}` : total}
+        </span>
+      </button>
+      {open && <div className="mt-1 space-y-1">{children}</div>}
     </div>
   );
 }
@@ -4193,27 +4268,23 @@ function UnhealthyDataBanner({
   if (broken.length < 3) return null;
   const failed = broken.filter((s) => s.status === 'failed').length;
   const empty = broken.length - failed;
+  // Deliberately muted — the per-group amber dots carry the contextual
+  // signal now, so this is just a quiet, scannable summary + link, not an
+  // alarming red block that makes a healthy-enough map look broken.
   return (
     <a
       href="https://github.com/salamndrgaming-lab/subterra/issues?q=is%3Aissue+is%3Aopen+label%3Aetl+label%3Abug"
       target="_blank"
       rel="noreferrer"
       data-testid="unhealthy-data-banner"
-      title={
-        broken.length === 0
-          ? 'All ETL sources healthy'
-          : broken.map((s) => `${s.name}: ${s.status}${s.error ? ` — ${s.error}` : ''}`).join('\n')
-      }
-      className="mt-2 flex items-start gap-2 rounded-md border border-red-500/40 bg-red-500/10 px-2 py-1.5 font-mono text-[10px] text-red-300 hover:border-red-400 hover:text-red-200"
+      title={broken
+        .map((s) => `${s.name}: ${s.status}${s.error ? ` — ${s.error}` : ''}`)
+        .join('\n')}
+      className="mt-2 flex items-center gap-1.5 rounded px-1 py-1 font-mono text-[9px] text-text-muted hover:text-text"
     >
-      <span aria-hidden className="mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-red-400" />
-      <span className="min-w-0 flex-1">
-        <span className="block text-text">
-          {broken.length} data layer{broken.length === 1 ? '' : 's'} unhealthy in latest ETL
-        </span>
-        <span className="block text-[9px] text-red-300/80">
-          {failed} failed · {empty} empty · click for issue tracker ↗
-        </span>
+      <span aria-hidden className="h-1 w-1 shrink-0 rounded-full bg-amber-400/70" />
+      <span>
+        {broken.length} of {sources.length} sources refreshing ({failed} failed · {empty} empty) ↗
       </span>
     </a>
   );
